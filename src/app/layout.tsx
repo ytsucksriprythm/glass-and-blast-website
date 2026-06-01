@@ -11,6 +11,7 @@ export const metadata: Metadata = {
   description: '2025 Best Window Cleaner in North Canberra. Professional window washing and pressure cleaning for residential and commercial properties. 5-star rated, locally owned.',
   keywords: 'window cleaning Canberra, professional window cleaners, residential window cleaning, commercial window cleaning, pressure washing Canberra, window washer ACT, glass and blast',
   alternates: { canonical: '/' },
+  verification: { google: 'kpP4WDW7oi9FoqQ-jsYv2VQu1sFhh7K9f24ZZnZ0668' },
   openGraph: {
     title: 'Glass & Blast Window Cleaning | Canberra',
     description: 'Award-winning window cleaning and pressure washing in Canberra. Book online today.',
