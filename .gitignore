@@ -1,0 +1,29 @@
+# dependencies
+/node_modules
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# env / secrets
+.env
+.env.local
+.env*.local
+
+# local JSON booking store (dev only)
+/data
+
+# local tooling / source assets (not part of the deployed app)
+.claude/
+photo and video recources/
+
+# misc
+.DS_Store
+*.pem
+npm-debug.log*
+.vercel
+*.tsbuildinfo
+next-env.d.ts
