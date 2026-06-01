@@ -40,6 +40,14 @@ export type NewBooking = Omit<Booking, 'id' | 'createdAt' | 'updatedAt' | 'statu
 
 const sql = process.env.DATABASE_URL ? neon(process.env.DATABASE_URL) : null;
 
+// Fail fast instead of hanging if the DB is unreachable.
+function withTimeout<T>(p: Promise<T>, ms = 8000): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`DB timeout after ${ms}ms`)), ms)),
+  ]);
+}
+
 /* eslint-disable @typescript-eslint/no-explicit-any */
 function rowToBooking(r: any): Booking {
   return {
@@ -117,9 +125,11 @@ function writeFile(rows: Booking[]): void {
 
 export async function getBookings(): Promise<Booking[]> {
   if (sql) {
-    await ensureSchema();
-    const rows = await sql`SELECT * FROM bookings ORDER BY created_at DESC`;
-    return (rows as any[]).map(rowToBooking);
+    return withTimeout((async () => {
+      await ensureSchema();
+      const rows = await sql`SELECT * FROM bookings ORDER BY created_at DESC`;
+      return (rows as any[]).map(rowToBooking);
+    })());
   }
   return readFile().sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }

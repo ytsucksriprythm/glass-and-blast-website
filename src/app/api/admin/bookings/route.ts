@@ -42,6 +42,7 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const type = searchParams.get('type');
 
+  try {
   if (type === 'stats') {
     return NextResponse.json(await getStats());
   }
@@ -73,4 +74,7 @@ export async function GET(req: NextRequest) {
   });
 
   return NextResponse.json(filtered);
+  } catch (e) {
+    return NextResponse.json({ error: 'DB_ERROR', message: e instanceof Error ? e.message : String(e), hasDbUrl: Boolean(process.env.DATABASE_URL) }, { status: 500 });
+  }
 }
