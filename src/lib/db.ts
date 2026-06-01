@@ -38,7 +38,15 @@ export type NewBooking = Omit<Booking, 'id' | 'createdAt' | 'updatedAt' | 'statu
 // DATABASE_URL set  → Neon Postgres (production / Vercel)
 // DATABASE_URL unset → local JSON file (dev on your machine)
 
-const sql = process.env.DATABASE_URL ? neon(process.env.DATABASE_URL) : null;
+// The neon() HTTP driver wants the DIRECT (unpooled) endpoint. Vercel's Neon
+// integration sets DATABASE_URL to the pooled host (-pooler), where the HTTP
+// SQL endpoint hangs. Prefer the unpooled URL, fall back to whatever exists.
+const CONN =
+  process.env.DATABASE_URL_UNPOOLED ||
+  process.env.POSTGRES_URL_NON_POOLING ||
+  process.env.DATABASE_URL ||
+  process.env.POSTGRES_URL;
+const sql = CONN ? neon(CONN) : null;
 
 // Fail fast instead of hanging if the DB is unreachable.
 function withTimeout<T>(p: Promise<T>, ms = 8000): Promise<T> {
