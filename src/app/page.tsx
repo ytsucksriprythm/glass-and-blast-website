@@ -335,20 +335,20 @@ function Hero() {
           </motion.div>
 
           {/* Social proof row */}
-          <motion.div variants={fadeUp} className="flex flex-wrap items-center justify-center gap-6 pt-4">
-            <div className="flex items-center gap-2">
+          <motion.div variants={fadeUp} className="flex flex-wrap items-center justify-center gap-x-4 gap-y-2 pt-2 text-xs sm:text-sm">
+            <div className="flex items-center gap-1.5">
               <StarRating />
               <span className="text-white font-semibold">5.0</span>
-              <span className="text-slate-500 text-sm">across all platforms</span>
+              <span className="text-slate-500">across all platforms</span>
             </div>
-            <div className="w-px h-4 bg-white/10" />
-            <div className="flex items-center gap-2 text-sm text-slate-400">
-              <CheckCircle className="w-4 h-4 text-emerald-400" />
+            <div className="w-px h-4 bg-white/10 hidden sm:block" />
+            <div className="flex items-center gap-1.5 text-slate-400">
+              <CheckCircle className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />
               Top 1% of Australian businesses
             </div>
             <div className="w-px h-4 bg-white/10 hidden sm:block" />
-            <div className="flex items-center gap-2 text-sm text-slate-400">
-              <Clock className="w-4 h-4 text-sky-400" />
+            <div className="flex items-center gap-1.5 text-slate-400">
+              <Clock className="w-3.5 h-3.5 text-sky-400 flex-shrink-0" />
               24/7 availability
             </div>
           </motion.div>
@@ -359,7 +359,7 @@ function Hero() {
       <motion.div
         animate={{ y: [0, 10, 0] }}
         transition={{ duration: 2, repeat: Infinity, ease: 'easeInOut' }}
-        className="absolute bottom-8 flex flex-col items-center gap-2 text-slate-500 cursor-pointer"
+        className="absolute bottom-8 hidden sm:flex flex-col items-center gap-2 text-slate-500 cursor-pointer"
         onClick={() => document.querySelector('#services')?.scrollIntoView({ behavior: 'smooth' })}
       >
         <span className="text-xs tracking-widest uppercase">Scroll</span>

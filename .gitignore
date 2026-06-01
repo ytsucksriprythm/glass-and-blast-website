@@ -17,8 +17,8 @@
 /data
 
 # local tooling / source assets (not part of the deployed app)
-.claude/
-photo and video recources/
+.claude
+photo and video recources
 
 # misc
 .DS_Store
