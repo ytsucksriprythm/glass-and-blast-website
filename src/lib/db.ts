@@ -301,9 +301,16 @@ export async function getStats() {
   // Quote tracking: total $ value of every booking we've put a quote on.
   const quotedBookings = bookings.filter(b => typeof b.quoteAmount === 'number' && (b.quoteAmount ?? 0) > 0);
   const quotedValue = quotedBookings.reduce((sum, b) => sum + (b.quoteAmount ?? 0), 0);
-  const wonValue = bookings
-    .filter(b => b.status === 'completed' && typeof b.quoteAmount === 'number')
+
+  // Revenue = money actually collected (anything marked paid).
+  const paidValue = bookings
+    .filter(b => b.paid && typeof b.quoteAmount === 'number')
     .reduce((sum, b) => sum + (b.quoteAmount ?? 0), 0);
+  // Owed = work that's done but not yet paid (accounts receivable).
+  const owedValue = bookings
+    .filter(b => !b.paid && b.status === 'completed' && typeof b.quoteAmount === 'number')
+    .reduce((sum, b) => sum + (b.quoteAmount ?? 0), 0);
+  const owedCount = bookings.filter(b => !b.paid && b.status === 'completed' && typeof b.quoteAmount === 'number' && (b.quoteAmount ?? 0) > 0).length;
 
   return {
     total: bookings.length,
@@ -316,8 +323,11 @@ export async function getStats() {
     cancelled: statusBreakdown.cancelled,
     quotedCount: quotedBookings.length,
     quotedValue,
-    wonValue,
-    estimatedRevenue: wonValue, // real revenue from completed quotes
+    paidValue,
+    owedValue,
+    owedCount,
+    wonValue: paidValue,            // revenue won = money collected
+    estimatedRevenue: paidValue,    // real revenue = paid only
     byMonth: Object.entries(byMonth).map(([month, count]) => ({ month, count })),
     serviceBreakdown: Object.entries(serviceBreakdown).map(([name, value]) => ({ name, value })),
     statusBreakdown,

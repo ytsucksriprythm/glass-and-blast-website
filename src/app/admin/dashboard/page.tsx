@@ -10,7 +10,7 @@ import {
   LayoutDashboard, Calendar, LogOut, TrendingUp,
   Clock, CheckCircle, XCircle, Trash2, ChevronUp,
   ChevronDown, Search, RefreshCw, DollarSign,
-  ArrowUpRight, ArrowDownRight, Edit3, Check, Plus, X, StickyNote, BadgeCheck,
+  ArrowUpRight, ArrowDownRight, Edit3, Check, Plus, X, StickyNote, BadgeCheck, Wallet,
 } from 'lucide-react';
 import Image from 'next/image';
 import { useRouter } from 'next/navigation';
@@ -22,7 +22,9 @@ import type { Booking, BookingStatus } from '@/lib/db';
 interface Stats {
   total: number; thisMonth: number; lastMonth: number;
   pending: number; quoted: number; confirmed: number; completed: number; cancelled: number;
-  quotedCount: number; quotedValue: number; wonValue: number; estimatedRevenue: number;
+  quotedCount: number; quotedValue: number;
+  paidValue: number; owedValue: number; owedCount: number;
+  wonValue: number; estimatedRevenue: number;
   byMonth: { month: string; count: number }[];
   serviceBreakdown: { name: string; value: number }[];
   avgPerMonth: number;
@@ -255,15 +257,16 @@ export default function Dashboard() {
             {activeTab === 'overview' && (
               <motion.div key="overview" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-6">
                 {loading ? (
-                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-                    {Array.from({ length: 4 }).map((_, i) => <div key={i} className="glass rounded-2xl border border-white/8 p-6 h-32 animate-pulse" />)}
+                  <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+                    {Array.from({ length: 5 }).map((_, i) => <div key={i} className="glass rounded-2xl border border-white/8 p-6 h-32 animate-pulse" />)}
                   </div>
                 ) : stats && (
-                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                  <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
                     <StatCard label="Total Bookings" value={stats.total} icon={Calendar} color="#38BDF8" sub="All time" />
                     <StatCard label="This Month" value={stats.thisMonth} icon={TrendingUp} color="#818CF8" trend={monthTrend} sub={`vs ${stats.lastMonth} last month`} />
                     <StatCard label="Quoted" value={money(stats.quotedValue) || '$0'} icon={DollarSign} color="#A78BFA" sub={`${stats.quotedCount} quote${stats.quotedCount !== 1 ? 's' : ''} out`} />
-                    <StatCard label="Revenue (won)" value={money(stats.wonValue) || '$0'} icon={CheckCircle} color="#34D399" sub="Completed jobs" />
+                    <StatCard label="Revenue (paid)" value={money(stats.paidValue) || '$0'} icon={CheckCircle} color="#34D399" sub="Money collected" />
+                    <StatCard label="Owed" value={money(stats.owedValue) || '$0'} icon={Wallet} color="#F87171" sub={`${stats.owedCount} job${stats.owedCount !== 1 ? 's' : ''} unpaid`} />
                   </div>
                 )}
 
@@ -397,27 +400,29 @@ export default function Dashboard() {
                           <StickyNote className="w-3 h-3 mt-0.5 flex-shrink-0 text-slate-500" /> {b.adminNotes}
                         </div>
                       )}
-                      <div className="flex items-center gap-2 mt-3">
+                      <div className="mt-4 pt-3 border-t border-white/5 space-y-2">
                         <select
                           value={b.status}
                           onChange={e => onInlineStatus(b, e.target.value as BookingStatus)}
-                          className={`flex-1 text-sm font-semibold rounded-lg px-3 py-2.5 cursor-pointer bg-transparent border focus:outline-none badge-${b.status}`}
+                          className={`w-full text-sm font-semibold rounded-lg px-3 py-2.5 cursor-pointer bg-transparent border focus:outline-none badge-${b.status}`}
                         >
                           {STATUS_KEYS.map(s => <option key={s} value={s} className="bg-navy-800 text-white">{STATUS_CONFIG[s].label}</option>)}
                         </select>
-                        <button
-                          onClick={() => onTogglePaid(b)}
-                          title={b.paid ? 'Mark unpaid' : 'Mark paid'}
-                          className={`p-2.5 rounded-lg border transition-all cursor-pointer ${b.paid ? 'bg-emerald-500/15 border-emerald-400/30 text-emerald-400' : 'glass border-white/10 text-slate-500'}`}
-                        >
-                          <BadgeCheck className="w-4 h-4" />
-                        </button>
-                        <button onClick={() => setManage(b)} className="p-2.5 rounded-lg glass border border-white/10 text-sky-400 cursor-pointer" title="Manage / notes / quote">
-                          <Edit3 className="w-4 h-4" />
-                        </button>
-                        <button onClick={() => removeBooking(b.id)} className="p-2.5 rounded-lg glass border border-white/10 text-red-400 cursor-pointer" title="Delete">
-                          <Trash2 className="w-4 h-4" />
-                        </button>
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => onTogglePaid(b)}
+                            title={b.paid ? 'Mark unpaid' : 'Mark paid'}
+                            className={`flex-1 px-3 py-2.5 rounded-lg border text-sm font-semibold transition-all cursor-pointer ${b.paid ? 'bg-emerald-500/20 border-emerald-400/40 text-emerald-300' : 'bg-red-500/15 border-red-400/40 text-red-300'}`}
+                          >
+                            {b.paid ? '✓ Paid' : 'Not Paid'}
+                          </button>
+                          <button onClick={() => setManage(b)} className="p-2.5 rounded-lg glass border border-white/10 text-sky-400 cursor-pointer" title="Manage / notes / quote">
+                            <Edit3 className="w-4 h-4" />
+                          </button>
+                          <button onClick={() => removeBooking(b.id)} className="p-2.5 rounded-lg glass border border-white/10 text-red-400 cursor-pointer" title="Delete">
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
                       </div>
                     </div>
                   ))}
@@ -496,9 +501,9 @@ export default function Dashboard() {
                           <button
                             onClick={() => onTogglePaid(b)}
                             title={b.paid ? 'Mark unpaid' : 'Mark paid'}
-                            className={`w-7 h-7 rounded-lg flex items-center justify-center transition-all cursor-pointer ${b.paid ? 'bg-emerald-500/15 border border-emerald-400/30 text-emerald-400' : 'border border-white/10 text-slate-600 hover:text-slate-400'}`}
+                            className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer ${b.paid ? 'bg-emerald-500/20 border border-emerald-400/40 text-emerald-300' : 'bg-red-500/15 border border-red-400/40 text-red-300 hover:bg-red-500/20'}`}
                           >
-                            <BadgeCheck className="w-4 h-4" />
+                            {b.paid ? '✓ Paid' : 'Not Paid'}
                           </button>
                         </div>
                         {/* Actions */}
@@ -595,18 +600,29 @@ function ManageModal({ booking, onClose, onSave }: {
           </Field>
         )}
 
-        <div>
-          <label className="flex items-center gap-3 cursor-pointer select-none group">
+        <Field label="Paid">
+          <button
+            onClick={() => setPaid(p => !p)}
+            className={`w-full flex items-center justify-between px-4 py-3 rounded-lg border transition-all cursor-pointer ${
+              paid
+                ? 'bg-emerald-500/10 border-emerald-400/40 hover:bg-emerald-500/15'
+                : 'bg-red-500/10 border-red-400/40 hover:bg-red-500/15'
+            }`}
+          >
+            <span className={`font-semibold ${paid ? 'text-emerald-300' : 'text-red-300'}`}>
+              {paid ? 'Paid' : 'Not Paid'}
+            </span>
             <div
-              onClick={() => setPaid(p => !p)}
-              className={`w-5 h-5 rounded flex items-center justify-center border transition-all flex-shrink-0 ${paid ? 'bg-emerald-500 border-emerald-500' : 'border-white/20 bg-white/5 group-hover:border-white/40'}`}
+              className={`w-6 h-6 rounded flex items-center justify-center border-2 transition-all flex-shrink-0 ${
+                paid
+                  ? 'bg-emerald-500 border-emerald-500'
+                  : 'border-red-400/60 bg-transparent'
+              }`}
             >
-              {paid && <Check className="w-3 h-3 text-white" strokeWidth={3} />}
+              {paid && <Check className="w-4 h-4 text-white" strokeWidth={3} />}
             </div>
-            <span className="text-sm text-slate-300">Paid</span>
-            {paid && <span className="text-xs text-emerald-400 font-medium">Payment received</span>}
-          </label>
-        </div>
+          </button>
+        </Field>
 
         <Field label="Private notes (only you see these)">
           <textarea className="form-input resize-none" rows={3} placeholder="Quote details, access info, follow-up reminders…" value={adminNotes} onChange={e => setAdminNotes(e.target.value)} />
