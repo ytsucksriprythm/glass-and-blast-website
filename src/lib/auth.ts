@@ -1,12 +1,20 @@
-import { createHmac } from 'crypto';
+import { createHmac, timingSafeEqual } from 'crypto';
 import { cookies } from 'next/headers';
 
-const SECRET = process.env.ADMIN_SECRET ?? 'glass-blast-secret-2025';
-const PASSWORD = process.env.ADMIN_PASSWORD ?? 'glass26';
+// No hardcoded fallbacks: these MUST be provided via environment variables.
+// If they are unset, admin auth fails closed (login disabled) rather than
+// silently falling back to a publicly-known default.
+const SECRET = process.env.ADMIN_SECRET;
+const PASSWORD = process.env.ADMIN_PASSWORD;
 const COOKIE_NAME = 'gb_admin_session';
 const COOKIE_MAX_AGE = 60 * 60 * 24; // 24 hours
 
+if (!SECRET || !PASSWORD) {
+  console.error('[auth] ADMIN_SECRET and/or ADMIN_PASSWORD not set — admin login is disabled until configured.');
+}
+
 function sign(value: string): string {
+  if (!SECRET) throw new Error('ADMIN_SECRET is not configured');
   return createHmac('sha256', SECRET).update(value).digest('hex');
 }
 
@@ -17,6 +25,7 @@ export function createSessionToken(): string {
 }
 
 export function verifySessionToken(token: string): boolean {
+  if (!SECRET) return false;
   try {
     const decoded = Buffer.from(token, 'base64').toString('utf-8');
     const lastColon = decoded.lastIndexOf(':');
@@ -34,7 +43,12 @@ export function verifySessionToken(token: string): boolean {
 }
 
 export function checkPassword(password: string): boolean {
-  return password === PASSWORD;
+  if (!PASSWORD) return false;
+  // Constant-time comparison to avoid leaking the password via timing.
+  const a = Buffer.from(password);
+  const b = Buffer.from(PASSWORD);
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
 }
 
 export async function isAdminAuthenticated(): Promise<boolean> {

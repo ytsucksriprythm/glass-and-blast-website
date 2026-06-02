@@ -125,9 +125,10 @@ function bookingEmailHtml(booking: Booking): string {
 }
 
 export async function sendBookingNotifications(booking: Booking): Promise<void> {
+  // Recipient addresses come from env only — no personal emails baked into source.
   const emailOwners = [
-    process.env.OWNER1_EMAIL ?? 'lincolnblu@icloud.com',
-    process.env.OWNER2_EMAIL ?? 'wardliam232@gmail.com',
+    process.env.OWNER1_EMAIL,
+    process.env.OWNER2_EMAIL,
   ].filter(Boolean);
 
   const subject = `🪟 New Booking: ${booking.name} – ${SERVICE_LABELS[booking.service] ?? booking.service}`;
