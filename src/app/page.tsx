@@ -86,13 +86,13 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
   );
 }
 
-function AnimatedCounter({ target, suffix = '', duration = 2 }: { target: number; suffix?: string; duration?: number }) {
+function AnimatedCounter({ target, suffix = '', duration = 1 }: { target: number; suffix?: string; duration?: number }) {
   const [count, setCount] = useState(0);
   const ref = useRef<HTMLSpanElement>(null);
-  const inView = useInView(ref, { once: true, amount: 0.35 });
+  const inView = useInView(ref, { once: false, amount: 0.35 });
 
   useEffect(() => {
-    if (!inView) return;
+    if (!inView) { setCount(0); return; }   // reset when scrolled off, recount on return
     let start = 0;
     const step = target / (duration * 60);
     const timer = setInterval(() => {
@@ -298,7 +298,7 @@ function Hero() {
         <motion.div variants={stagger} initial="hidden" animate="show" className="flex flex-col items-center gap-6">
 
           <motion.div variants={fadeUp}>
-            <span className="inline-flex items-center gap-2 bg-sky-400/10 border border-sky-400/20 text-sky-400 text-xs font-semibold tracking-wider px-4 py-2 rounded-full uppercase">
+            <span className="inline-flex items-center gap-2 bg-navy-900/50 backdrop-blur-md border border-sky-400/30 text-sky-300 text-xs font-semibold tracking-wider px-4 py-2 rounded-full uppercase shadow-lg shadow-navy-900/30">
               <Sparkles className="w-3.5 h-3.5" />
               Award-Winning Window Cleaning · Canberra
             </span>
