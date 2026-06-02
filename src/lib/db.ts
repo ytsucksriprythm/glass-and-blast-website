@@ -24,14 +24,16 @@ export interface Booking {
   status: BookingStatus;
   quoteAmount?: number | null;
   adminNotes?: string;
+  paid: boolean;
   source: BookingSource;
   createdAt: string;
   updatedAt: string;
 }
 
-export type NewBooking = Omit<Booking, 'id' | 'createdAt' | 'updatedAt' | 'status' | 'source'> & {
+export type NewBooking = Omit<Booking, 'id' | 'createdAt' | 'updatedAt' | 'status' | 'source' | 'paid'> & {
   status?: BookingStatus;
   source?: BookingSource;
+  paid?: boolean;
 };
 
 // ─── Storage mode ────────────────────────────────────────────────────────────
@@ -47,6 +49,22 @@ const CONN =
   process.env.DATABASE_URL ||
   process.env.POSTGRES_URL;
 const sql = CONN ? neon(CONN) : null;
+
+export const DB_DEBUG = {
+  chosen:
+    process.env.DATABASE_URL_UNPOOLED ? 'DATABASE_URL_UNPOOLED'
+    : process.env.POSTGRES_URL_NON_POOLING ? 'POSTGRES_URL_NON_POOLING'
+    : process.env.DATABASE_URL ? 'DATABASE_URL'
+    : process.env.POSTGRES_URL ? 'POSTGRES_URL' : 'none',
+  host: (() => { try { return CONN ? new URL(CONN).host : null; } catch { return 'parse-failed'; } })(),
+  present: {
+    DATABASE_URL: !!process.env.DATABASE_URL,
+    DATABASE_URL_UNPOOLED: !!process.env.DATABASE_URL_UNPOOLED,
+    POSTGRES_URL: !!process.env.POSTGRES_URL,
+    POSTGRES_URL_NON_POOLING: !!process.env.POSTGRES_URL_NON_POOLING,
+    POSTGRES_PRISMA_URL: !!process.env.POSTGRES_PRISMA_URL,
+  },
+};
 
 // Fail fast instead of hanging if the DB is unreachable.
 function withTimeout<T>(p: Promise<T>, ms = 8000): Promise<T> {
@@ -73,6 +91,7 @@ function rowToBooking(r: any): Booking {
     status: r.status,
     quoteAmount: r.quote_amount === null || r.quote_amount === undefined ? null : Number(r.quote_amount),
     adminNotes: r.admin_notes ?? '',
+    paid: r.paid === true || r.paid === 1,
     source: r.source ?? 'website',
     createdAt: typeof r.created_at === 'string' ? r.created_at : new Date(r.created_at).toISOString(),
     updatedAt: typeof r.updated_at === 'string' ? r.updated_at : new Date(r.updated_at).toISOString(),
@@ -100,6 +119,7 @@ async function ensureSchema(): Promise<void> {
           status        TEXT NOT NULL DEFAULT 'pending',
           quote_amount  NUMERIC,
           admin_notes   TEXT DEFAULT '',
+          paid          BOOLEAN NOT NULL DEFAULT false,
           source        TEXT NOT NULL DEFAULT 'website',
           created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
           updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -108,6 +128,7 @@ async function ensureSchema(): Promise<void> {
       // Backfill columns on pre-existing tables
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS quote_amount NUMERIC`;
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS admin_notes TEXT DEFAULT ''`;
+      await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS paid BOOLEAN NOT NULL DEFAULT false`;
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'website'`;
     })();
   }
@@ -167,6 +188,7 @@ export async function addBooking(data: NewBooking): Promise<Booking> {
     notes: data.notes ?? '',
     quoteAmount: data.quoteAmount ?? null,
     adminNotes: data.adminNotes ?? '',
+    paid: data.paid ?? false,
     id: `BK-${Date.now()}`,
     status: data.status ?? 'pending',
     source: data.source ?? 'website',
@@ -177,8 +199,8 @@ export async function addBooking(data: NewBooking): Promise<Booking> {
   if (sql) {
     await ensureSchema();
     await sql`
-      INSERT INTO bookings (id, name, email, phone, service, property_type, address, suburb, preferred_date, preferred_time, notes, status, quote_amount, admin_notes, source)
-      VALUES (${booking.id}, ${booking.name}, ${booking.email}, ${booking.phone}, ${booking.service}, ${booking.propertyType}, ${booking.address}, ${booking.suburb}, ${booking.preferredDate}, ${booking.preferredTime}, ${booking.notes}, ${booking.status}, ${booking.quoteAmount}, ${booking.adminNotes}, ${booking.source})
+      INSERT INTO bookings (id, name, email, phone, service, property_type, address, suburb, preferred_date, preferred_time, notes, status, quote_amount, admin_notes, paid, source)
+      VALUES (${booking.id}, ${booking.name}, ${booking.email}, ${booking.phone}, ${booking.service}, ${booking.propertyType}, ${booking.address}, ${booking.suburb}, ${booking.preferredDate}, ${booking.preferredTime}, ${booking.notes}, ${booking.status}, ${booking.quoteAmount}, ${booking.adminNotes}, ${booking.paid}, ${booking.source})
     `;
     return booking;
   }
@@ -200,6 +222,7 @@ export async function updateBooking(id: string, updates: Partial<Booking>): Prom
         status = ${m.status},
         quote_amount = ${m.quoteAmount ?? null},
         admin_notes = ${m.adminNotes ?? ''},
+        paid = ${m.paid ?? false},
         notes = ${m.notes ?? ''},
         preferred_date = ${m.preferredDate ?? ''},
         preferred_time = ${m.preferredTime ?? ''},

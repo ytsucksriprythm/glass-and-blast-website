@@ -10,7 +10,7 @@ import {
   LayoutDashboard, Calendar, LogOut, TrendingUp,
   Clock, CheckCircle, XCircle, Trash2, ChevronUp,
   ChevronDown, Search, RefreshCw, DollarSign,
-  ArrowUpRight, ArrowDownRight, Edit3, Check, Plus, X, StickyNote,
+  ArrowUpRight, ArrowDownRight, Edit3, Check, Plus, X, StickyNote, BadgeCheck,
 } from 'lucide-react';
 import Image from 'next/image';
 import { useRouter } from 'next/navigation';
@@ -147,6 +147,8 @@ export default function Dashboard() {
     if (val === 'quoted') { setManage({ ...b, status: 'quoted' }); return; }
     saveBooking(b.id, { status: val });
   };
+
+  const onTogglePaid = (b: Booking) => saveBooking(b.id, { paid: !b.paid });
 
   const saveBooking = async (id: string, patch: Partial<Booking>) => {
     try {
@@ -403,6 +405,13 @@ export default function Dashboard() {
                         >
                           {STATUS_KEYS.map(s => <option key={s} value={s} className="bg-navy-800 text-white">{STATUS_CONFIG[s].label}</option>)}
                         </select>
+                        <button
+                          onClick={() => onTogglePaid(b)}
+                          title={b.paid ? 'Mark unpaid' : 'Mark paid'}
+                          className={`p-2.5 rounded-lg border transition-all cursor-pointer ${b.paid ? 'bg-emerald-500/15 border-emerald-400/30 text-emerald-400' : 'glass border-white/10 text-slate-500'}`}
+                        >
+                          <BadgeCheck className="w-4 h-4" />
+                        </button>
                         <button onClick={() => setManage(b)} className="p-2.5 rounded-lg glass border border-white/10 text-sky-400 cursor-pointer" title="Manage / notes / quote">
                           <Edit3 className="w-4 h-4" />
                         </button>
@@ -416,7 +425,7 @@ export default function Dashboard() {
 
                 {/* Table (desktop) */}
                 <div className="hidden lg:block glass rounded-2xl border border-white/8 overflow-hidden">
-                  <div className="grid grid-cols-[1.3fr_1fr_1fr_1fr_1fr_auto] gap-4 px-6 py-3 border-b border-white/5 text-xs font-semibold text-slate-500 uppercase tracking-wider bg-white/2">
+                  <div className="grid grid-cols-[1.3fr_1fr_1fr_1fr_1fr_3rem_auto] gap-4 px-6 py-3 border-b border-white/5 text-xs font-semibold text-slate-500 uppercase tracking-wider bg-white/2">
                     {[
                       { label: 'Customer', field: 'name' },
                       { label: 'Service', field: 'service' },
@@ -428,13 +437,14 @@ export default function Dashboard() {
                         {col.label} <SortIcon field={col.field} />
                       </button>
                     ))}
+                    <div title="Paid?"><BadgeCheck className="w-3.5 h-3.5" /></div>
                     <div>Actions</div>
                   </div>
 
                   {loading ? (
                     Array.from({ length: 5 }).map((_, i) => (
-                      <div key={i} className="grid grid-cols-[1.3fr_1fr_1fr_1fr_1fr_auto] gap-4 px-6 py-4 border-b border-white/5 animate-pulse">
-                        {Array.from({ length: 6 }).map((_, j) => <div key={j} className="h-4 bg-white/5 rounded" />)}
+                      <div key={i} className="grid grid-cols-[1.3fr_1fr_1fr_1fr_1fr_3rem_auto] gap-4 px-6 py-4 border-b border-white/5 animate-pulse">
+                        {Array.from({ length: 7 }).map((_, j) => <div key={j} className="h-4 bg-white/5 rounded" />)}
                       </div>
                     ))
                   ) : bookings.length === 0 ? (
@@ -444,7 +454,7 @@ export default function Dashboard() {
                     </div>
                   ) : (
                     bookings.map((b) => (
-                      <motion.div key={b.id} initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="grid grid-cols-[1.3fr_1fr_1fr_1fr_1fr_auto] gap-4 px-6 py-4 border-b border-white/5 hover:bg-white/2 transition-colors items-center">
+                      <motion.div key={b.id} initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="grid grid-cols-[1.3fr_1fr_1fr_1fr_1fr_3rem_auto] gap-4 px-6 py-4 border-b border-white/5 hover:bg-white/2 transition-colors items-center">
                         {/* Customer */}
                         <div className="min-w-0">
                           <div className="text-white text-sm font-medium flex items-center gap-2">
@@ -480,6 +490,16 @@ export default function Dashboard() {
                             ? <span className="text-violet-300 font-semibold">{money(b.quoteAmount)}</span>
                             : <span className="text-slate-600">—</span>}
                           {b.adminNotes ? <StickyNote className="inline w-3 h-3 ml-1.5 text-slate-500" /> : null}
+                        </div>
+                        {/* Paid */}
+                        <div>
+                          <button
+                            onClick={() => onTogglePaid(b)}
+                            title={b.paid ? 'Mark unpaid' : 'Mark paid'}
+                            className={`w-7 h-7 rounded-lg flex items-center justify-center transition-all cursor-pointer ${b.paid ? 'bg-emerald-500/15 border border-emerald-400/30 text-emerald-400' : 'border border-white/10 text-slate-600 hover:text-slate-400'}`}
+                          >
+                            <BadgeCheck className="w-4 h-4" />
+                          </button>
                         </div>
                         {/* Actions */}
                         <div className="flex gap-2">
@@ -532,12 +552,13 @@ function ManageModal({ booking, onClose, onSave }: {
   const [status, setStatus] = useState<BookingStatus>(booking.status);
   const [quote, setQuote] = useState<string>(booking.quoteAmount != null ? String(booking.quoteAmount) : '');
   const [adminNotes, setAdminNotes] = useState(booking.adminNotes ?? '');
+  const [paid, setPaid] = useState(booking.paid ?? false);
   const [saving, setSaving] = useState(false);
 
   const submit = async () => {
     setSaving(true);
     const q = quote.trim() === '' ? null : Number(quote.replace(/[^0-9.]/g, ''));
-    await onSave({ status, quoteAmount: q, adminNotes });
+    await onSave({ status, quoteAmount: q, adminNotes, paid });
     setSaving(false);
   };
 
@@ -573,6 +594,19 @@ function ManageModal({ booking, onClose, onSave }: {
             </div>
           </Field>
         )}
+
+        <div>
+          <label className="flex items-center gap-3 cursor-pointer select-none group">
+            <div
+              onClick={() => setPaid(p => !p)}
+              className={`w-5 h-5 rounded flex items-center justify-center border transition-all flex-shrink-0 ${paid ? 'bg-emerald-500 border-emerald-500' : 'border-white/20 bg-white/5 group-hover:border-white/40'}`}
+            >
+              {paid && <Check className="w-3 h-3 text-white" strokeWidth={3} />}
+            </div>
+            <span className="text-sm text-slate-300">Paid</span>
+            {paid && <span className="text-xs text-emerald-400 font-medium">Payment received</span>}
+          </label>
+        </div>
 
         <Field label="Private notes (only you see these)">
           <textarea className="form-input resize-none" rows={3} placeholder="Quote details, access info, follow-up reminders…" value={adminNotes} onChange={e => setAdminNotes(e.target.value)} />
