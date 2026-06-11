@@ -4,13 +4,14 @@ import { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
-  PieChart, Pie, Cell, CartesianGrid,
+  PieChart, Pie, Cell, CartesianGrid, LineChart, Line,
 } from 'recharts';
 import {
   LayoutDashboard, Calendar, LogOut, TrendingUp,
   Clock, CheckCircle, XCircle, Trash2, ChevronUp,
   ChevronDown, Search, RefreshCw, DollarSign,
   ArrowUpRight, ArrowDownRight, Edit3, Check, Plus, X, StickyNote, BadgeCheck, Wallet,
+  BarChart3, Globe, Eye, Users, Link2, MapPin, Target, ClipboardCopy,
 } from 'lucide-react';
 import Image from 'next/image';
 import { useRouter } from 'next/navigation';
@@ -30,6 +31,23 @@ interface Stats {
   avgPerMonth: number;
 }
 
+interface BusinessStats {
+  total: number; completed: number; conversionRate: number; avgQuote: number;
+  paidValue: number; owedValue: number; quotedCount: number;
+  leadsBySource: { website: number; manual: number };
+  revByMonth: { month: string; revenue: number }[];
+  topSuburbs: { suburb: string; count: number }[];
+  serviceBreakdown: { name: string; value: number }[];
+}
+
+interface SiteStats {
+  allTimeViews: number; views30d: number; today: number; last7: number;
+  uniqueVisitors: number; directShare: number;
+  byDay: { day: string; views: number }[];
+  topPages: { path: string; views: number }[];
+  topReferrers: { source: string; views: number }[];
+}
+
 // ─── Constants ───────────────────────────────────────────────────────────
 
 const STATUS_CONFIG: Record<BookingStatus, { label: string; color: string; icon: React.FC<{ className?: string; style?: React.CSSProperties }> }> = {
@@ -42,21 +60,41 @@ const STATUS_CONFIG: Record<BookingStatus, { label: string; color: string; icon:
 const STATUS_KEYS = Object.keys(STATUS_CONFIG) as BookingStatus[];
 
 const SERVICE_LABELS: Record<string, string> = {
-  'window-washing':   'Window Washing',
-  'pressure-washing': 'Pressure Washing',
-  'both':             'Both Services',
+  'window-washing':       'Window Washing',
+  'pressure-washing':     'Pressure Washing',
+  'both':                 'Both Services',
+  'flyscreen-repair':     'Flyscreen Repair',
+  'solar-panel-cleaning': 'Solar Panel Cleaning',
+  'other':                'Other',
 };
 
-const PIE_COLORS = ['#38BDF8', '#818CF8', '#34D399'];
+const PIE_COLORS = ['#38BDF8', '#818CF8', '#34D399', '#FBBF24', '#F472B6', '#94A3B8'];
 
 const money = (n?: number | null) =>
   typeof n === 'number' ? `$${n.toLocaleString('en-AU', { maximumFractionDigits: 0 })}` : '';
+
+// A booking's service can be a comma-separated list of keys. Render readable labels.
+const serviceText = (service: string) =>
+  (service ?? '')
+    .split(',')
+    .filter(Boolean)
+    .map(s => SERVICE_LABELS[s] ?? s)
+    .join(' + ') || '—';
 
 const emptyForm = {
   name: '', phone: '', email: '', service: 'window-washing', propertyType: 'residential',
   suburb: '', address: '', preferredDate: '', preferredTime: '', status: 'pending',
   quoteAmount: '', notes: '', adminNotes: '',
 };
+
+// Selectable service options (multi-select). 'both' is legacy, not offered for new bookings.
+const SERVICE_OPTIONS: { v: string; l: string }[] = [
+  { v: 'window-washing', l: 'Window Washing' },
+  { v: 'pressure-washing', l: 'Pressure Washing' },
+  { v: 'flyscreen-repair', l: 'Flyscreen Repair' },
+  { v: 'solar-panel-cleaning', l: 'Solar Panel Cleaning' },
+  { v: 'other', l: 'Other' },
+];
 
 // ─── Sub-components ─────────────────────────────────────────────────────
 
@@ -103,6 +141,22 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
+// Labelled progress bar used in the Business Stats tab.
+function SourceRow({ label, value, total, color }: { label: string; value: number; total: number; color: string }) {
+  const pct = total > 0 ? Math.round((value / total) * 100) : 0;
+  return (
+    <div>
+      <div className="flex items-center justify-between text-xs mb-1">
+        <span className="text-slate-400">{label}</span>
+        <span className="text-white font-semibold">{value} <span className="text-slate-500">({pct}%)</span></span>
+      </div>
+      <div className="h-2 rounded-full bg-white/5 overflow-hidden">
+        <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, background: color }} />
+      </div>
+    </div>
+  );
+}
+
 // ─── Main Dashboard ─────────────────────────────────────────────────────
 
 export default function Dashboard() {
@@ -110,7 +164,13 @@ export default function Dashboard() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<'overview' | 'bookings'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'bookings' | 'business' | 'site'>('overview');
+
+  // Stats for the dedicated tabs (lazy-loaded when first opened)
+  const [bizStats, setBizStats] = useState<BusinessStats | null>(null);
+  const [siteStats, setSiteStats] = useState<SiteStats | null>(null);
+  const [bizLoading, setBizLoading] = useState(false);
+  const [siteLoading, setSiteLoading] = useState(false);
 
   // Filters
   const [search, setSearch] = useState('');
@@ -138,6 +198,32 @@ export default function Dashboard() {
   }, [statusFilter, serviceFilter, sortField, sortOrder, search, router]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
+
+  const fetchBusiness = useCallback(async () => {
+    setBizLoading(true);
+    try {
+      const res = await fetch('/api/admin/analytics?type=business');
+      if (res.status === 401) { router.push('/admin'); return; }
+      setBizStats(await res.json());
+    } catch { toast.error('Failed to load business stats'); }
+    finally { setBizLoading(false); }
+  }, [router]);
+
+  const fetchSite = useCallback(async () => {
+    setSiteLoading(true);
+    try {
+      const res = await fetch('/api/admin/analytics?type=site');
+      if (res.status === 401) { router.push('/admin'); return; }
+      setSiteStats(await res.json());
+    } catch { toast.error('Failed to load site stats'); }
+    finally { setSiteLoading(false); }
+  }, [router]);
+
+  // Lazy-load each analytics tab the first time it's opened.
+  useEffect(() => {
+    if (activeTab === 'business' && !bizStats && !bizLoading) fetchBusiness();
+    if (activeTab === 'site' && !siteStats && !siteLoading) fetchSite();
+  }, [activeTab, bizStats, siteStats, bizLoading, siteLoading, fetchBusiness, fetchSite]);
 
   const logout = async () => {
     await fetch('/api/admin/login', { method: 'DELETE' });
@@ -178,6 +264,45 @@ export default function Dashboard() {
     else { setSortField(field); setSortOrder('asc'); }
   };
 
+  // Copy every booking as readable text — for pasting into Claude / notes.
+  const exportBookings = async () => {
+    try {
+      const res = await fetch('/api/admin/bookings?status=all&service=all&sort=createdAt&order=desc&search=');
+      if (res.status === 401) { router.push('/admin'); return; }
+      const all: Booking[] = await res.json();
+      if (!Array.isArray(all) || all.length === 0) { toast.error('No bookings to export'); return; }
+
+      const blocks = all.map((b, i) => {
+        const lines = [
+          `${i + 1}. ${b.name}${b.phone ? ` — ${b.phone}` : ''}`,
+          `   Service: ${serviceText(b.service)} | ${b.propertyType}`,
+          `   Status: ${STATUS_CONFIG[b.status]?.label ?? b.status} | Paid: ${b.paid ? 'yes' : 'no'}${typeof b.quoteAmount === 'number' && b.quoteAmount > 0 ? ` | Quote: ${money(b.quoteAmount)}` : ''}`,
+        ];
+        if (b.preferredDate || b.preferredTime) lines.push(`   When: ${[b.preferredDate, b.preferredTime].filter(Boolean).join(' ')}`);
+        if (b.address || b.suburb) lines.push(`   Address: ${[b.address, b.suburb].filter(Boolean).join(', ')}`);
+        if (b.email) lines.push(`   Email: ${b.email}`);
+        if (b.notes) lines.push(`   Customer note: ${b.notes}`);
+        if (b.adminNotes) lines.push(`   Admin note: ${b.adminNotes}`);
+        lines.push(`   Source: ${b.source} | Created: ${new Date(b.createdAt).toLocaleDateString('en-AU')}`);
+        return lines.join('\n');
+      });
+
+      const text = `Glass & Blast — Bookings export\nGenerated: ${new Date().toLocaleString('en-AU')}\nTotal: ${all.length}\n\n${blocks.join('\n\n')}`;
+
+      try {
+        await navigator.clipboard.writeText(text);
+        toast.success(`Copied ${all.length} bookings to clipboard`);
+      } catch {
+        // Clipboard blocked (rare) — fall back to a text-file download.
+        const url = URL.createObjectURL(new Blob([text], { type: 'text/plain' }));
+        const a = document.createElement('a');
+        a.href = url; a.download = `bookings-${new Date().toISOString().slice(0, 10)}.txt`;
+        a.click(); URL.revokeObjectURL(url);
+        toast.success(`Downloaded ${all.length} bookings`);
+      }
+    } catch { toast.error('Export failed'); }
+  };
+
   const SortIcon = ({ field }: { field: string }) => (
     sortField === field
       ? sortOrder === 'asc' ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />
@@ -209,6 +334,12 @@ export default function Dashboard() {
               </span>
             )}
           </button>
+          <button onClick={() => setActiveTab('business')} className={`admin-sidebar-link w-full ${activeTab === 'business' ? 'active' : ''}`}>
+            <BarChart3 className="w-4 h-4" /> Business Stats
+          </button>
+          <button onClick={() => setActiveTab('site')} className={`admin-sidebar-link w-full ${activeTab === 'site' ? 'active' : ''}`}>
+            <Globe className="w-4 h-4" /> Site Stats
+          </button>
         </nav>
 
         <div className="border-t border-white/5 pt-4 space-y-2">
@@ -224,7 +355,10 @@ export default function Dashboard() {
         <header className="border-b border-white/5 bg-navy-800/50 backdrop-blur px-6 py-4 flex items-center justify-between">
           <div>
             <h1 className="font-display text-xl font-bold text-white">
-              {activeTab === 'overview' ? 'Dashboard Overview' : 'Bookings & Quotes'}
+              {activeTab === 'overview' ? 'Dashboard Overview'
+                : activeTab === 'bookings' ? 'Bookings & Quotes'
+                : activeTab === 'business' ? 'Business Statistics'
+                : 'Site Statistics'}
             </h1>
             <p className="text-slate-500 text-xs mt-0.5">
               {new Date().toLocaleDateString('en-AU', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
@@ -234,8 +368,8 @@ export default function Dashboard() {
             <button onClick={() => { setActiveTab('bookings'); setShowAdd(true); }} className="hidden sm:inline-flex items-center gap-2 px-4 py-2 bg-sky-500 hover:bg-sky-400 text-white text-sm font-semibold rounded-xl transition-all cursor-pointer">
               <Plus className="w-4 h-4" /> Add Booking
             </button>
-            <button onClick={fetchData} className="p-2 rounded-xl glass border border-white/10 text-slate-400 hover:text-white transition-colors cursor-pointer">
-              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+            <button onClick={() => { if (activeTab === 'business') fetchBusiness(); else if (activeTab === 'site') fetchSite(); else fetchData(); }} className="p-2 rounded-xl glass border border-white/10 text-slate-400 hover:text-white transition-colors cursor-pointer">
+              <RefreshCw className={`w-4 h-4 ${(loading || bizLoading || siteLoading) ? 'animate-spin' : ''}`} />
             </button>
             <button onClick={logout} className="lg:hidden p-2 rounded-xl glass border border-white/10 text-red-400 cursor-pointer">
               <LogOut className="w-4 h-4" />
@@ -243,10 +377,10 @@ export default function Dashboard() {
           </div>
         </header>
 
-        <div className="lg:hidden flex gap-2 px-6 pt-4">
-          {(['overview', 'bookings'] as const).map(t => (
-            <button key={t} onClick={() => setActiveTab(t)} className={`px-4 py-2 rounded-xl text-sm font-medium capitalize transition-all cursor-pointer ${activeTab === t ? 'bg-sky-500 text-white' : 'glass border border-white/10 text-slate-400'}`}>
-              {t}
+        <div className="lg:hidden flex gap-2 px-6 pt-4 overflow-x-auto">
+          {([['overview', 'Overview'], ['bookings', 'Bookings'], ['business', 'Business'], ['site', 'Site']] as const).map(([t, label]) => (
+            <button key={t} onClick={() => setActiveTab(t)} className={`px-4 py-2 rounded-xl text-sm font-medium whitespace-nowrap transition-all cursor-pointer ${activeTab === t ? 'bg-sky-500 text-white' : 'glass border border-white/10 text-slate-400'}`}>
+              {label}
             </button>
           ))}
         </div>
@@ -354,8 +488,14 @@ export default function Dashboard() {
                       <option value="window-washing">Window</option>
                       <option value="pressure-washing">Pressure</option>
                       <option value="both">Both</option>
+                      <option value="flyscreen-repair">Flyscreen</option>
+                      <option value="solar-panel-cleaning">Solar Panel</option>
+                      <option value="other">Other</option>
                     </select>
-                    <button onClick={() => setShowAdd(true)} className="col-span-2 sm:col-span-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-sky-500 hover:bg-sky-400 text-white text-sm font-semibold rounded-xl transition-all cursor-pointer whitespace-nowrap">
+                    <button onClick={exportBookings} title="Copy all bookings as text (for pasting into Claude / notes)" className="inline-flex items-center justify-center gap-2 px-4 py-2.5 glass border border-white/10 text-slate-300 hover:text-white text-sm font-semibold rounded-xl transition-all cursor-pointer whitespace-nowrap">
+                      <ClipboardCopy className="w-4 h-4" /> Export
+                    </button>
+                    <button onClick={() => setShowAdd(true)} className="inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-sky-500 hover:bg-sky-400 text-white text-sm font-semibold rounded-xl transition-all cursor-pointer whitespace-nowrap">
                       <Plus className="w-4 h-4" /> Add Booking
                     </button>
                   </div>
@@ -382,7 +522,7 @@ export default function Dashboard() {
                             {b.source === 'manual' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-400/15 text-violet-300 border border-violet-400/20">Added</span>}
                           </div>
                           <a href={`tel:${b.phone}`} className="text-sky-400 text-sm cursor-pointer">{b.phone}</a>
-                          <div className="text-slate-500 text-xs mt-0.5">{SERVICE_LABELS[b.service] ?? b.service} · <span className="capitalize">{b.propertyType}</span></div>
+                          <div className="text-slate-500 text-xs mt-0.5">{serviceText(b.service)} · <span className="capitalize">{b.propertyType}</span></div>
                         </div>
                         {typeof b.quoteAmount === 'number' && b.quoteAmount > 0 && (
                           <div className="text-violet-300 font-bold text-lg whitespace-nowrap">{money(b.quoteAmount)}</div>
@@ -471,7 +611,7 @@ export default function Dashboard() {
                         </div>
                         {/* Service */}
                         <div>
-                          <div className="text-slate-300 text-sm">{SERVICE_LABELS[b.service] ?? b.service}</div>
+                          <div className="text-slate-300 text-sm">{serviceText(b.service)}</div>
                           <div className="text-slate-600 text-xs capitalize">{b.propertyType}</div>
                         </div>
                         {/* Date */}
@@ -523,6 +663,144 @@ export default function Dashboard() {
                 <p className="text-slate-600 text-xs px-1">
                   Change status in the dropdown. Choosing <span className="text-violet-300">Quoted</span> asks for the amount. Click the pencil to add notes or edit a quote.
                 </p>
+              </motion.div>
+            )}
+
+            {/* ── BUSINESS STATS ──────────────────────────────────────── */}
+            {activeTab === 'business' && (
+              <motion.div key="business" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-6">
+                {bizLoading || !bizStats ? (
+                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                    {Array.from({ length: 4 }).map((_, i) => <div key={i} className="glass rounded-2xl border border-white/8 p-6 h-32 animate-pulse" />)}
+                  </div>
+                ) : (
+                  <>
+                    <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                      <StatCard label="Conversion Rate" value={`${bizStats.conversionRate}%`} icon={Target} color="#34D399" sub={`${bizStats.completed} of ${bizStats.total} completed`} />
+                      <StatCard label="Avg Quote" value={money(bizStats.avgQuote) || '$0'} icon={DollarSign} color="#A78BFA" sub={`${bizStats.quotedCount} quoted`} />
+                      <StatCard label="Revenue (paid)" value={money(bizStats.paidValue) || '$0'} icon={CheckCircle} color="#38BDF8" sub="Money collected" />
+                      <StatCard label="Owed" value={money(bizStats.owedValue) || '$0'} icon={Wallet} color="#F87171" sub="Completed, unpaid" />
+                    </div>
+
+                    <div className="grid lg:grid-cols-3 gap-6">
+                      <div className="lg:col-span-2 glass rounded-2xl border border-white/8 p-6">
+                        <h3 className="font-display font-semibold text-white mb-6">Revenue (paid) by Month</h3>
+                        <ResponsiveContainer width="100%" height={240}>
+                          <BarChart data={bizStats.revByMonth} margin={{ top: 0, right: 0, left: -10, bottom: 0 }}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+                            <XAxis dataKey="month" tick={{ fill: '#64748b', fontSize: 12 }} axisLine={false} tickLine={false} />
+                            <YAxis tick={{ fill: '#64748b', fontSize: 12 }} axisLine={false} tickLine={false} />
+                            <Tooltip contentStyle={{ background: '#0F2035', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 12, color: '#fff' }} cursor={{ fill: 'rgba(56,189,248,0.05)' }} formatter={(v: number) => money(v)} />
+                            <Bar dataKey="revenue" name="Revenue" fill="#34D399" radius={[6, 6, 0, 0]} maxBarSize={48} />
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </div>
+
+                      <div className="glass rounded-2xl border border-white/8 p-6">
+                        <h3 className="font-display font-semibold text-white mb-4">Leads by Source</h3>
+                        <div className="space-y-3">
+                          <SourceRow label="Website" value={bizStats.leadsBySource.website} total={bizStats.total} color="#38BDF8" />
+                          <SourceRow label="Added manually" value={bizStats.leadsBySource.manual} total={bizStats.total} color="#A78BFA" />
+                        </div>
+                        <h3 className="font-display font-semibold text-white mb-4 mt-6">Service Mix</h3>
+                        <div className="space-y-3">
+                          {bizStats.serviceBreakdown.map((s, i) => (
+                            <SourceRow key={s.name} label={s.name} value={s.value} total={bizStats.total} color={PIE_COLORS[i % PIE_COLORS.length]} />
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="glass rounded-2xl border border-white/8 p-6">
+                      <h3 className="font-display font-semibold text-white mb-4 flex items-center gap-2"><MapPin className="w-4 h-4 text-sky-400" /> Top Suburbs</h3>
+                      {bizStats.topSuburbs.length === 0 ? (
+                        <div className="text-slate-600 text-sm py-6 text-center">No suburb data yet</div>
+                      ) : (
+                        <div className="space-y-2">
+                          {bizStats.topSuburbs.map(s => (
+                            <div key={s.suburb} className="flex items-center justify-between text-sm">
+                              <span className="text-slate-300">{s.suburb}</span>
+                              <span className="text-white font-semibold">{s.count} booking{s.count !== 1 ? 's' : ''}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </>
+                )}
+              </motion.div>
+            )}
+
+            {/* ── SITE STATS (traffic) ────────────────────────────────── */}
+            {activeTab === 'site' && (
+              <motion.div key="site" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-6">
+                {siteLoading || !siteStats ? (
+                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                    {Array.from({ length: 4 }).map((_, i) => <div key={i} className="glass rounded-2xl border border-white/8 p-6 h-32 animate-pulse" />)}
+                  </div>
+                ) : siteStats.allTimeViews === 0 ? (
+                  <div className="glass rounded-2xl border border-white/8 p-12 text-center">
+                    <Globe className="w-10 h-10 mx-auto mb-4 text-slate-600" />
+                    <div className="text-white font-semibold mb-1">No traffic data yet</div>
+                    <p className="text-slate-500 text-sm max-w-md mx-auto">Visits are recorded as people browse the public site. Numbers will appear here once visitors land on the site (admin pages aren&apos;t tracked).</p>
+                  </div>
+                ) : (
+                  <>
+                    <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                      <StatCard label="Views Today" value={siteStats.today} icon={Eye} color="#38BDF8" sub="Page views" />
+                      <StatCard label="Last 7 Days" value={siteStats.last7} icon={TrendingUp} color="#818CF8" sub="Page views" />
+                      <StatCard label="Unique Visitors" value={siteStats.uniqueVisitors} icon={Users} color="#A78BFA" sub="Last 30 days" />
+                      <StatCard label="Total Views" value={siteStats.allTimeViews} icon={Globe} color="#34D399" sub="All time" />
+                    </div>
+
+                    <div className="glass rounded-2xl border border-white/8 p-6">
+                      <h3 className="font-display font-semibold text-white mb-6">Views — Last 14 Days</h3>
+                      <ResponsiveContainer width="100%" height={240}>
+                        <LineChart data={siteStats.byDay} margin={{ top: 0, right: 8, left: -10, bottom: 0 }}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+                          <XAxis dataKey="day" tick={{ fill: '#64748b', fontSize: 11 }} axisLine={false} tickLine={false} />
+                          <YAxis tick={{ fill: '#64748b', fontSize: 12 }} axisLine={false} tickLine={false} allowDecimals={false} />
+                          <Tooltip contentStyle={{ background: '#0F2035', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 12, color: '#fff' }} />
+                          <Line type="monotone" dataKey="views" name="Views" stroke="#38BDF8" strokeWidth={2.5} dot={{ r: 3, fill: '#38BDF8' }} activeDot={{ r: 5 }} />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
+
+                    <div className="grid lg:grid-cols-2 gap-6">
+                      <div className="glass rounded-2xl border border-white/8 p-6">
+                        <h3 className="font-display font-semibold text-white mb-4 flex items-center gap-2"><Eye className="w-4 h-4 text-sky-400" /> Top Pages</h3>
+                        <div className="space-y-2">
+                          {siteStats.topPages.map(p => (
+                            <div key={p.path} className="flex items-center justify-between text-sm gap-3">
+                              <span className="text-slate-300 truncate">{p.path}</span>
+                              <span className="text-white font-semibold whitespace-nowrap">{p.views}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="glass rounded-2xl border border-white/8 p-6">
+                        <h3 className="font-display font-semibold text-white mb-4 flex items-center gap-2"><Link2 className="w-4 h-4 text-sky-400" /> Top Referrers</h3>
+                        {siteStats.topReferrers.length === 0 ? (
+                          <div className="text-slate-600 text-sm py-6 text-center">Mostly direct traffic — no external referrers yet</div>
+                        ) : (
+                          <div className="space-y-2">
+                            {siteStats.topReferrers.map(r => (
+                              <div key={r.source} className="flex items-center justify-between text-sm gap-3">
+                                <span className="text-slate-300 truncate">{r.source}</span>
+                                <span className="text-white font-semibold whitespace-nowrap">{r.views}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <p className="text-slate-600 text-xs px-1">
+                      Privacy-friendly: visitors counted via a daily hash, no raw IPs stored. Admin pages excluded. Charts cover the last 30 days.
+                    </p>
+                  </>
+                )}
               </motion.div>
             )}
           </AnimatePresence>
@@ -578,7 +856,7 @@ function ManageModal({ booking, onClose, onSave }: {
       <div className="rounded-xl bg-white/5 border border-white/8 p-4 mb-5 text-sm space-y-1">
         <div className="text-white font-semibold">{booking.name} {booking.source === 'manual' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-400/15 text-violet-300">Added</span>}</div>
         <div className="text-slate-400">{booking.phone}{booking.email ? ` · ${booking.email}` : ''}</div>
-        <div className="text-slate-400">{SERVICE_LABELS[booking.service] ?? booking.service} · <span className="capitalize">{booking.propertyType}</span></div>
+        <div className="text-slate-400">{serviceText(booking.service)} · <span className="capitalize">{booking.propertyType}</span></div>
         {(booking.address || booking.suburb) && <div className="text-slate-500">{booking.address}{booking.address && booking.suburb ? ', ' : ''}{booking.suburb}</div>}
         {(booking.preferredDate || booking.preferredTime) && <div className="text-slate-500">{booking.preferredDate} {booking.preferredTime}</div>}
         {booking.notes && <div className="text-slate-500 pt-1 border-t border-white/5 mt-1">Customer note: {booking.notes}</div>}
@@ -645,9 +923,15 @@ function AddModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
   const [f, setF] = useState({ ...emptyForm });
   const [saving, setSaving] = useState(false);
   const set = (k: string, v: string) => setF(p => ({ ...p, [k]: v }));
+  const selectedServices = f.service ? f.service.split(',') : [];
+  const toggleService = (v: string) => setF(p => {
+    const list = p.service ? p.service.split(',') : [];
+    const next = list.includes(v) ? list.filter(x => x !== v) : [...list, v];
+    return { ...p, service: next.join(',') };
+  });
 
   const submit = async () => {
-    if (!f.name || !f.phone) { toast.error('Name and phone are required'); return; }
+    if (!f.name) { toast.error('Name is required'); return; }
     setSaving(true);
     try {
       const res = await fetch('/api/admin/bookings', {
@@ -673,17 +957,32 @@ function AddModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
 
       <div className="grid sm:grid-cols-2 gap-4">
         <Field label="Name *"><input className="form-input" value={f.name} onChange={e => set('name', e.target.value)} /></Field>
-        <Field label="Phone *"><input className="form-input" value={f.phone} onChange={e => set('phone', e.target.value)} /></Field>
+        <Field label="Phone"><input className="form-input" value={f.phone} onChange={e => set('phone', e.target.value)} /></Field>
         <Field label="Email"><input className="form-input" value={f.email} onChange={e => set('email', e.target.value)} /></Field>
         <Field label="Suburb"><input className="form-input" value={f.suburb} onChange={e => set('suburb', e.target.value)} /></Field>
         <div className="sm:col-span-2"><Field label="Address"><input className="form-input" value={f.address} onChange={e => set('address', e.target.value)} /></Field></div>
-        <Field label="Service">
-          <select className="form-input" value={f.service} onChange={e => set('service', e.target.value)}>
-            <option value="window-washing">Window Washing</option>
-            <option value="pressure-washing">Pressure Washing</option>
-            <option value="both">Both Services</option>
-          </select>
-        </Field>
+        <div className="sm:col-span-2">
+          <Field label="Services (select all that apply)">
+            <div className="flex flex-wrap gap-2">
+              {SERVICE_OPTIONS.map(o => {
+                const active = selectedServices.includes(o.v);
+                return (
+                  <button
+                    key={o.v}
+                    type="button"
+                    onClick={() => toggleService(o.v)}
+                    className={`px-3 py-2 rounded-lg border text-sm font-medium transition-all cursor-pointer ${active ? 'border-sky-400 bg-sky-400/15 text-white' : 'border-white/10 bg-white/3 text-slate-300 hover:border-white/20'}`}
+                  >
+                    {active ? '✓ ' : ''}{o.l}
+                  </button>
+                );
+              })}
+            </div>
+            {selectedServices.length >= 2 && (
+              <p className="text-emerald-400 text-xs mt-2">Multi-service — remember the bundle discount.</p>
+            )}
+          </Field>
+        </div>
         <Field label="Property type">
           <select className="form-input" value={f.propertyType} onChange={e => set('propertyType', e.target.value)}>
             <option value="residential">Residential</option>

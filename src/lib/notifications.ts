@@ -5,7 +5,14 @@ const SERVICE_LABELS: Record<string, string> = {
   'window-washing': 'Window Washing',
   'pressure-washing': 'Pressure Washing',
   'both': 'Window Washing + Pressure Washing',
+  'flyscreen-repair': 'Flyscreen Repair',
+  'solar-panel-cleaning': 'Solar Panel Cleaning',
+  'other': 'Other',
 };
+
+// Service may be a comma-separated list of keys; render readable labels.
+const serviceText = (service: string) =>
+  (service ?? '').split(',').filter(Boolean).map(s => SERVICE_LABELS[s] ?? s).join(' + ') || 'Service';
 
 const TIME_LABELS: Record<string, string> = {
   'morning': 'Morning (8am – 12pm)',
@@ -90,7 +97,7 @@ function bookingEmailHtml(booking: Booking): string {
       <div class="grid">
         <div class="field">
           <div class="label">Service</div>
-          <div class="value">${SERVICE_LABELS[booking.service] ?? booking.service}</div>
+          <div class="value">${serviceText(booking.service)}</div>
         </div>
         <div class="field">
           <div class="label">Preferred Time</div>
@@ -131,9 +138,9 @@ export async function sendBookingNotifications(booking: Booking): Promise<void> 
     process.env.OWNER2_EMAIL,
   ].filter(Boolean);
 
-  const subject = `🪟 New Booking: ${booking.name} – ${SERVICE_LABELS[booking.service] ?? booking.service}`;
+  const subject = `🪟 New Booking: ${booking.name} – ${serviceText(booking.service)}`;
   const html = bookingEmailHtml(booking);
-  const text = `New booking from ${booking.name} (${booking.phone}) for ${SERVICE_LABELS[booking.service]} on ${booking.preferredDate}. Address: ${booking.address}, ${booking.suburb}. Booking ID: ${booking.id}`;
+  const text = `New booking from ${booking.name} (${booking.phone}) for ${serviceText(booking.service)} on ${booking.preferredDate}. Address: ${booking.address}, ${booking.suburb}. Booking ID: ${booking.id}`;
 
   // Send emails to the owners
   if (emailConfigured()) {
@@ -160,7 +167,7 @@ export async function sendBookingNotifications(booking: Booking): Promise<void> 
       const adminUrl = `${process.env.NEXT_PUBLIC_URL ?? 'https://glassandblast.com.au'}/admin/dashboard`;
       await fetch(`https://ntfy.sh/${process.env.NTFY_TOPIC}`, {
         method: 'POST',
-        body: `${booking.name} · ${booking.phone}\n${SERVICE_LABELS[booking.service] ?? booking.service} · ${booking.suburb || 'Canberra'}\n${booking.preferredDate} ${booking.preferredTime}`,
+        body: `${booking.name} · ${booking.phone}\n${serviceText(booking.service)} · ${booking.suburb || 'Canberra'}\n${booking.preferredDate} ${booking.preferredTime}`,
         headers: {
           Title: 'New Glass & Blast booking',
           Priority: 'high',
@@ -187,7 +194,7 @@ export async function sendBookingNotifications(booking: Booking): Promise<void> 
             <h2 style="color:#0A1628">Thanks for your booking, ${booking.name.split(' ')[0]}!</h2>
             <p>We've received your request and will be in touch shortly to confirm your appointment.</p>
             <div style="background:#f8fafc;border-radius:8px;padding:16px;margin:16px 0">
-              <p style="margin:4px 0"><strong>Service:</strong> ${SERVICE_LABELS[booking.service]}</p>
+              <p style="margin:4px 0"><strong>Service:</strong> ${serviceText(booking.service)}</p>
               <p style="margin:4px 0"><strong>Preferred Date:</strong> ${booking.preferredDate}</p>
               <p style="margin:4px 0"><strong>Address:</strong> ${booking.address}, ${booking.suburb}</p>
               <p style="margin:4px 0"><strong>Booking ID:</strong> ${booking.id}</p>

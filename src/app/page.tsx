@@ -794,10 +794,18 @@ function BookingForm() {
   });
 
   const set = (k: string, v: string) => setForm(f => ({ ...f, [k]: v }));
+  // Services are multi-select, stored as a comma-separated list.
+  const toggleService = (v: string) => setForm(f => {
+    const list = f.service ? f.service.split(',') : [];
+    const next = list.includes(v) ? list.filter(x => x !== v) : [...list, v];
+    return { ...f, service: next.join(',') };
+  });
+  const selectedServices = form.service ? form.service.split(',') : [];
 
-  const canStep1 = form.name && form.email && form.phone;
-  const canStep2 = form.service && form.propertyType;
-  const canStep3 = form.address && form.suburb && form.preferredDate && form.preferredTime;
+  // Required: name, phone, address, service. Everything else optional (lower friction).
+  const canStep1 = form.name && form.phone;
+  const canStep2 = !!form.service;
+  const canStep3 = !!form.address;
 
   const submit = async () => {
     setLoading(true);
@@ -873,16 +881,16 @@ function BookingForm() {
             {step === 1 && (
               <motion.div key="step1" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="space-y-5">
                 <div>
-                  <label className="block text-slate-400 text-sm font-medium mb-2">Full Name *</label>
+                  <label className="block text-slate-400 text-sm font-medium mb-2">Name *</label>
                   <input className="form-input" placeholder="John Smith" value={form.name} onChange={e => set('name', e.target.value)} />
-                </div>
-                <div>
-                  <label className="block text-slate-400 text-sm font-medium mb-2">Email Address *</label>
-                  <input className="form-input" type="email" placeholder="john@example.com" value={form.email} onChange={e => set('email', e.target.value)} />
                 </div>
                 <div>
                   <label className="block text-slate-400 text-sm font-medium mb-2">Phone Number *</label>
                   <input className="form-input" type="tel" placeholder="04XX XXX XXX" value={form.phone} onChange={e => set('phone', e.target.value)} />
+                </div>
+                <div>
+                  <label className="block text-slate-400 text-sm font-medium mb-2">Email <span className="text-slate-600">(optional)</span></label>
+                  <input className="form-input" type="email" placeholder="john@example.com" value={form.email} onChange={e => set('email', e.target.value)} />
                 </div>
                 <button disabled={!canStep1} onClick={() => setStep(2)} className="w-full py-3.5 bg-sky-500 hover:bg-sky-400 disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold rounded-xl transition-all hover:-translate-y-0.5 cursor-pointer">
                   Next: Choose Service →
@@ -894,28 +902,44 @@ function BookingForm() {
             {step === 2 && (
               <motion.div key="step2" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="space-y-5">
                 <div>
-                  <label className="block text-slate-400 text-sm font-medium mb-3">Service Required *</label>
+                  <label className="block text-slate-400 text-sm font-medium mb-1">Services Required *</label>
+                  <p className="text-slate-500 text-xs mb-3">Select all that apply — bundle two or more for a better price.</p>
                   <div className="grid gap-3">
                     {[
                       { v: 'window-washing', l: 'Window Washing', d: 'Streak-free interior & exterior cleaning' },
                       { v: 'pressure-washing', l: 'Pressure Washing', d: 'Driveways, paths, exterior surfaces' },
-                      { v: 'both', l: 'Both Services', d: 'Bundle deal – best value' },
-                    ].map(o => (
-                      <button
-                        key={o.v}
-                        onClick={() => set('service', o.v)}
-                        className={`p-4 rounded-xl border text-left transition-all cursor-pointer ${
-                          form.service === o.v ? 'border-sky-400 bg-sky-400/10 text-white' : 'border-white/10 bg-white/3 text-slate-300 hover:border-white/20'
-                        }`}
-                      >
-                        <div className="font-semibold text-sm">{o.l}</div>
-                        <div className="text-xs opacity-70 mt-0.5">{o.d}</div>
-                      </button>
-                    ))}
+                      { v: 'flyscreen-repair', l: 'Flyscreen Repair', d: 'Repair & replace damaged flyscreens' },
+                      { v: 'solar-panel-cleaning', l: 'Solar Panel Cleaning', d: 'Boost output with clean panels' },
+                      { v: 'other', l: 'Other', d: 'Something else? Tell us in the notes' },
+                    ].map(o => {
+                      const active = selectedServices.includes(o.v);
+                      return (
+                        <button
+                          key={o.v}
+                          onClick={() => toggleService(o.v)}
+                          className={`p-4 rounded-xl border text-left transition-all cursor-pointer flex items-center gap-3 ${
+                            active ? 'border-sky-400 bg-sky-400/10 text-white' : 'border-white/10 bg-white/3 text-slate-300 hover:border-white/20'
+                          }`}
+                        >
+                          <div className={`w-5 h-5 rounded-md border flex items-center justify-center flex-shrink-0 transition-all ${active ? 'bg-sky-400 border-sky-400' : 'border-white/25'}`}>
+                            {active && <CheckCircle className="w-4 h-4 text-navy-900" strokeWidth={3} />}
+                          </div>
+                          <div>
+                            <div className="font-semibold text-sm">{o.l}</div>
+                            <div className="text-xs opacity-70 mt-0.5">{o.d}</div>
+                          </div>
+                        </button>
+                      );
+                    })}
                   </div>
+                  {selectedServices.length >= 2 && (
+                    <div className="mt-3 flex items-center gap-2 text-emerald-400 text-xs font-medium bg-emerald-400/10 border border-emerald-400/20 rounded-lg px-3 py-2">
+                      <Sparkles className="w-3.5 h-3.5 flex-shrink-0" /> Nice — bundling {selectedServices.length} services means a better price. We&apos;ll include a multi-service discount in your quote.
+                    </div>
+                  )}
                 </div>
                 <div>
-                  <label className="block text-slate-400 text-sm font-medium mb-3">Property Type *</label>
+                  <label className="block text-slate-400 text-sm font-medium mb-3">Property Type <span className="text-slate-600">(optional)</span></label>
                   <div className="grid grid-cols-2 gap-3">
                     {['residential', 'commercial'].map(t => (
                       <button
@@ -954,12 +978,12 @@ function BookingForm() {
                   <p className="text-slate-600 text-xs mt-1.5">Start typing and pick your address, and your suburb fills in automatically.</p>
                 </div>
                 <div>
-                  <label className="block text-slate-400 text-sm font-medium mb-2">Suburb *</label>
+                  <label className="block text-slate-400 text-sm font-medium mb-2">Suburb <span className="text-slate-600">(optional)</span></label>
                   <input className="form-input" placeholder="Suburb" value={form.suburb} onChange={e => set('suburb', e.target.value)} />
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-slate-400 text-sm font-medium mb-2">Preferred Date *</label>
+                    <label className="block text-slate-400 text-sm font-medium mb-2">Preferred Date <span className="text-slate-600">(optional)</span></label>
                     <input
                       className="form-input"
                       type="date"
@@ -969,7 +993,7 @@ function BookingForm() {
                     />
                   </div>
                   <div>
-                    <label className="block text-slate-400 text-sm font-medium mb-2">Preferred Time *</label>
+                    <label className="block text-slate-400 text-sm font-medium mb-2">Preferred Time <span className="text-slate-600">(optional)</span></label>
                     <input className="form-input" placeholder="e.g. Morning, 9am, or no preference" value={form.preferredTime} onChange={e => set('preferredTime', e.target.value)} />
                   </div>
                 </div>

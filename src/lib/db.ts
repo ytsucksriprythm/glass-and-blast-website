@@ -3,9 +3,10 @@ import path from 'path';
 import { neon } from '@neondatabase/serverless';
 
 const DB_PATH = path.join(process.cwd(), 'data', 'bookings.json');
+const PV_PATH = path.join(process.cwd(), 'data', 'pageviews.json');
 
 export type BookingStatus = 'pending' | 'quoted' | 'confirmed' | 'completed' | 'cancelled';
-export type ServiceType = 'window-washing' | 'pressure-washing' | 'both';
+export type ServiceType = 'window-washing' | 'pressure-washing' | 'both' | 'flyscreen-repair' | 'solar-panel-cleaning' | 'other';
 export type PropertyType = 'residential' | 'commercial';
 export type BookingSource = 'website' | 'manual';
 
@@ -35,6 +36,14 @@ export type NewBooking = Omit<Booking, 'id' | 'createdAt' | 'updatedAt' | 'statu
   source?: BookingSource;
   paid?: boolean;
 };
+
+export interface PageView {
+  path: string;
+  referrer: string;
+  visitor: string;
+  createdAt: string;
+}
+export type NewPageView = Omit<PageView, 'createdAt'>;
 
 // ─── Storage mode ────────────────────────────────────────────────────────────
 // DATABASE_URL set  → Neon Postgres (production / Vercel)
@@ -130,6 +139,17 @@ async function ensureSchema(): Promise<void> {
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS admin_notes TEXT DEFAULT ''`;
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS paid BOOLEAN NOT NULL DEFAULT false`;
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'website'`;
+      // Site traffic tracking
+      await sql`
+        CREATE TABLE IF NOT EXISTS pageviews (
+          id          BIGSERIAL PRIMARY KEY,
+          path        TEXT NOT NULL,
+          referrer    TEXT NOT NULL DEFAULT '',
+          visitor     TEXT NOT NULL DEFAULT '',
+          created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS pageviews_created_idx ON pageviews (created_at)`;
     })();
   }
   return schemaReady;
@@ -284,10 +304,14 @@ export async function getStats() {
     }
   });
 
+  const hasService = (b: Booking, key: string) => (b.service ?? '').split(',').includes(key);
   const serviceBreakdown = {
-    'Window Washing': bookings.filter(b => b.service === 'window-washing').length,
-    'Pressure Washing': bookings.filter(b => b.service === 'pressure-washing').length,
-    'Both Services': bookings.filter(b => b.service === 'both').length,
+    'Window Washing': bookings.filter(b => hasService(b, 'window-washing')).length,
+    'Pressure Washing': bookings.filter(b => hasService(b, 'pressure-washing')).length,
+    'Flyscreen Repair': bookings.filter(b => hasService(b, 'flyscreen-repair')).length,
+    'Solar Panel Cleaning': bookings.filter(b => hasService(b, 'solar-panel-cleaning')).length,
+    'Other': bookings.filter(b => hasService(b, 'other')).length,
+    'Both Services': bookings.filter(b => hasService(b, 'both')).length, // legacy records
   };
 
   const statusBreakdown = {
@@ -332,5 +356,174 @@ export async function getStats() {
     serviceBreakdown: Object.entries(serviceBreakdown).map(([name, value]) => ({ name, value })),
     statusBreakdown,
     avgPerMonth: bookings.length > 0 ? Math.round(bookings.length / Math.max(1, Object.keys(byMonth).length)) : 0,
+  };
+}
+
+// ─── Page views / site traffic ───────────────────────────────────────────────
+
+function readPV(): PageView[] {
+  try {
+    if (!fs.existsSync(PV_PATH)) return [];
+    return JSON.parse(fs.readFileSync(PV_PATH, 'utf-8'));
+  } catch { return []; }
+}
+function writePV(rows: PageView[]): void {
+  const dir = path.dirname(PV_PATH);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(PV_PATH, JSON.stringify(rows, null, 2));
+}
+
+export async function addPageView(data: NewPageView): Promise<void> {
+  if (sql) {
+    await ensureSchema();
+    await sql`INSERT INTO pageviews (path, referrer, visitor) VALUES (${data.path}, ${data.referrer}, ${data.visitor})`;
+    return;
+  }
+  const rows = readPV();
+  rows.push({ ...data, createdAt: new Date().toISOString() });
+  writePV(rows);
+}
+
+function dayKey(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+export async function getSiteStats() {
+  // Pull the last 30 days of views, aggregate in JS (works for both stores).
+  const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+  let views: PageView[];
+  let allTime = 0;
+
+  if (sql) {
+    await ensureSchema();
+    const rows = await withTimeout((async () =>
+      sql`SELECT path, referrer, visitor, created_at FROM pageviews WHERE created_at >= ${since.toISOString()} ORDER BY created_at DESC`)());
+    views = (rows as any[]).map(r => ({
+      path: r.path, referrer: r.referrer ?? '', visitor: r.visitor ?? '',
+      createdAt: typeof r.created_at === 'string' ? r.created_at : new Date(r.created_at).toISOString(),
+    }));
+    const c = await sql`SELECT count(*)::int AS n FROM pageviews`;
+    allTime = (c as any[])[0]?.n ?? 0;
+  } else {
+    const all = readPV();
+    allTime = all.length;
+    views = all.filter(v => new Date(v.createdAt) >= since);
+  }
+
+  const now = new Date();
+  const todayKey = dayKey(now);
+  const sevenAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+
+  const today = views.filter(v => dayKey(new Date(v.createdAt)) === todayKey).length;
+  const last7 = views.filter(v => new Date(v.createdAt) >= sevenAgo).length;
+  const uniqueVisitors = new Set(views.map(v => v.visitor).filter(Boolean)).size;
+
+  // Views by day, last 14 days
+  const byDay: { day: string; views: number }[] = [];
+  for (let i = 13; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
+    const key = dayKey(d);
+    const label = d.toLocaleDateString('en-AU', { day: 'numeric', month: 'short' });
+    byDay.push({ day: label, views: views.filter(v => dayKey(new Date(v.createdAt)) === key).length });
+  }
+
+  // Top pages
+  const pageCounts: Record<string, number> = {};
+  views.forEach(v => { pageCounts[v.path] = (pageCounts[v.path] ?? 0) + 1; });
+  const topPages = Object.entries(pageCounts)
+    .sort((a, b) => b[1] - a[1]).slice(0, 8)
+    .map(([path, views]) => ({ path, views }));
+
+  // Top referrers (external only)
+  const refCounts: Record<string, number> = {};
+  views.forEach(v => {
+    if (!v.referrer) return;
+    let host = v.referrer;
+    try { host = new URL(v.referrer).hostname.replace(/^www\./, ''); } catch {}
+    if (!host) return;
+    refCounts[host] = (refCounts[host] ?? 0) + 1;
+  });
+  const topReferrers = Object.entries(refCounts)
+    .sort((a, b) => b[1] - a[1]).slice(0, 6)
+    .map(([source, views]) => ({ source, views }));
+
+  return {
+    allTimeViews: allTime,
+    views30d: views.length,
+    today,
+    last7,
+    uniqueVisitors,
+    byDay,
+    topPages,
+    topReferrers,
+    directShare: views.length ? Math.round(((views.length - Object.values(refCounts).reduce((a, b) => a + b, 0)) / views.length) * 100) : 0,
+  };
+}
+
+export async function getBusinessStats() {
+  const bookings = await getBookings();
+  const total = bookings.length;
+  const completed = bookings.filter(b => b.status === 'completed').length;
+  const withQuote = bookings.filter(b => typeof b.quoteAmount === 'number' && (b.quoteAmount ?? 0) > 0);
+
+  const paidValue = bookings.filter(b => b.paid).reduce((s, b) => s + (b.quoteAmount ?? 0), 0);
+  const owedValue = bookings
+    .filter(b => !b.paid && b.status === 'completed')
+    .reduce((s, b) => s + (b.quoteAmount ?? 0), 0);
+  const avgQuote = withQuote.length ? Math.round(withQuote.reduce((s, b) => s + (b.quoteAmount ?? 0), 0) / withQuote.length) : 0;
+  const conversionRate = total ? Math.round((completed / total) * 100) : 0;
+
+  // Revenue (paid) by month, last 6 months
+  const now = new Date();
+  const revByMonth: { month: string; revenue: number }[] = [];
+  for (let i = 5; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const key = d.toLocaleString('default', { month: 'short', year: '2-digit' });
+    const revenue = bookings
+      .filter(b => b.paid)
+      .filter(b => {
+        const cd = new Date(b.createdAt);
+        return cd.getMonth() === d.getMonth() && cd.getFullYear() === d.getFullYear();
+      })
+      .reduce((s, b) => s + (b.quoteAmount ?? 0), 0);
+    revByMonth.push({ month: key, revenue });
+  }
+
+  // Top suburbs
+  const subCounts: Record<string, number> = {};
+  bookings.forEach(b => {
+    const s = (b.suburb || '').trim();
+    if (!s) return;
+    subCounts[s] = (subCounts[s] ?? 0) + 1;
+  });
+  const topSuburbs = Object.entries(subCounts)
+    .sort((a, b) => b[1] - a[1]).slice(0, 6)
+    .map(([suburb, count]) => ({ suburb, count }));
+
+  const hasService = (b: Booking, key: string) => (b.service ?? '').split(',').includes(key);
+  const serviceBreakdown = {
+    'Window Washing': bookings.filter(b => hasService(b, 'window-washing')).length,
+    'Pressure Washing': bookings.filter(b => hasService(b, 'pressure-washing')).length,
+    'Flyscreen Repair': bookings.filter(b => hasService(b, 'flyscreen-repair')).length,
+    'Solar Panel Cleaning': bookings.filter(b => hasService(b, 'solar-panel-cleaning')).length,
+    'Other': bookings.filter(b => hasService(b, 'other')).length,
+    'Both Services': bookings.filter(b => hasService(b, 'both')).length, // legacy records
+  };
+
+  return {
+    total,
+    completed,
+    conversionRate,
+    avgQuote,
+    paidValue,
+    owedValue,
+    quotedCount: withQuote.length,
+    leadsBySource: {
+      website: bookings.filter(b => (b.source ?? 'website') === 'website').length,
+      manual: bookings.filter(b => b.source === 'manual').length,
+    },
+    revByMonth,
+    topSuburbs,
+    serviceBreakdown: Object.entries(serviceBreakdown).map(([name, value]) => ({ name, value })),
   };
 }

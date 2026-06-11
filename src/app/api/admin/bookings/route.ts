@@ -9,15 +9,15 @@ export async function POST(req: NextRequest) {
   }
   try {
     const b = await req.json();
-    if (!b.name || !b.phone || !b.service || !b.propertyType) {
-      return NextResponse.json({ error: 'Name, phone, service and property type are required' }, { status: 400 });
+    if (!b.name) {
+      return NextResponse.json({ error: 'Name is required' }, { status: 400 });
     }
     const booking = await addBooking({
       name: b.name,
       email: b.email ?? '',
-      phone: b.phone,
-      service: b.service,
-      propertyType: b.propertyType,
+      phone: b.phone ?? '',
+      service: b.service ?? '',
+      propertyType: b.propertyType ?? 'residential',
       address: b.address ?? '',
       suburb: b.suburb ?? '',
       preferredDate: b.preferredDate ?? '',
@@ -56,7 +56,7 @@ export async function GET(req: NextRequest) {
 
   let filtered = bookings;
   if (status && status !== 'all') filtered = filtered.filter(b => b.status === status);
-  if (service && service !== 'all') filtered = filtered.filter(b => b.service === service);
+  if (service && service !== 'all') filtered = filtered.filter(b => (b.service ?? '').split(',').includes(service));
   if (search) filtered = filtered.filter(b =>
     b.name.toLowerCase().includes(search) ||
     b.email.toLowerCase().includes(search) ||

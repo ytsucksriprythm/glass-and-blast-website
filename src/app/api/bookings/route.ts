@@ -7,11 +7,19 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const { name, email, phone, service, propertyType, address, suburb, preferredDate, preferredTime, notes } = body;
 
-    if (!name || !email || !phone || !service || !propertyType || !address || !suburb || !preferredDate || !preferredTime) {
-      return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
+    if (!name || !phone || !address || !service) {
+      return NextResponse.json({ error: 'Name, phone, address and service are required' }, { status: 400 });
     }
 
-    const booking = await addBooking({ name, email, phone, service, propertyType, address, suburb, preferredDate, preferredTime, notes: notes ?? '' });
+    const booking = await addBooking({
+      name, phone, address, service,
+      email: email ?? '',
+      propertyType: propertyType || 'residential',
+      suburb: suburb ?? '',
+      preferredDate: preferredDate ?? '',
+      preferredTime: preferredTime ?? '',
+      notes: notes ?? '',
+    });
 
     // Send notifications async (don't fail booking if email fails)
     sendBookingNotifications(booking).catch(console.error);

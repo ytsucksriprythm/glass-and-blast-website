@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import './globals.css';
 import { Toaster } from 'react-hot-toast';
 import { REVIEWS } from '@/lib/reviews';
+import PageTracker from '@/components/PageTracker';
 
 const SITE_URL = process.env.NEXT_PUBLIC_URL || 'https://glassandblast.com.au';
 
@@ -85,6 +86,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(businessJsonLd) }} />
       </head>
       <body>
+        <PageTracker />
         {children}
         <Toaster
           position="top-right"
