@@ -50,15 +50,15 @@ export default async function ServicePageRoute({ params }: { params: Promise<{ s
   };
 
   return (
-    <main className="min-h-screen bg-navy-900">
+    <main className="min-h-screen bg-white">
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }} />
 
-      <header className="border-b border-white/5">
+      <header className="border-b border-slate-200">
         <div className="max-w-3xl mx-auto px-6 py-5 flex items-center justify-between">
           <Link href="/" className="flex items-center gap-2 cursor-pointer">
             <Image src="/logo.png" alt="Glass & Blast Window Cleaning" width={150} height={60} className="object-contain h-12 w-auto" />
           </Link>
-          <Link href="/" className="inline-flex items-center gap-2 text-sm text-slate-400 hover:text-sky-400 transition-colors cursor-pointer">
+          <Link href="/" className="inline-flex items-center gap-2 text-sm text-slate-500 hover:text-sky-600 transition-colors cursor-pointer">
             <ArrowLeft className="w-4 h-4" /> Back to site
           </Link>
         </div>
@@ -66,26 +66,24 @@ export default async function ServicePageRoute({ params }: { params: Promise<{ s
 
       <article className="max-w-3xl mx-auto px-6 py-14">
         <nav className="text-xs text-slate-500 mb-4">
-          <Link href="/" className="hover:text-sky-400">Home</Link> <span className="mx-1">/</span>
-          <span className="text-slate-400">{s.serviceName}</span>
+          <Link href="/" className="hover:text-sky-600">Home</Link> <span className="mx-1">/</span>
+          <span className="text-slate-600">{s.serviceName}</span>
         </nav>
 
-        <span className="inline-flex items-center gap-2 text-sky-400 text-sm font-semibold tracking-widest uppercase">
-          <span className="w-6 h-px bg-sky-400" /> Canberra
-        </span>
-        <h1 className="font-display text-3xl sm:text-4xl font-bold text-white leading-tight mt-3">{s.h1}</h1>
-        <p className="text-slate-400 leading-relaxed mt-4 text-lg">{s.intro}</p>
+        <span className="text-sky-600 text-xs font-semibold uppercase tracking-[0.18em]">Canberra</span>
+        <h1 className="font-display text-3xl sm:text-4xl font-bold text-slate-900 leading-tight mt-3">{s.h1}</h1>
+        <p className="text-slate-600 leading-relaxed mt-4 text-lg">{s.intro}</p>
 
         <div className="mt-8 space-y-6">
           {s.sections.map((sec, i) => (
             <section key={i} className="space-y-3">
-              {sec.h && <h2 className="font-display text-xl font-semibold text-white">{sec.h}</h2>}
-              {sec.p?.map((para, j) => <p key={j} className="text-slate-400 leading-relaxed">{para}</p>)}
+              {sec.h && <h2 className="font-display text-xl font-semibold text-slate-900">{sec.h}</h2>}
+              {sec.p?.map((para, j) => <p key={j} className="text-slate-600 leading-relaxed">{para}</p>)}
               {sec.ul && (
                 <ul className="space-y-2">
                   {sec.ul.map((li, j) => (
-                    <li key={j} className="text-slate-400 leading-relaxed flex items-start gap-2.5">
-                      <CheckCircle className="w-4 h-4 text-sky-400 mt-1 flex-shrink-0" /> {li}
+                    <li key={j} className="text-slate-600 leading-relaxed flex items-start gap-2.5">
+                      <CheckCircle className="w-4 h-4 text-sky-500 mt-1 flex-shrink-0" /> {li}
                     </li>
                   ))}
                 </ul>
@@ -94,15 +92,15 @@ export default async function ServicePageRoute({ params }: { params: Promise<{ s
           ))}
         </div>
 
-        <div className="mt-12 glass rounded-2xl border border-sky-400/20 p-6 text-center">
-          <h2 className="font-display text-xl font-semibold text-white mb-2">Get a free quote today</h2>
-          <p className="text-slate-400 text-sm mb-4">Award-winning, fully insured, locally owned in Canberra.</p>
+        <div className="mt-12 rounded-lg border border-sky-200 bg-sky-50 p-6 text-center">
+          <h2 className="font-display text-xl font-semibold text-slate-900 mb-2">Get a free quote today</h2>
+          <p className="text-slate-600 text-sm mb-4">Award-winning, fully insured, locally owned in Canberra.</p>
           <div className="flex flex-col sm:flex-row gap-3 justify-center">
-            <Link href="/#booking" className="inline-flex items-center justify-center gap-2 px-6 py-3 bg-sky-500 hover:bg-sky-400 text-white font-semibold rounded-xl transition-all cursor-pointer">
+            <Link href="/#book" className="inline-flex items-center justify-center gap-2 px-6 py-3 bg-sky-500 hover:bg-sky-600 text-white font-semibold rounded-md transition-colors cursor-pointer">
               Get a Free Quote
             </Link>
-            <a href="tel:+61466050834" className="inline-flex items-center justify-center gap-2 px-6 py-3 glass border border-white/10 text-white font-semibold rounded-xl cursor-pointer">
-              <Phone className="w-4 h-4 text-sky-400" /> 0466 050 834
+            <a href="tel:+61466050834" className="inline-flex items-center justify-center gap-2 px-6 py-3 border border-slate-300 bg-white text-slate-700 font-semibold rounded-md hover:bg-slate-50 transition-colors cursor-pointer">
+              <Phone className="w-4 h-4 text-sky-500" /> 0466 050 834
             </a>
           </div>
         </div>

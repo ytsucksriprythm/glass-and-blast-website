@@ -11,9 +11,10 @@ import {
   Clock, CheckCircle, XCircle, Trash2, ChevronUp,
   ChevronDown, Search, RefreshCw, DollarSign,
   ArrowUpRight, ArrowDownRight, Edit3, Check, Plus, X, StickyNote, BadgeCheck, Wallet,
-  BarChart3, Globe, Eye, Users, Link2, MapPin, Target, ClipboardCopy,
+  BarChart3, Globe, Eye, Users, Link2, MapPin, Target, ClipboardCopy, CalendarDays, CalendarPlus, ArrowRight,
 } from 'lucide-react';
 import Image from 'next/image';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import toast from 'react-hot-toast';
 import type { Booking, BookingStatus } from '@/lib/db';
@@ -48,6 +49,9 @@ interface SiteStats {
   topReferrers: { source: string; views: number }[];
 }
 
+type CalJob = { uid: string; title: string; location: string; dow: string; day: string; mon: string; timeLabel: string; allDay: boolean };
+type CalData = { configured: boolean; events: CalJob[] };
+
 // ─── Constants ───────────────────────────────────────────────────────────
 
 const STATUS_CONFIG: Record<BookingStatus, { label: string; color: string; icon: React.FC<{ className?: string; style?: React.CSSProperties }> }> = {
@@ -80,6 +84,27 @@ const serviceText = (service: string) =>
     .filter(Boolean)
     .map(s => SERVICE_LABELS[s] ?? s)
     .join(' + ') || '—';
+
+// Google Calendar "new event" link, pre-filled with the job details.
+// Deliberately omits `dates`, so the date and time are left blank for you to set.
+function gcalUrl(b: Booking): string {
+  // Title format the owners asked for: "address - name", e.g. "10 House St, Aranda - John Smith".
+  const place = [b.address, b.suburb].filter(Boolean).join(', ');
+  const title = (place ? `${place} - ${b.name}` : b.name).trim();
+  const location = place;
+  const details = [
+    b.phone ? `Phone: ${b.phone}` : '',
+    b.email ? `Email: ${b.email}` : '',
+    `Service: ${serviceText(b.service)}`,
+    b.propertyType ? `Type: ${b.propertyType}` : '',
+    typeof b.quoteAmount === 'number' && b.quoteAmount > 0 ? `Quote: ${money(b.quoteAmount)}` : '',
+    (b.preferredDate || b.preferredTime) ? `Preferred: ${[b.preferredDate, b.preferredTime].filter(Boolean).join(' ')}` : '',
+    b.notes ? `Customer note: ${b.notes}` : '',
+    b.adminNotes ? `Admin note: ${b.adminNotes}` : '',
+  ].filter(Boolean).join('\n');
+  const params = new URLSearchParams({ action: 'TEMPLATE', text: title, details, location });
+  return `https://calendar.google.com/calendar/render?${params.toString()}`;
+}
 
 const emptyForm = {
   name: '', phone: '', email: '', service: 'window-washing', propertyType: 'residential',
@@ -157,6 +182,99 @@ function SourceRow({ label, value, total, color }: { label: string; value: numbe
   );
 }
 
+// ─── Upcoming jobs (read-only Google Calendar feed) ──────────────────────
+
+// Match a calendar event to a booking. Events are titled "address - name", so the
+// booking's name (and/or address) appears in the title.
+function matchBooking(title: string, bookings: Booking[]): Booking | undefined {
+  const t = title.toLowerCase();
+  return bookings.find(b => b.name && t.includes(b.name.toLowerCase().trim()))
+    || bookings.find(b => b.address && b.address.length > 3 && t.includes(b.address.toLowerCase().trim()));
+}
+
+function UpcomingJobs({ data, bookings }: { data: CalData | null; bookings: Booking[] }) {
+  return (
+    <div className="glass rounded-2xl border border-white/8 p-5 sm:p-6">
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="font-display font-semibold text-white flex items-center gap-2">
+          <CalendarDays className="w-4 h-4 text-sky-400" /> Upcoming jobs
+        </h3>
+        <span className="text-slate-600 text-xs">Google Calendar</span>
+      </div>
+      {!data ? (
+        <div className="space-y-2">{[0, 1, 2].map(i => <div key={i} className="h-12 bg-white/5 rounded-lg animate-pulse" />)}</div>
+      ) : !data.configured ? (
+        <p className="text-slate-500 text-sm leading-relaxed">
+          Not connected yet. Add your calendar&apos;s secret iCal URL to <code className="text-slate-400 bg-white/5 px-1 py-0.5 rounded">GOOGLE_CALENDAR_ICS_URL</code> and upcoming jobs show up here.
+        </p>
+      ) : data.events.length === 0 ? (
+        <p className="text-slate-500 text-sm">No upcoming jobs on the calendar.</p>
+      ) : (
+        <ul className="divide-y divide-white/5">
+          {data.events.map(e => {
+            const match = matchBooking(e.title, bookings);
+            return (
+              <li key={e.uid} className="flex items-center gap-3 py-2.5">
+                <div className="flex-shrink-0 w-11 text-center">
+                  <div className="text-sky-400 text-[10px] font-semibold uppercase leading-none">{e.dow}</div>
+                  <div className="text-white font-bold text-lg leading-tight">{e.day}</div>
+                  <div className="text-slate-500 text-[10px] leading-none">{e.mon}</div>
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="text-white text-sm font-medium truncate">{e.title}</div>
+                  <div className="text-slate-500 text-xs truncate">
+                    {e.timeLabel}{e.location ? ` · ${e.location}` : ''}
+                  </div>
+                </div>
+                {match && (
+                  <Link
+                    href={`/admin/bookings/${match.id}`}
+                    title={`Open booking: ${match.name}`}
+                    className="flex-shrink-0 inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-sky-400 bg-sky-400/10 hover:bg-sky-400/20 text-xs font-semibold transition-colors cursor-pointer"
+                  >
+                    Booking <ArrowRight className="w-3.5 h-3.5" />
+                  </Link>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+// ─── Bottom tab bar (mobile / installed app) ─────────────────────────────
+
+type TabKey = 'overview' | 'bookings' | 'business' | 'site';
+
+function BottomNav({ active, onChange, pending }: { active: TabKey; onChange: (t: TabKey) => void; pending: number }) {
+  const tabs = [
+    { t: 'overview', label: 'Home', icon: LayoutDashboard },
+    { t: 'bookings', label: 'Bookings', icon: Calendar },
+    { t: 'business', label: 'Business', icon: BarChart3 },
+    { t: 'site', label: 'Site', icon: Globe },
+  ] as const;
+  return (
+    <nav className="lg:hidden fixed bottom-0 inset-x-0 z-40 bg-navy-800/95 backdrop-blur border-t border-white/10 safe-bottom">
+      <div className="grid grid-cols-4">
+        {tabs.map(({ t, label, icon: Icon }) => {
+          const on = active === t;
+          return (
+            <button key={t} onClick={() => onChange(t)} className={`relative flex flex-col items-center gap-1 py-2.5 text-[11px] font-medium cursor-pointer transition-colors ${on ? 'text-sky-400' : 'text-slate-500'}`}>
+              <Icon className="w-[22px] h-[22px]" />
+              {label}
+              {t === 'bookings' && pending > 0 && (
+                <span className="absolute top-1 right-[22%] min-w-[16px] h-4 px-1 bg-amber-400 text-navy-900 text-[10px] font-bold rounded-full flex items-center justify-center">{pending}</span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </nav>
+  );
+}
+
 // ─── Main Dashboard ─────────────────────────────────────────────────────
 
 export default function Dashboard() {
@@ -171,6 +289,9 @@ export default function Dashboard() {
   const [siteStats, setSiteStats] = useState<SiteStats | null>(null);
   const [bizLoading, setBizLoading] = useState(false);
   const [siteLoading, setSiteLoading] = useState(false);
+
+  // Upcoming jobs from the read-only Google Calendar feed
+  const [jobs, setJobs] = useState<CalData | null>(null);
 
   // Filters
   const [search, setSearch] = useState('');
@@ -198,6 +319,17 @@ export default function Dashboard() {
   }, [statusFilter, serviceFilter, sortField, sortOrder, search, router]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
+
+  // Load upcoming jobs once on mount
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch('/api/admin/calendar');
+        if (res.status === 401) { router.push('/admin'); return; }
+        setJobs(await res.json());
+      } catch { /* leave as loading skeleton */ }
+    })();
+  }, [router]);
 
   const fetchBusiness = useCallback(async () => {
     setBizLoading(true);
@@ -229,6 +361,9 @@ export default function Dashboard() {
     await fetch('/api/admin/login', { method: 'DELETE' });
     router.push('/admin');
   };
+
+  // Tap a booking (card or row) to see its full read-only detail page.
+  const openBooking = (id: string) => router.push(`/admin/bookings/${id}`);
 
   // Quick inline status change. "Quoted" opens the manage modal to capture the amount.
   const onInlineStatus = (b: Booking, val: BookingStatus) => {
@@ -314,7 +449,7 @@ export default function Dashboard() {
     : undefined;
 
   return (
-    <div className="min-h-screen bg-navy-900 flex">
+    <div className="min-h-[100svh] bg-navy-900 flex">
       {/* Sidebar */}
       <aside className="w-64 flex-shrink-0 hidden lg:flex flex-col bg-navy-800 border-r border-white/5 p-6">
         <div className="mb-8">
@@ -352,9 +487,9 @@ export default function Dashboard() {
 
       {/* Main */}
       <div className="flex-1 flex flex-col min-w-0">
-        <header className="border-b border-white/5 bg-navy-800/50 backdrop-blur px-6 py-4 flex items-center justify-between">
+        <header className="sticky top-0 z-30 border-b border-white/5 bg-navy-800/80 backdrop-blur px-4 sm:px-6 pb-3 flex items-center justify-between" style={{ paddingTop: 'calc(env(safe-area-inset-top) + 0.85rem)' }}>
           <div>
-            <h1 className="font-display text-xl font-bold text-white">
+            <h1 className="font-display text-lg sm:text-xl font-bold text-white">
               {activeTab === 'overview' ? 'Dashboard Overview'
                 : activeTab === 'bookings' ? 'Bookings & Quotes'
                 : activeTab === 'business' ? 'Business Statistics'
@@ -377,15 +512,7 @@ export default function Dashboard() {
           </div>
         </header>
 
-        <div className="lg:hidden flex gap-2 px-6 pt-4 overflow-x-auto">
-          {([['overview', 'Overview'], ['bookings', 'Bookings'], ['business', 'Business'], ['site', 'Site']] as const).map(([t, label]) => (
-            <button key={t} onClick={() => setActiveTab(t)} className={`px-4 py-2 rounded-xl text-sm font-medium whitespace-nowrap transition-all cursor-pointer ${activeTab === t ? 'bg-sky-500 text-white' : 'glass border border-white/10 text-slate-400'}`}>
-              {label}
-            </button>
-          ))}
-        </div>
-
-        <main className="flex-1 overflow-auto p-6 space-y-6">
+        <main className="flex-1 overflow-auto p-4 sm:p-6 space-y-6 pb-28 lg:pb-6">
           <AnimatePresence mode="wait">
             {/* ── OVERVIEW ─────────────────────────────────────────────── */}
             {activeTab === 'overview' && (
@@ -420,6 +547,8 @@ export default function Dashboard() {
                     })}
                   </div>
                 )}
+
+                <UpcomingJobs data={jobs} bookings={bookings} />
 
                 {stats && (
                   <div className="grid lg:grid-cols-3 gap-6">
@@ -515,13 +644,13 @@ export default function Dashboard() {
                     </div>
                   ) : bookings.map((b) => (
                     <div key={b.id} className="glass rounded-2xl border border-white/8 p-4">
-                      <div className="flex items-start justify-between gap-3">
+                      <div className="flex items-start justify-between gap-3 cursor-pointer" onClick={() => openBooking(b.id)}>
                         <div className="min-w-0">
                           <div className="text-white font-semibold flex items-center gap-2 flex-wrap">
                             {b.name}
                             {b.source === 'manual' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-400/15 text-violet-300 border border-violet-400/20">Added</span>}
                           </div>
-                          <a href={`tel:${b.phone}`} className="text-sky-400 text-sm cursor-pointer">{b.phone}</a>
+                          <a href={`tel:${b.phone}`} onClick={e => e.stopPropagation()} className="text-sky-400 text-sm cursor-pointer">{b.phone}</a>
                           <div className="text-slate-500 text-xs mt-0.5">{serviceText(b.service)} · <span className="capitalize">{b.propertyType}</span></div>
                         </div>
                         {typeof b.quoteAmount === 'number' && b.quoteAmount > 0 && (
@@ -559,6 +688,9 @@ export default function Dashboard() {
                           <button onClick={() => setManage(b)} className="p-2.5 rounded-lg glass border border-white/10 text-sky-400 cursor-pointer" title="Manage / notes / quote">
                             <Edit3 className="w-4 h-4" />
                           </button>
+                          <a href={gcalUrl(b)} target="_blank" rel="noopener noreferrer" className="p-2.5 rounded-lg glass border border-white/10 text-sky-300 cursor-pointer" title="Add to Google Calendar">
+                            <CalendarPlus className="w-4 h-4" />
+                          </a>
                           <button onClick={() => removeBooking(b.id)} className="p-2.5 rounded-lg glass border border-white/10 text-red-400 cursor-pointer" title="Delete">
                             <Trash2 className="w-4 h-4" />
                           </button>
@@ -600,9 +732,9 @@ export default function Dashboard() {
                   ) : (
                     bookings.map((b) => (
                       <motion.div key={b.id} initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="grid grid-cols-[1.3fr_1fr_1fr_1fr_1fr_3rem_auto] gap-4 px-6 py-4 border-b border-white/5 hover:bg-white/2 transition-colors items-center">
-                        {/* Customer */}
-                        <div className="min-w-0">
-                          <div className="text-white text-sm font-medium flex items-center gap-2">
+                        {/* Customer (tap to view full booking) */}
+                        <div className="min-w-0 cursor-pointer group" onClick={() => openBooking(b.id)}>
+                          <div className="text-white group-hover:text-sky-400 transition-colors text-sm font-medium flex items-center gap-2">
                             {b.name}
                             {b.source === 'manual' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-400/15 text-violet-300 border border-violet-400/20">Added</span>}
                           </div>
@@ -651,6 +783,9 @@ export default function Dashboard() {
                           <button onClick={() => setManage(b)} className="p-1.5 rounded-lg text-slate-500 hover:text-sky-400 hover:bg-sky-400/10 transition-all cursor-pointer" title="Manage / notes / quote">
                             <Edit3 className="w-3.5 h-3.5" />
                           </button>
+                          <a href={gcalUrl(b)} target="_blank" rel="noopener noreferrer" className="p-1.5 rounded-lg text-slate-500 hover:text-sky-300 hover:bg-sky-400/10 transition-all cursor-pointer" title="Add to Google Calendar">
+                            <CalendarPlus className="w-3.5 h-3.5" />
+                          </a>
                           <button onClick={() => removeBooking(b.id)} className="p-1.5 rounded-lg text-slate-500 hover:text-red-400 hover:bg-red-400/10 transition-all cursor-pointer" title="Delete">
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
@@ -807,6 +942,8 @@ export default function Dashboard() {
         </main>
       </div>
 
+      <BottomNav active={activeTab} onChange={setActiveTab} pending={stats?.pending ?? 0} />
+
       {/* Manage modal */}
       <AnimatePresence>
         {manage && (
@@ -861,6 +998,16 @@ function ManageModal({ booking, onClose, onSave }: {
         {(booking.preferredDate || booking.preferredTime) && <div className="text-slate-500">{booking.preferredDate} {booking.preferredTime}</div>}
         {booking.notes && <div className="text-slate-500 pt-1 border-t border-white/5 mt-1">Customer note: {booking.notes}</div>}
       </div>
+
+      {/* Opens Google Calendar pre-filled. Date and time are left blank on purpose. */}
+      <a
+        href={gcalUrl(booking)}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="mb-5 w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border border-sky-400/30 bg-sky-400/10 text-sky-300 hover:bg-sky-400/15 text-sm font-semibold transition-colors cursor-pointer"
+      >
+        <CalendarPlus className="w-4 h-4" /> Add to Google Calendar
+      </a>
 
       <div className="space-y-4">
         <Field label="Status">
@@ -1021,14 +1168,15 @@ function Overlay({ children, onClose }: { children: React.ReactNode; onClose: ()
   return (
     <motion.div
       initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-      className="fixed inset-0 z-50 flex items-start justify-center p-4 sm:p-6 bg-black/60 backdrop-blur-sm overflow-auto"
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center sm:p-6 bg-black/60 backdrop-blur-sm"
       onClick={onClose}
     >
       <motion.div
-        initial={{ opacity: 0, scale: 0.96, y: 20 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.96, y: 20 }}
+        initial={{ opacity: 0, y: 40 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 40 }}
         transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
         onClick={e => e.stopPropagation()}
-        className="w-full max-w-lg my-8 glass border border-white/10 rounded-3xl p-6 shadow-2xl shadow-black/50"
+        className="w-full sm:max-w-lg glass border border-white/10 rounded-t-2xl sm:rounded-2xl p-6 shadow-2xl shadow-black/50 max-h-[92svh] overflow-auto"
+        style={{ paddingBottom: 'calc(1.5rem + env(safe-area-inset-bottom))' }}
       >
         {children}
       </motion.div>

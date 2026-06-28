@@ -1,0 +1,290 @@
+'use client';
+
+import { useEffect, useState } from 'react';
+import { useParams, useRouter } from 'next/navigation';
+import Link from 'next/link';
+import toast from 'react-hot-toast';
+import {
+  ArrowLeft, Phone, Mail, MapPin, CalendarDays, DollarSign, StickyNote,
+  CalendarPlus, User, Wallet, Clock, Edit3, Check, X,
+} from 'lucide-react';
+import type { Booking, BookingStatus } from '@/lib/db';
+
+const SERVICE_LABELS: Record<string, string> = {
+  'window-washing': 'Window Washing',
+  'pressure-washing': 'Pressure Washing',
+  'both': 'Both Services',
+  'flyscreen-repair': 'Flyscreen Repair',
+  'solar-panel-cleaning': 'Solar Panel Cleaning',
+  'other': 'Other',
+};
+const SERVICE_OPTIONS = [
+  { v: 'window-washing', l: 'Window Washing' },
+  { v: 'pressure-washing', l: 'Pressure Washing' },
+  { v: 'flyscreen-repair', l: 'Flyscreen Repair' },
+  { v: 'solar-panel-cleaning', l: 'Solar Panel Cleaning' },
+  { v: 'other', l: 'Other' },
+];
+const STATUS_KEYS: BookingStatus[] = ['pending', 'quoted', 'confirmed', 'completed', 'cancelled'];
+const STATUS_LABEL: Record<string, string> = { pending: 'Pending', quoted: 'Quoted', confirmed: 'Confirmed', completed: 'Completed', cancelled: 'Cancelled' };
+
+const serviceText = (s: string) => (s ?? '').split(',').filter(Boolean).map(x => SERVICE_LABELS[x] ?? x).join(' + ') || '-';
+const money = (n?: number | null) => typeof n === 'number' ? `$${n.toLocaleString('en-AU', { maximumFractionDigits: 0 })}` : '';
+
+// Editable form: quoteAmount held as a string for the input; service is a CSV string.
+type EditForm = Omit<Booking, 'quoteAmount' | 'service'> & { quoteAmount: string; service: string };
+const toForm = (b: Booking): EditForm => ({ ...b, quoteAmount: b.quoteAmount != null ? String(b.quoteAmount) : '' });
+
+function gcalUrl(b: Booking): string {
+  const place = [b.address, b.suburb].filter(Boolean).join(', ');
+  const title = (place ? `${place} - ${b.name}` : b.name).trim();
+  const details = [
+    b.phone ? `Phone: ${b.phone}` : '',
+    b.email ? `Email: ${b.email}` : '',
+    `Service: ${serviceText(b.service)}`,
+    b.propertyType ? `Type: ${b.propertyType}` : '',
+    (typeof b.quoteAmount === 'number' && b.quoteAmount > 0) ? `Quote: ${money(b.quoteAmount)}` : '',
+    (b.preferredDate || b.preferredTime) ? `Preferred: ${[b.preferredDate, b.preferredTime].filter(Boolean).join(' ')}` : '',
+    b.notes ? `Customer note: ${b.notes}` : '',
+    b.adminNotes ? `Admin note: ${b.adminNotes}` : '',
+  ].filter(Boolean).join('\n');
+  const params = new URLSearchParams({ action: 'TEMPLATE', text: title, details, location: place });
+  return `https://calendar.google.com/calendar/render?${params.toString()}`;
+}
+
+function Row({ icon: Icon, label, children }: { icon: React.FC<{ className?: string }>; label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex items-start gap-3 py-3 border-b border-white/5 last:border-0">
+      <Icon className="w-4 h-4 text-sky-400 mt-0.5 flex-shrink-0" />
+      <div className="min-w-0">
+        <div className="text-slate-500 text-xs">{label}</div>
+        <div className="text-white text-sm mt-0.5 break-words">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+function FieldLabel({ children }: { children: React.ReactNode }) {
+  return <label className="block text-slate-400 text-xs font-medium mb-1.5">{children}</label>;
+}
+
+export default function BookingView() {
+  const router = useRouter();
+  const params = useParams<{ id: string }>();
+  const id = params.id;
+  const [b, setB] = useState<Booking | null>(null);
+  const [state, setState] = useState<'loading' | 'ok' | 'notfound'>('loading');
+  const [edit, setEdit] = useState(false);
+  const [form, setForm] = useState<EditForm | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch(`/api/admin/bookings/${id}`);
+        if (res.status === 401) { router.push('/admin'); return; }
+        if (res.status === 404) { setState('notfound'); return; }
+        const data: Booking = await res.json();
+        setB(data); setForm(toForm(data)); setState('ok');
+      } catch { setState('notfound'); }
+    })();
+  }, [id, router]);
+
+  const set = (k: keyof EditForm, v: string | boolean) => setForm(f => f ? { ...f, [k]: v } : f);
+  const toggleService = (v: string) => setForm(f => {
+    if (!f) return f;
+    const list = f.service ? f.service.split(',') : [];
+    const next = list.includes(v) ? list.filter(x => x !== v) : [...list, v];
+    return { ...f, service: next.join(',') };
+  });
+
+  const startEdit = () => { if (b) setForm(toForm(b)); setEdit(true); };
+  const cancel = () => { if (b) setForm(toForm(b)); setEdit(false); };
+
+  const save = async () => {
+    if (!form) return;
+    setSaving(true);
+    try {
+      const patch = {
+        name: form.name, phone: form.phone, email: form.email, service: form.service,
+        propertyType: form.propertyType, address: form.address, suburb: form.suburb,
+        preferredDate: form.preferredDate, preferredTime: form.preferredTime,
+        status: form.status, paid: form.paid, notes: form.notes, adminNotes: form.adminNotes,
+        quoteAmount: form.quoteAmount.trim() === '' ? null : Number(form.quoteAmount.replace(/[^0-9.]/g, '')),
+      };
+      const res = await fetch(`/api/admin/bookings/${id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
+      });
+      if (res.status === 401) { router.push('/admin'); return; }
+      if (!res.ok) throw new Error();
+      const updated: Booking = await res.json();
+      setB(updated); setForm(toForm(updated)); setEdit(false);
+      toast.success('Saved');
+    } catch { toast.error('Save failed'); }
+    finally { setSaving(false); }
+  };
+
+  const selectedServices = form?.service ? form.service.split(',') : [];
+
+  return (
+    <div className="min-h-[100svh] bg-navy-900">
+      <header
+        className="sticky top-0 z-30 bg-navy-900/90 backdrop-blur border-b border-white/10 px-4 flex items-center justify-between"
+        style={{ paddingTop: 'calc(env(safe-area-inset-top) + 0.85rem)', paddingBottom: '0.85rem' }}
+      >
+        {edit ? (
+          <button onClick={cancel} className="inline-flex items-center gap-2 text-slate-300 hover:text-white text-sm cursor-pointer">
+            <X className="w-5 h-5" /> Cancel
+          </button>
+        ) : (
+          <button onClick={() => router.back()} className="inline-flex items-center gap-2 text-slate-300 hover:text-white text-sm cursor-pointer">
+            <ArrowLeft className="w-5 h-5" /> Back
+          </button>
+        )}
+        <div className="flex items-center gap-3">
+          {state === 'ok' && !edit && (
+            <button onClick={startEdit} aria-label="Edit booking" className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/15 text-slate-200 hover:text-white hover:border-sky-400/40 text-sm cursor-pointer">
+              <Edit3 className="w-4 h-4" /> Edit
+            </button>
+          )}
+          {!edit && <Link href="/admin/dashboard" className="text-slate-500 text-sm hover:text-sky-400">Dashboard</Link>}
+        </div>
+      </header>
+
+      <main className="max-w-xl mx-auto px-4 py-6 pb-28">
+        {state === 'loading' && (
+          <div className="space-y-3">{[0, 1, 2, 3].map(i => <div key={i} className="h-14 bg-white/5 rounded-lg animate-pulse" />)}</div>
+        )}
+
+        {state === 'notfound' && (
+          <div className="text-center py-20 text-slate-500">
+            Booking not found. <Link href="/admin/dashboard" className="text-sky-400">Back to dashboard</Link>
+          </div>
+        )}
+
+        {/* ── READ MODE ────────────────────────────────────────────── */}
+        {state === 'ok' && b && !edit && (
+          <>
+            <div className="flex items-start justify-between gap-3 mb-5">
+              <div className="min-w-0">
+                <h1 className="font-display text-2xl font-bold text-white break-words">{b.name}</h1>
+                <div className="text-slate-500 text-xs mt-1">
+                  {b.source === 'manual' ? 'Added manually' : 'From website'} · {new Date(b.createdAt).toLocaleDateString('en-AU')}
+                </div>
+              </div>
+              <span className={`inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold flex-shrink-0 badge-${b.status}`}>
+                {STATUS_LABEL[b.status] ?? b.status}
+              </span>
+            </div>
+
+            <a href={gcalUrl(b)} target="_blank" rel="noopener noreferrer" className="mb-5 w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-lg border border-sky-400/30 bg-sky-400/10 text-sky-300 hover:bg-sky-400/15 text-sm font-semibold transition-colors cursor-pointer">
+              <CalendarPlus className="w-4 h-4" /> Add to Google Calendar
+            </a>
+
+            <div className="rounded-lg border border-white/10 bg-navy-800 px-4">
+              {b.phone && <Row icon={Phone} label="Phone"><a href={`tel:${b.phone}`} className="text-sky-400">{b.phone}</a></Row>}
+              {b.email && <Row icon={Mail} label="Email"><a href={`mailto:${b.email}`} className="text-sky-400 break-all">{b.email}</a></Row>}
+              <Row icon={User} label="Service">{serviceText(b.service)} · <span className="capitalize">{b.propertyType}</span></Row>
+              {(b.address || b.suburb) && <Row icon={MapPin} label="Address">{[b.address, b.suburb].filter(Boolean).join(', ')}</Row>}
+              {(b.preferredDate || b.preferredTime) && <Row icon={CalendarDays} label="Preferred time">{[b.preferredDate, b.preferredTime].filter(Boolean).join(' ')}</Row>}
+              <Row icon={DollarSign} label="Quote">{typeof b.quoteAmount === 'number' && b.quoteAmount > 0 ? money(b.quoteAmount) : 'No quote yet'}</Row>
+              <Row icon={Wallet} label="Payment"><span className={b.paid ? 'text-emerald-400' : 'text-red-300'}>{b.paid ? 'Paid' : 'Not paid'}</span></Row>
+            </div>
+
+            {(b.notes || b.adminNotes) && (
+              <div className="mt-4 space-y-3">
+                {b.notes && (
+                  <div className="rounded-lg border border-white/10 bg-navy-800 p-4">
+                    <div className="text-slate-500 text-xs mb-1 flex items-center gap-1.5"><StickyNote className="w-3.5 h-3.5" /> Customer note</div>
+                    <div className="text-slate-200 text-sm whitespace-pre-wrap break-words">{b.notes}</div>
+                  </div>
+                )}
+                {b.adminNotes && (
+                  <div className="rounded-lg border border-white/10 bg-navy-800 p-4">
+                    <div className="text-slate-500 text-xs mb-1 flex items-center gap-1.5"><StickyNote className="w-3.5 h-3.5 text-amber-400" /> Private note</div>
+                    <div className="text-slate-200 text-sm whitespace-pre-wrap break-words">{b.adminNotes}</div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="mt-4 text-slate-600 text-xs flex items-center gap-2">
+              <Clock className="w-3 h-3" /> Updated {new Date(b.updatedAt).toLocaleString('en-AU')}
+            </div>
+          </>
+        )}
+
+        {/* ── EDIT MODE ────────────────────────────────────────────── */}
+        {state === 'ok' && form && edit && (
+          <div className="space-y-4">
+            <div className="grid sm:grid-cols-2 gap-4">
+              <div><FieldLabel>Name</FieldLabel><input className="form-input" value={form.name} onChange={e => set('name', e.target.value)} /></div>
+              <div><FieldLabel>Phone</FieldLabel><input className="form-input" type="tel" value={form.phone} onChange={e => set('phone', e.target.value)} /></div>
+              <div><FieldLabel>Email</FieldLabel><input className="form-input" type="email" value={form.email} onChange={e => set('email', e.target.value)} /></div>
+              <div><FieldLabel>Suburb</FieldLabel><input className="form-input" value={form.suburb} onChange={e => set('suburb', e.target.value)} /></div>
+              <div className="sm:col-span-2"><FieldLabel>Address</FieldLabel><input className="form-input" value={form.address} onChange={e => set('address', e.target.value)} /></div>
+            </div>
+
+            <div>
+              <FieldLabel>Services</FieldLabel>
+              <div className="flex flex-wrap gap-2">
+                {SERVICE_OPTIONS.map(o => {
+                  const active = selectedServices.includes(o.v);
+                  return (
+                    <button key={o.v} type="button" onClick={() => toggleService(o.v)} className={`px-3 py-2 rounded-lg border text-sm font-medium transition-colors cursor-pointer ${active ? 'border-sky-400 bg-sky-400/15 text-white' : 'border-white/10 bg-white/[0.03] text-slate-300 hover:border-white/25'}`}>
+                      {active ? '✓ ' : ''}{o.l}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="grid sm:grid-cols-2 gap-4">
+              <div>
+                <FieldLabel>Property type</FieldLabel>
+                <select className="form-input" value={form.propertyType} onChange={e => set('propertyType', e.target.value)}>
+                  <option value="residential">Residential</option>
+                  <option value="commercial">Commercial</option>
+                </select>
+              </div>
+              <div>
+                <FieldLabel>Status</FieldLabel>
+                <select className="form-input" value={form.status} onChange={e => set('status', e.target.value)}>
+                  {STATUS_KEYS.map(s => <option key={s} value={s}>{STATUS_LABEL[s]}</option>)}
+                </select>
+              </div>
+              <div><FieldLabel>Preferred date</FieldLabel><input className="form-input" type="date" value={form.preferredDate} onChange={e => set('preferredDate', e.target.value)} /></div>
+              <div><FieldLabel>Preferred time</FieldLabel><input className="form-input" placeholder="e.g. Morning" value={form.preferredTime} onChange={e => set('preferredTime', e.target.value)} /></div>
+              <div>
+                <FieldLabel>Quote (AUD)</FieldLabel>
+                <div className="relative">
+                  <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500">$</span>
+                  <input className="form-input pl-8" inputMode="decimal" placeholder="e.g. 250" value={form.quoteAmount} onChange={e => set('quoteAmount', e.target.value)} />
+                </div>
+              </div>
+              <div>
+                <FieldLabel>Paid</FieldLabel>
+                <button type="button" onClick={() => set('paid', !form.paid)} className={`w-full flex items-center justify-between px-4 py-3 rounded-lg border transition-colors cursor-pointer ${form.paid ? 'bg-emerald-500/10 border-emerald-400/40' : 'bg-red-500/10 border-red-400/40'}`}>
+                  <span className={`font-semibold text-sm ${form.paid ? 'text-emerald-300' : 'text-red-300'}`}>{form.paid ? 'Paid' : 'Not paid'}</span>
+                  <span className={`w-5 h-5 rounded flex items-center justify-center border-2 flex-shrink-0 ${form.paid ? 'bg-emerald-500 border-emerald-500' : 'border-red-400/60'}`}>
+                    {form.paid && <Check className="w-3.5 h-3.5 text-white" strokeWidth={3} />}
+                  </span>
+                </button>
+              </div>
+            </div>
+
+            <div><FieldLabel>Customer note</FieldLabel><textarea className="form-input resize-none" rows={2} value={form.notes} onChange={e => set('notes', e.target.value)} /></div>
+            <div><FieldLabel>Private note (only you see this)</FieldLabel><textarea className="form-input resize-none" rows={3} value={form.adminNotes ?? ''} onChange={e => set('adminNotes', e.target.value)} /></div>
+
+            <div className="flex gap-3 pt-1">
+              <button onClick={cancel} className="px-5 py-3 rounded-lg border border-white/10 text-slate-300 text-sm hover:text-white transition-colors cursor-pointer">Cancel</button>
+              <button onClick={save} disabled={saving || !form.name} className="flex-1 py-3 bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-white font-semibold rounded-lg transition-colors cursor-pointer flex items-center justify-center gap-2">
+                {saving ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <Check className="w-4 h-4" />} Save changes
+              </button>
+            </div>
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}

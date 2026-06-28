@@ -1,109 +1,173 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import { motion, useInView, AnimatePresence } from 'framer-motion';
-import Image from 'next/image';
+import { motion, AnimatePresence } from 'framer-motion';
+import Image, { type ImageProps } from 'next/image';
+import Link from 'next/link';
 import toast from 'react-hot-toast';
 import {
-  Phone, MapPin, Star, Award, CheckCircle, Clock, Shield,
-  Sparkles, ChevronDown, Menu, X, ArrowRight, Droplets, Wind,
-  ThumbsUp, Users, Calendar, Zap, Facebook, Lock, Search
+  Phone, MapPin, Star, Award, Check, CheckCircle, Clock, Shield,
+  Menu, X, Facebook, Lock, Search, Calendar, MoveHorizontal,
 } from 'lucide-react';
 import Reviews from '@/components/Reviews';
 
 // ─── Constants ─────────────────────────────────────────────────────────────
 
+const PHONE_DISPLAY = '0466 050 834';
+const PHONE_HREF = 'tel:+61466050834';
+
+const NAV_LINKS = [
+  { label: 'Work', href: '#work' },
+  { label: 'Services', href: '#services' },
+  { label: 'Plans', href: '#plans' },
+  { label: 'Reviews', href: '#reviews' },
+  { label: 'Areas', href: '#areas' },
+];
+
+// Recurring plan tiers — discount per clean off jobs over $200. Quarterly highlighted.
+const PLANS = [
+  {
+    id: 'monthly',
+    name: 'Monthly',
+    cadence: 'We come every month',
+    discount: '$100 off',
+    popular: false,
+    points: ['Biggest saving per clean', 'Your glass never gets a chance to build up', 'Priority booking, jump the queue'],
+  },
+  {
+    id: 'quarterly',
+    name: 'Quarterly',
+    cadence: 'Every three months',
+    discount: '$75 off',
+    popular: true,
+    points: ['The rate most homes settle on', 'Stays on top of Canberra dust and pollen', 'Priority booking'],
+  },
+  {
+    id: 'bi-annual',
+    name: 'Twice a year',
+    cadence: 'Every six months',
+    discount: '$50 off',
+    popular: false,
+    points: ['Keeps the worst of it off', 'A spring and an autumn clean', 'No lock-in, cancel anytime'],
+  },
+];
+
+const STEPS = [
+  { n: '1', title: 'You book us', text: 'Send the form or give us a call to get the ball rolling.' },
+  { n: '2', title: 'We quote in person', text: 'We call you back, arrange a time, come out and price the job face to face.' },
+  { n: '3', title: 'We clean', text: 'Happy with the quote? We lock in a day and get your glass spotless.' },
+  { n: '4', title: 'You pay', text: 'Once it is done and you are happy with it, you settle up. Easy.' },
+];
+
+// Two real services. No icon-in-a-circle, the photo does the talking.
 const SERVICES = [
   {
     id: 'window-washing',
-    icon: Droplets,
-    title: 'Window Washing',
-    description: 'Crystal-clear, streak-free results for every pane. We use professional-grade equipment and eco-safe solutions.',
-    features: ['Residential & Commercial', 'Interior & Exterior', 'Screen cleaning included', 'Frame & sill wipe-down', 'Eco-safe solutions'],
-    color: 'from-sky-500/20 to-blue-500/10',
-    accent: '#38BDF8',
-    photo: '/work-window-pole.jpg',
-    photoAlt: 'Glass & Blast team cleaning high windows with an extension pole',
-    objectPos: 'center 72%',
+    title: 'Window cleaning',
+    photo: '/work-squeegee.jpg',
+    photoAlt: 'Squeegee leaving a clean, streak-free finish on a Canberra window',
+    objectPos: 'center 50%',
+    blurb: 'Cleaned by hand with a squeegee and mop, inside and out, with the frames, sills and screens wiped down. We take our time and check the glass before we leave, so you get our Spot-Free Finish with no streaks left behind.',
+    points: [
+      'Inside, outside, frames, sills and screens',
+      'Single and double-storey homes',
+      'Our Spot-Free Finish, every pane checked',
+      'Most homes from about $200',
+    ],
   },
   {
     id: 'pressure-washing',
-    icon: Wind,
-    title: 'Pressure Washing',
-    description: 'High-power cleaning that blasts away grime, mould, and stains from driveways, paths, and exterior surfaces.',
-    features: ['Driveways & Paths', 'Decks & Patios', 'Building Exteriors', 'Fences & Walls', 'Safe for all surfaces'],
-    color: 'from-indigo-500/20 to-purple-500/10',
-    accent: '#818CF8',
-    photo: '/work-pressure-wash.jpg',
-    photoAlt: 'Freshly pressure-washed brick pathway, before and after results',
+    title: 'Pressure washing',
+    photo: '/work-brick-path.png',
+    photoAlt: 'Brick pathway brought back to life after a pressure wash',
+    objectPos: 'center 50%',
+    blurb: 'Driveways, paths and pavers that have gone green and grimy over the years, brought back close to new. We set the pressure to suit the surface so the concrete or brick is cleaned, not chewed up.',
+    points: [
+      'Driveways, paths, pavers, courtyards',
+      'Brick, render and fences',
+      'Priced per job after a quick look or a few photos',
+    ],
+  },
+  {
+    id: 'solar-panel-cleaning',
+    title: 'Solar panel cleaning',
+    photo: '/work-solar-1.jpg',
+    photoAlt: 'Freshly cleaned rooftop solar panels reflecting the Canberra sky',
     objectPos: 'center 60%',
+    blurb: 'Dust, pollen and bird mess build up on the glass and quietly drop your output. We clean the panels with the right gear and pure water, no harsh chemicals near the cells, so they soak up the sun again.',
+    points: [
+      'More output from cleaner glass',
+      'Worked safely from the roof',
+      'No scratching, no harsh chemicals',
+    ],
   },
 ];
 
-const NAV_LINKS = [
-  { label: 'Services', href: '#services' },
-  { label: 'About', href: '#about' },
-  { label: 'Reviews', href: '#reviews' },
-  { label: 'Contact', href: '#contact' },
-];
+// ─── Small helpers ───────────────────────────────────────────────────────────
 
-// ─── Animation variants ─────────────────────────────────────────────────────
-
-const fadeUp = {
-  hidden: { opacity: 0, y: 40 },
-  show: { opacity: 1, y: 0, transition: { duration: 0.6, ease: [0.16, 1, 0.3, 1] } },
-};
-
-const stagger = {
-  hidden: {},
-  show: { transition: { staggerChildren: 0.1 } },
-};
-
-const scaleIn = {
-  hidden: { opacity: 0, scale: 0.9 },
-  show: { opacity: 1, scale: 1, transition: { duration: 0.5, ease: [0.16, 1, 0.3, 1] } },
-};
-
-// ─── Sub-components ─────────────────────────────────────────────────────────
-
-function StarRating({ count = 5 }: { count?: number }) {
+function Reveal({ children, className, delay = 0 }: { children: React.ReactNode; className?: string; delay?: number }) {
   return (
-    <div className="flex gap-0.5">
-      {Array.from({ length: count }).map((_, i) => (
-        <Star key={i} className="w-4 h-4 fill-amber-400 text-amber-400" />
-      ))}
-    </div>
+    <motion.div
+      initial={{ opacity: 0, y: 14 }}
+      whileInView={{ opacity: 1, y: 0 }}
+      viewport={{ once: true, margin: '-70px' }}
+      transition={{ duration: 0.45, ease: [0.22, 1, 0.36, 1], delay }}
+      className={className}
+    >
+      {children}
+    </motion.div>
   );
 }
 
-function SectionLabel({ children }: { children: React.ReactNode }) {
+function Kicker({ children }: { children: React.ReactNode }) {
   return (
-    <span className="inline-flex items-center gap-2 text-sky-400 text-sm font-semibold tracking-widest uppercase">
-      <span className="w-6 h-px bg-sky-400" />
+    <span className="inline-block text-sky-600 text-xs font-semibold uppercase tracking-[0.18em]">
       {children}
-      <span className="w-6 h-px bg-sky-400" />
     </span>
   );
 }
 
-function AnimatedCounter({ target, suffix = '', duration = 1 }: { target: number; suffix?: string; duration?: number }) {
-  const [count, setCount] = useState(0);
-  const ref = useRef<HTMLSpanElement>(null);
-  const inView = useInView(ref, { once: false, amount: 0.35 });
+function Stars({ n = 5 }: { n?: number }) {
+  return (
+    <span className="inline-flex gap-0.5" aria-label={`${n} out of 5 stars`}>
+      {Array.from({ length: n }).map((_, i) => (
+        <Star key={i} className="w-4 h-4 fill-amber-400 text-amber-400" />
+      ))}
+    </span>
+  );
+}
 
-  useEffect(() => {
-    if (!inView) { setCount(0); return; }   // reset when scrolled off, recount on return
-    let start = 0;
-    const step = target / (duration * 60);
-    const timer = setInterval(() => {
-      start += step;
-      if (start >= target) { setCount(target); clearInterval(timer); }
-      else setCount(Math.floor(start));
-    }, 1000 / 60);
-    return () => clearInterval(timer);
-  }, [inView, target, duration]);
+// Scroll a section into a comfortable position: centred in the space under the
+// fixed navbar when it fits, otherwise its heading sits just below the navbar.
+// Avoids the default scrollIntoView behaviour where the target hides under the
+// navbar or (near the page end) gets clamped to the very bottom.
+function smoothScrollTo(href: string) {
+  const el = document.querySelector(href);
+  if (!el) return;
+  const navH = 84;          // fixed header allowance
+  const gapWhenTall = 28;   // breathing room for sections taller than the screen
+  const rect = el.getBoundingClientRect();
+  const elTop = rect.top + window.scrollY;
+  const usable = window.innerHeight - navH;
+  const target = rect.height <= usable
+    ? elTop - navH - (usable - rect.height) / 2   // centre it
+    : elTop - navH - gapWhenTall;                 // heading just below the navbar
+  window.scrollTo({ top: Math.max(0, target), behavior: 'smooth' });
+}
 
-  return <span ref={ref}>{count}{suffix}</span>;
+const goToBook = () => smoothScrollTo('#book');
+
+// next/image with a skeleton placeholder behind it. The image renders normally on
+// top, so it shows even without JS; the pulsing skeleton sits behind and is removed
+// once the photo loads. Parent must be `relative`.
+function SkeletonImage(props: ImageProps) {
+  const [loaded, setLoaded] = useState(false);
+  return (
+    <>
+      {!loaded && <span aria-hidden className="absolute inset-0 bg-slate-200 animate-pulse" />}
+      <Image {...props} onLoad={() => setLoaded(true)} />
+    </>
+  );
 }
 
 // ─── Navbar ─────────────────────────────────────────────────────────────────
@@ -113,590 +177,512 @@ function Navbar() {
   const [scrolled, setScrolled] = useState(false);
 
   useEffect(() => {
-    const fn = () => setScrolled(window.scrollY > 40);
+    const fn = () => setScrolled(window.scrollY > 24);
+    fn(); // reflect initial scroll position (e.g. reload while scrolled, or anchor link)
     window.addEventListener('scroll', fn);
     return () => window.removeEventListener('scroll', fn);
   }, []);
 
   const scrollTo = (href: string) => {
     setOpen(false);
-    document.querySelector(href)?.scrollIntoView({ behavior: 'smooth' });
+    smoothScrollTo(href);
   };
 
+  const solid = scrolled || open;          // white bar
+  const onDark = !solid;                    // transparent over the dark hero
+  const linkClass = onDark ? 'text-white/90 hover:text-white' : 'text-slate-600 hover:text-slate-900';
+
   return (
-    <motion.nav
-      initial={{ y: -100, opacity: 0 }}
-      animate={{ y: 0, opacity: 1 }}
-      transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
-      className={`fixed top-3 left-3 right-3 sm:top-4 sm:left-4 sm:right-4 z-50 mx-auto max-w-6xl rounded-2xl transition-all duration-500 ${
-        scrolled || open ? 'md:bg-navy-900/5 md:backdrop-blur-md md:border md:border-white/5 md:shadow-lg md:shadow-black/10' : 'bg-transparent'
-      }`}
-    >
-      <div className="pl-4 pr-3 py-1.5 sm:px-6 sm:py-2 flex items-center justify-between">
-        {/* Logo */}
-        <button onClick={() => scrollTo('#hero')} className="flex items-center cursor-pointer">
-          <Image src="/logo.png" alt="Glass & Blast Window Cleaning" width={360} height={144} className="object-contain h-[4.55rem] sm:h-20 md:h-[7.2rem] w-auto drop-shadow-lg" priority />
+    <header className={`fixed top-0 inset-x-0 z-50 transition-colors duration-300 ${solid ? 'bg-white/95 border-b border-slate-200 backdrop-blur-sm shadow-sm' : 'bg-transparent'}`}>
+      <div className="max-w-6xl mx-auto pl-4 pr-3 sm:px-6 flex items-center justify-between h-16 sm:h-20">
+        <button onClick={() => scrollTo('#hero')} className="flex items-center cursor-pointer" aria-label="Glass & Blast home">
+          <Image src="/logo.png" alt="Glass & Blast Window Cleaning" width={300} height={120} className="object-contain h-14 sm:h-[4.5rem] w-auto" priority />
         </button>
 
         {/* Desktop nav */}
-        <div className="hidden md:flex items-center gap-1">
+        <nav className="hidden md:flex items-center gap-1">
           {NAV_LINKS.map(l => (
-            <button
-              key={l.href}
-              onClick={() => scrollTo(l.href)}
-              className="px-4 py-2 text-slate-300 hover:text-white text-sm font-medium rounded-xl hover:bg-white/5 transition-all duration-200 cursor-pointer"
-            >
+            <button key={l.href} onClick={() => scrollTo(l.href)} className={`px-3.5 py-2 text-sm font-medium transition-colors cursor-pointer ${linkClass}`}>
               {l.label}
             </button>
           ))}
-          <a href="/faq" className="px-4 py-2 text-slate-300 hover:text-white text-sm font-medium rounded-xl hover:bg-white/5 transition-all duration-200 cursor-pointer">
-            FAQ
-          </a>
-        </div>
+          <a href="/faq" className={`px-3.5 py-2 text-sm font-medium transition-colors cursor-pointer ${linkClass}`}>FAQ</a>
+        </nav>
 
-        {/* CTA */}
-        <div className="hidden md:flex items-center gap-3">
-          <a href="tel:+61466050834" className="flex items-center gap-2 text-sky-400 text-sm font-medium hover:text-sky-300 transition-colors cursor-pointer">
-            <Phone className="w-4 h-4" />
-            0466 050 834
+        <div className="hidden md:flex items-center gap-4">
+          <a href={PHONE_HREF} className={`flex items-center gap-2 text-sm font-semibold transition-colors cursor-pointer ${onDark ? 'text-white hover:text-sky-200' : 'text-slate-800 hover:text-sky-600'}`}>
+            <Phone className="w-4 h-4 text-sky-500" />
+            {PHONE_DISPLAY}
           </a>
-          <button
-            onClick={() => scrollTo('#booking')}
-            className="relative px-5 py-2.5 bg-sky-500 hover:bg-sky-400 text-white text-sm font-semibold rounded-xl transition-all duration-200 hover:shadow-lg hover:shadow-sky-500/30 hover:-translate-y-0.5 cursor-pointer"
-          >
-            Book Now
+          <button onClick={goToBook} className="px-4 py-2 bg-sky-500 hover:bg-sky-600 text-white text-sm font-semibold rounded-md transition-colors cursor-pointer">
+            Get a free quote
           </button>
         </div>
 
-        {/* Mobile toggle — small frosted floating button */}
-        <button
-          onClick={() => setOpen(o => !o)}
-          aria-label="Menu"
-          className="md:hidden p-2.5 rounded-xl bg-navy-900/40 backdrop-blur-md border border-white/10 shadow-lg shadow-black/30 text-white cursor-pointer active:scale-95 transition-transform"
-        >
-          <motion.span animate={{ rotate: open ? 90 : 0 }} transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }} className="block">
-            {open ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
-          </motion.span>
-        </button>
+        {/* Mobile: phone always visible + menu toggle */}
+        <div className="flex items-center gap-1.5 md:hidden">
+          <a href={PHONE_HREF} aria-label={`Call ${PHONE_DISPLAY}`} className="flex items-center gap-1.5 px-3 py-2 bg-sky-500 text-white text-sm font-semibold rounded-md cursor-pointer">
+            <Phone className="w-4 h-4" /> Call
+          </a>
+          <button onClick={() => setOpen(o => !o)} aria-label="Menu" className={`p-2 cursor-pointer ${onDark ? 'text-white' : 'text-slate-800'}`}>
+            {open ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
+          </button>
+        </div>
       </div>
 
-      {/* Mobile menu */}
       <AnimatePresence>
         {open && (
-          <motion.div
-            initial={{ opacity: 0, height: 0, y: -8 }}
-            animate={{ opacity: 1, height: 'auto', y: 0 }}
-            exit={{ opacity: 0, height: 0, y: -8 }}
-            transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
-            className="md:hidden overflow-hidden mt-2 rounded-2xl bg-navy-900/60 backdrop-blur-xl border border-white/10 shadow-2xl shadow-black/40 px-6 py-4 flex flex-col gap-2"
+          <motion.nav
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            transition={{ duration: 0.25 }}
+            className="md:hidden overflow-hidden bg-white border-t border-slate-200"
           >
-            {NAV_LINKS.map(l => (
-              <button key={l.href} onClick={() => scrollTo(l.href)} className="py-2.5 text-left text-slate-300 hover:text-white text-sm font-medium cursor-pointer">
-                {l.label}
-              </button>
-            ))}
-            <a href="/faq" className="py-2.5 text-left text-slate-300 hover:text-white text-sm font-medium cursor-pointer">FAQ</a>
-            <div className="pt-2 border-t border-white/10 flex flex-col gap-2">
-              <a href="tel:+61466050834" className="flex items-center gap-2 py-2.5 text-sky-400 text-sm font-medium">
-                <Phone className="w-4 h-4" /> 0466 050 834
-              </a>
-              <button onClick={() => scrollTo('#booking')} className="px-5 py-2.5 bg-sky-500 text-white text-sm font-semibold rounded-xl cursor-pointer">
-                Book Now
+            <div className="px-5 py-3 flex flex-col">
+              {NAV_LINKS.map(l => (
+                <button key={l.href} onClick={() => scrollTo(l.href)} className="py-3 text-left text-slate-700 text-base font-medium border-b border-slate-100 cursor-pointer">
+                  {l.label}
+                </button>
+              ))}
+              <a href="/faq" className="py-3 text-slate-700 text-base font-medium border-b border-slate-100">FAQ</a>
+              <button onClick={() => scrollTo('#book')} className="mt-3 px-4 py-3 bg-sky-500 text-white text-base font-semibold rounded-md cursor-pointer">
+                Get a free quote
               </button>
             </div>
-          </motion.div>
+          </motion.nav>
         )}
       </AnimatePresence>
-    </motion.nav>
+    </header>
   );
 }
 
-// ─── Hero ─────────────────────────────────────────────────────────────────
+// ─── Hero (kept dark over the video, hands off to the light page below) ──────
 
 function Hero() {
   const videoRef = useRef<HTMLVideoElement>(null);
 
-  // Slow-motion autoplay loop
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
-    v.playbackRate = 0.6;
-    const onMeta = () => { v.playbackRate = 0.6; };
+    v.playbackRate = 0.7;
+    const onMeta = () => { v.playbackRate = 0.7; };
     v.addEventListener('loadedmetadata', onMeta);
     return () => v.removeEventListener('loadedmetadata', onMeta);
   }, []);
 
   return (
-    <section id="hero" className="relative min-h-[100svh] flex flex-col items-center justify-start sm:justify-center overflow-hidden">
-      {/* Background — video + overlays */}
+    <section id="hero" className="relative min-h-[100svh] flex items-center overflow-hidden">
       <div className="absolute inset-0">
-        {/* Hero video — slow-motion autoplay, zoomed out */}
         <video
           ref={videoRef}
           autoPlay muted loop playsInline preload="auto"
-          className="absolute inset-0 w-full h-full object-cover opacity-60 scale-100 translate-y-0 md:scale-[0.88] md:translate-y-[7%]"
+          className="absolute inset-0 w-full h-full object-cover"
           poster="/work-window-pole.jpg"
         >
           <source src="/hero-video.mp4" type="video/mp4" />
         </video>
-        {/* Uniform tint for legibility (symmetric) */}
-        <div className="absolute inset-0 bg-navy-900/35" />
-        {/* Blue hue — blends the video into the brand palette */}
-        <div className="absolute inset-0 bg-sky-600/15 mix-blend-soft-light" />
-        <div className="absolute inset-0 bg-[#0b2d52]/20" />
-        {/* Premium rectangular vignette — strong edges, very quick yet eased fade (no visible line) */}
-        <div className="absolute inset-0 pointer-events-none"
-          style={{ background: 'linear-gradient(to right, #060D1A 0%, #060D1A 3%, rgba(6,13,26,0.6) 7%, rgba(6,13,26,0.15) 11%, transparent 14%, transparent 86%, rgba(6,13,26,0.15) 89%, rgba(6,13,26,0.6) 93%, #060D1A 97%, #060D1A 100%), linear-gradient(to bottom, #060D1A 0%, #060D1A 3%, rgba(6,13,26,0.6) 7%, rgba(6,13,26,0.15) 11%, transparent 14%, transparent 86%, rgba(6,13,26,0.15) 89%, rgba(6,13,26,0.6) 93%, #060D1A 97%, #060D1A 100%)' }}
-        />
-        {/* Solid bottom — Services section hands off onto solid colour */}
-        <div className="absolute inset-x-0 bottom-0 h-1/4 pointer-events-none bg-gradient-to-t from-navy-900 via-navy-900/85 to-transparent" />
-        {/* Radial glows */}
-        <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-sky-500/10 rounded-full blur-3xl" />
-        <div className="absolute bottom-1/4 right-1/4 w-80 h-80 bg-blue-600/10 rounded-full blur-3xl" />
-        {/* Grid */}
-        <div className="absolute inset-0 opacity-20"
-          style={{ backgroundImage: 'linear-gradient(rgba(56,189,248,0.06) 1px, transparent 1px), linear-gradient(90deg, rgba(56,189,248,0.06) 1px, transparent 1px)', backgroundSize: '60px 60px' }}
-        />
+        <div className="absolute inset-0 bg-navy-900/55" />
+        <div className="absolute inset-0 bg-gradient-to-r from-navy-900 via-navy-900/75 to-navy-900/25" />
       </div>
 
-      {/* Floating glass panels */}
-      <motion.div
-        animate={{ y: [0, -20, 0], rotate: [0, 2, 0] }}
-        transition={{ duration: 8, repeat: Infinity, ease: 'easeInOut' }}
-        className="absolute top-24 right-[10%] w-24 h-32 rounded-2xl glass border border-sky-400/20 shadow-xl shadow-sky-500/10 hidden lg:block"
-      >
-        <div className="absolute inset-0 bg-gradient-to-br from-sky-400/10 to-transparent rounded-2xl" />
-        <div className="absolute top-3 left-3 right-3 h-px bg-gradient-to-r from-transparent via-sky-400/40 to-transparent" />
-      </motion.div>
-      <motion.div
-        animate={{ y: [0, 16, 0], rotate: [0, -2, 0] }}
-        transition={{ duration: 10, repeat: Infinity, ease: 'easeInOut', delay: 1 }}
-        className="absolute bottom-32 left-[8%] w-20 h-28 rounded-2xl glass border border-sky-400/10 hidden lg:block"
-      >
-        <div className="absolute inset-0 bg-gradient-to-br from-blue-400/10 to-transparent rounded-2xl" />
-      </motion.div>
-      <motion.div
-        animate={{ y: [0, -12, 0] }}
-        transition={{ duration: 7, repeat: Infinity, ease: 'easeInOut', delay: 2 }}
-        className="absolute top-1/2 right-[5%] w-16 h-20 rounded-xl glass border border-white/10 hidden xl:block"
-      />
+      <div className="relative z-10 w-full max-w-6xl mx-auto px-6 pt-24 pb-16">
+        <div className="max-w-2xl">
+          <Reveal>
+            <span className="inline-block text-sky-300 text-xs font-semibold uppercase tracking-[0.18em]">Window cleaning &amp; pressure washing · North Canberra</span>
+          </Reveal>
 
-      {/* Award badge */}
-      <motion.div
-        initial={{ opacity: 0, x: 40 }}
-        animate={{ opacity: 1, x: 0 }}
-        transition={{ delay: 1.2, duration: 0.8, ease: [0.16, 1, 0.3, 1] }}
-        className="absolute top-28 right-6 lg:right-[18%] glass border border-amber-400/30 rounded-2xl px-4 py-3 hidden sm:flex flex-col items-center gap-1 shadow-xl shadow-amber-500/10"
-      >
-        <Award className="w-5 h-5 text-amber-400" />
-        <div className="text-amber-400 text-[10px] font-bold tracking-wider text-center">BEST WINDOW<br />CLEANER 2025</div>
-        <div className="text-slate-400 text-[9px]">North Canberra</div>
-      </motion.div>
+          <Reveal delay={0.05}>
+            <h1 className="font-display text-4xl sm:text-5xl lg:text-6xl font-extrabold text-white leading-[1.05] tracking-tight mt-4">
+              The window cleaners North Canberra keeps calling back
+            </h1>
+          </Reveal>
 
-      {/* Content */}
-      <div className="relative z-10 max-w-5xl mx-auto px-6 text-center pt-24">
-        <motion.div variants={stagger} initial="hidden" animate="show" className="flex flex-col items-center gap-6">
+          <Reveal delay={0.1}>
+            <p className="text-slate-200 text-base sm:text-lg leading-relaxed mt-5 max-w-xl">
+              We are a small local crew cleaning windows and pressure washing for homes and businesses around
+              Gungahlin, Belconnen and the inner north. Fully insured, and we do not pack up until the glass is clear.
+            </p>
+          </Reveal>
 
-          <motion.div variants={fadeUp}>
-            <span className="inline-flex items-center gap-2 bg-navy-900/50 backdrop-blur-md border border-sky-400/30 text-sky-300 text-xs font-semibold tracking-wider px-4 py-2 rounded-full uppercase shadow-lg shadow-navy-900/30">
-              <Sparkles className="w-3.5 h-3.5" />
-              Award-Winning Window Cleaning · Canberra
-            </span>
-          </motion.div>
-
-          <motion.h1 variants={fadeUp} className="font-display text-4xl sm:text-6xl lg:text-7xl xl:text-8xl font-bold leading-[1.08] sm:leading-[1.05] tracking-tight">
-            <span className="text-white">Canberra&apos;s</span>
-            <br />
-            <span className="text-gradient">#1 Window</span>
-            <br />
-            <span className="text-white">Cleaning Service</span>
-          </motion.h1>
-
-          <motion.p variants={fadeUp} className="text-slate-400 text-base sm:text-xl max-w-2xl leading-relaxed">
-            Professional, award-winning window washing and pressure cleaning for residential and commercial properties across Canberra. Streak-free results, every time.
-          </motion.p>
-
-          <motion.div variants={fadeUp} className="flex flex-col sm:flex-row gap-3 sm:gap-4 w-full sm:w-auto">
-            <button
-              onClick={() => document.querySelector('#booking')?.scrollIntoView({ behavior: 'smooth' })}
-              className="relative group inline-flex items-center justify-center gap-2 px-6 sm:px-8 py-3.5 sm:py-4 bg-sky-500 hover:bg-sky-400 text-white font-semibold rounded-2xl transition-all duration-300 hover:shadow-xl hover:shadow-sky-500/40 hover:-translate-y-1 cursor-pointer text-base"
-            >
-              <Calendar className="w-5 h-5" />
-              Book a Free Quote
-              <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
-            </button>
-            <a
-              href="tel:+61466050834"
-              className="inline-flex items-center justify-center gap-2 px-6 sm:px-8 py-3.5 sm:py-4 glass hover:bg-white/8 text-white font-semibold rounded-2xl transition-all duration-300 border border-white/10 hover:border-sky-400/30 cursor-pointer text-base"
-            >
-              <Phone className="w-5 h-5 text-sky-400" />
-              0466 050 834
-            </a>
-          </motion.div>
-
-          {/* Social proof row */}
-          <motion.div variants={fadeUp} className="flex flex-wrap items-center justify-center gap-x-4 gap-y-2 pt-2 text-xs sm:text-sm">
-            <div className="flex items-center gap-1.5">
-              <StarRating />
-              <span className="text-white font-semibold">5.0</span>
-              <span className="text-slate-500">across all platforms</span>
+          <Reveal delay={0.15}>
+            <div className="flex flex-col sm:flex-row gap-3 mt-7">
+              <button onClick={goToBook} className="inline-flex items-center justify-center gap-2 px-6 py-3.5 bg-sky-500 hover:bg-sky-400 text-white font-semibold rounded-md transition-colors cursor-pointer">
+                Get a free quote
+              </button>
+              <a href={PHONE_HREF} className="inline-flex items-center justify-center gap-2 px-6 py-3.5 bg-white/10 hover:bg-white/20 border border-white/20 text-white font-semibold rounded-md transition-colors cursor-pointer">
+                <Phone className="w-4 h-4 text-sky-300" /> Call {PHONE_DISPLAY}
+              </a>
             </div>
-            <div className="w-px h-4 bg-white/10 hidden sm:block" />
-            <div className="flex items-center gap-1.5 text-slate-400">
-              <CheckCircle className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />
-              Top 1% of Australian businesses
+          </Reveal>
+
+          <Reveal delay={0.2}>
+            <div className="flex flex-wrap items-center gap-x-5 gap-y-2 mt-8 text-sm">
+              <span className="inline-flex items-center gap-1.5 text-slate-100">
+                <Stars /> <span className="font-semibold text-white">5.0</span> on Google
+              </span>
+              <span className="inline-flex items-center gap-1.5 text-slate-200">
+                <Award className="w-4 h-4 text-amber-400" /> 2025 Best Window Cleaner, North Canberra
+              </span>
+              <span className="inline-flex items-center gap-1.5 text-slate-200">
+                <Shield className="w-4 h-4 text-sky-300" /> Fully insured
+              </span>
             </div>
-            <div className="w-px h-4 bg-white/10 hidden sm:block" />
-            <div className="flex items-center gap-1.5 text-slate-400">
-              <Clock className="w-3.5 h-3.5 text-sky-400 flex-shrink-0" />
-              24/7 availability
-            </div>
-          </motion.div>
-        </motion.div>
+          </Reveal>
+        </div>
       </div>
-
-      {/* Scroll indicator */}
-      <motion.div
-        animate={{ y: [0, 10, 0] }}
-        transition={{ duration: 2, repeat: Infinity, ease: 'easeInOut' }}
-        className="absolute bottom-8 hidden sm:flex flex-col items-center gap-2 text-slate-500 cursor-pointer"
-        onClick={() => document.querySelector('#services')?.scrollIntoView({ behavior: 'smooth' })}
-      >
-        <span className="text-xs tracking-widest uppercase">Scroll</span>
-        <ChevronDown className="w-5 h-5" />
-      </motion.div>
     </section>
   );
 }
 
-// ─── Stats Bar ───────────────────────────────────────────────────────────────
+// ─── Trust strip ─────────────────────────────────────────────────────────────
 
-function StatsBar() {
-  const ref = useRef<HTMLDivElement>(null);
-  const inView = useInView(ref, { once: true, amount: 0.35 });
-
-  const stats = [
-    { icon: Award, label: 'Best Window Cleaner', value: '2025', suffix: '', desc: 'North Canberra Award' },
-    { icon: ThumbsUp, label: 'Quality Score', value: 95, suffix: '%+', desc: 'Top 1% of Australian businesses' },
-    { icon: Star, label: 'Rating', value: 5, suffix: '★', desc: 'Across all platforms' },
-    { icon: Users, label: 'Happy Customers', value: 200, suffix: '+', desc: 'And growing' },
+function TrustStrip() {
+  const items = [
+    { icon: Star, text: '5.0 on Google' },
+    { icon: Award, text: '2025 Best Window Cleaner, North Canberra' },
+    { icon: Shield, text: 'Fully insured' },
+    { icon: MapPin, text: 'Locally owned and operated' },
   ];
-
   return (
-    <section ref={ref} className="relative bg-gradient-to-r from-sky-600/90 to-blue-700/90 py-12 overflow-hidden">
-      <div className="absolute inset-0 opacity-10"
-        style={{ backgroundImage: 'linear-gradient(rgba(255,255,255,0.15) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.15) 1px, transparent 1px)', backgroundSize: '40px 40px' }}
-      />
-      <div className="relative max-w-6xl mx-auto px-6 grid grid-cols-2 lg:grid-cols-4 gap-8">
-        {stats.map((s, i) => (
-          <motion.div
-            key={s.label}
-            initial={{ opacity: 0, y: 30 }}
-            animate={inView ? { opacity: 1, y: 0 } : {}}
-            transition={{ delay: i * 0.1, duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
-            className="text-center text-white"
-          >
-            <s.icon className="w-7 h-7 mx-auto mb-2 opacity-80" />
-            <div className="font-display text-3xl sm:text-4xl font-bold">
-              {typeof s.value === 'number' && inView
-                ? <AnimatedCounter target={s.value} suffix={s.suffix} />
-                : `${s.value}${s.suffix}`}
-            </div>
-            <div className="font-semibold text-sm mt-1">{s.label}</div>
-            <div className="text-blue-100 text-xs mt-0.5">{s.desc}</div>
-          </motion.div>
+    <section className="bg-white border-b border-slate-200">
+      <div className="max-w-6xl mx-auto px-6 py-5 grid grid-cols-2 lg:grid-cols-4 gap-x-6 gap-y-4">
+        {items.map(i => (
+          <div key={i.text} className="flex items-center gap-2.5 text-slate-700 text-sm">
+            <i.icon className="w-4 h-4 text-sky-500 flex-shrink-0" />
+            <span>{i.text}</span>
+          </div>
         ))}
       </div>
     </section>
   );
 }
 
-// ─── Services ────────────────────────────────────────────────────────────────
+// ─── Before / after slider (drag to reveal) ──────────────────────────────────
 
-function Services() {
-  const ref = useRef<HTMLElement>(null);
-  const inView = useInView(ref, { once: true, margin: '-100px' });
+function BeforeAfter() {
+  const [pos, setPos] = useState(55);
+  const ref = useRef<HTMLDivElement>(null);
+  const dragging = useRef(false);
+
+  const move = (clientX: number) => {
+    const el = ref.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    setPos(Math.max(0, Math.min(100, ((clientX - r.left) / r.width) * 100)));
+  };
 
   return (
-    <section id="services" ref={ref} className="py-16 sm:py-24 lg:py-32 relative overflow-hidden">
-      <div className="absolute inset-0 bg-gradient-to-b from-navy-900 to-navy-800" />
-      <div className="relative max-w-6xl mx-auto px-6">
-        <motion.div variants={stagger} initial="hidden" animate={inView ? 'show' : 'hidden'} className="text-center mb-16">
-          <motion.div variants={fadeUp}><SectionLabel>Our Services</SectionLabel></motion.div>
-          <motion.h2 variants={fadeUp} className="font-display text-4xl sm:text-5xl font-bold text-white mt-4">
-            Everything Your Property Needs
-          </motion.h2>
-          <motion.p variants={fadeUp} className="text-slate-400 text-lg mt-4 max-w-xl mx-auto">
-            Professional cleaning services tailored for Canberra homes and businesses.
-          </motion.p>
-        </motion.div>
+    <div
+      ref={ref}
+      className="relative aspect-[3/4] w-full overflow-hidden rounded-lg border border-slate-200 shadow-sm select-none touch-pan-y cursor-ew-resize"
+      onPointerDown={(e) => { dragging.current = true; e.currentTarget.setPointerCapture(e.pointerId); move(e.clientX); }}
+      onPointerMove={(e) => { if (dragging.current) move(e.clientX); }}
+      onPointerUp={() => { dragging.current = false; }}
+      onPointerCancel={() => { dragging.current = false; }}
+    >
+      {/* After is the base layer; before is clipped on top from the left */}
+      <SkeletonImage src="/after-sliding-door.jpg" alt="Sliding door glass after cleaning, clear and streak-free" fill sizes="(max-width: 768px) 100vw, 420px" className="object-cover pointer-events-none" />
+      <Image
+        src="/before-sliding-door.jpg"
+        alt="Sliding door glass before cleaning, hazy and marked"
+        fill sizes="(max-width: 768px) 100vw, 420px"
+        className="object-cover pointer-events-none"
+        style={{ clipPath: `inset(0 ${100 - pos}% 0 0)` }}
+      />
 
-        <motion.div variants={stagger} initial="hidden" animate={inView ? 'show' : 'hidden'} className="grid md:grid-cols-2 gap-8">
-          {SERVICES.map((svc) => (
-            <motion.div
-              key={svc.id}
-              variants={scaleIn}
-              whileHover={{ y: -6, transition: { duration: 0.3 } }}
-              className={`glass rounded-3xl border border-white/8 bg-gradient-to-br ${svc.color} group cursor-default overflow-hidden`}
-            >
-              {/* Photo — fills frame, fades seamlessly into card body */}
-              <div className="relative h-72 sm:h-96 w-full overflow-hidden">
-                <Image
-                  src={svc.photo}
-                  alt={svc.photoAlt}
-                  fill
-                  style={{ objectPosition: svc.objectPos }}
-                  className="object-cover transition-transform duration-700 group-hover:scale-105"
-                  sizes="(max-width: 768px) 100vw, 50vw"
-                />
-                {/* Subtle fade into the card content below */}
-                <div className="absolute inset-x-0 bottom-0 h-12 bg-gradient-to-t from-[#0d1a2c]/90 to-transparent" />
-                {/* Icon badge */}
-                <div className="absolute bottom-4 left-4 w-11 h-11 rounded-xl flex items-center justify-center shadow-lg z-10"
-                  style={{ background: `${svc.accent}25`, border: `1px solid ${svc.accent}40`, backdropFilter: 'blur(8px)' }}>
-                  <svc.icon className="w-6 h-6" style={{ color: svc.accent }} />
+      <span className="absolute top-3 left-3 px-2.5 py-1 rounded-md bg-slate-900/70 text-white text-xs font-semibold">Before</span>
+      <span className="absolute top-3 right-3 px-2.5 py-1 rounded-md bg-sky-500 text-white text-xs font-semibold">After</span>
+
+      {/* Handle */}
+      <div className="absolute inset-y-0 pointer-events-none" style={{ left: `${pos}%` }}>
+        <div className="absolute inset-y-0 -translate-x-1/2 w-0.5 bg-white/90" />
+        <div className="absolute top-1/2 left-0 -translate-x-1/2 -translate-y-1/2 w-9 h-9 rounded-full bg-white shadow-md flex items-center justify-center">
+          <MoveHorizontal className="w-4 h-4 text-slate-700" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Our work ────────────────────────────────────────────────────────────────
+
+function Work() {
+  const shots = [
+    { src: '/work-pole-window.jpg', label: 'Two-storey exterior clean', place: 'O\'Connor', pos: 'center 38%' },
+    { src: '/work-squeegee-hand.jpg', label: 'Streak-free window clean', place: 'Ainslie', pos: 'center 28%' },
+    { src: '/work-solar-2.jpg', label: 'Solar panel clean', place: 'Ainslie', pos: 'center 45%' },
+  ];
+  return (
+    <section id="work" className="bg-slate-50 py-14 sm:py-20">
+      <div className="max-w-6xl mx-auto px-6">
+        <Reveal className="max-w-2xl">
+          <Kicker>Recent work</Kicker>
+          <h2 className="font-display text-3xl sm:text-4xl font-bold text-slate-900 mt-3">
+            A few jobs from around the inner north
+          </h2>
+          <p className="text-slate-600 mt-3">
+            Same crew, same gear, every visit. Here is some recent window and pressure washing work across Canberra.
+          </p>
+        </Reveal>
+
+        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4 mt-10">
+          {shots.map((s, i) => (
+            <Reveal key={s.src} delay={i * 0.06} className="group relative overflow-hidden rounded-lg border border-slate-200 shadow-sm">
+              <div className="relative aspect-[4/5]">
+                <SkeletonImage src={s.src} alt={`${s.label} in ${s.place}, Canberra`} fill style={{ objectPosition: s.pos }} className="object-cover transition-transform duration-500 group-hover:scale-[1.04]" sizes="(max-width: 1024px) 100vw, 33vw" />
+                <div className="absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-navy-900/90 to-transparent" />
+                <div className="absolute bottom-0 inset-x-0 p-4">
+                  <div className="text-white text-sm font-semibold">{s.label}</div>
+                  <div className="text-slate-200 text-xs mt-0.5 flex items-center gap-1">
+                    <MapPin className="w-3 h-3 text-sky-300" /> {s.place}, ACT
+                  </div>
                 </div>
               </div>
-
-              {/* Content */}
-              <div className="p-8">
-                <h3 className="font-display text-2xl font-bold text-white mb-3">{svc.title}</h3>
-                <p className="text-slate-400 mb-6 leading-relaxed">{svc.description}</p>
-
-                <ul className="space-y-2.5">
-                  {svc.features.map((f) => (
-                    <li key={f} className="flex items-center gap-3 text-slate-300 text-sm">
-                      <CheckCircle className="w-4 h-4 flex-shrink-0" style={{ color: svc.accent }} />
-                      {f}
-                    </li>
-                  ))}
-                </ul>
-
-                <button
-                  onClick={() => document.querySelector('#booking')?.scrollIntoView({ behavior: 'smooth' })}
-                  className="mt-8 w-full py-3 rounded-xl font-semibold text-sm transition-all duration-200 hover:-translate-y-0.5 cursor-pointer"
-                  style={{ background: `${svc.accent}20`, color: svc.accent, border: `1px solid ${svc.accent}30` }}
-                >
-                  Get a Free Quote →
-                </button>
-              </div>
-            </motion.div>
+            </Reveal>
           ))}
-        </motion.div>
+        </div>
 
-        {/* Combined service callout */}
-        <motion.div
-          variants={fadeUp}
-          initial="hidden"
-          animate={inView ? 'show' : 'hidden'}
-          transition={{ delay: 0.4 }}
-          className="mt-8 glass rounded-2xl border border-sky-400/20 px-8 py-6 flex flex-col sm:flex-row items-center justify-between gap-4"
-        >
-          <div className="flex items-center gap-4">
-            <div className="w-10 h-10 rounded-xl bg-sky-400/15 flex items-center justify-center">
-              <Zap className="w-5 h-5 text-sky-400" />
-            </div>
-            <div>
-              <div className="text-white font-semibold">Bundle & Save</div>
-              <div className="text-slate-400 text-sm">Book both window washing + pressure washing and get a better rate</div>
-            </div>
+        {/* Before / after */}
+        <Reveal delay={0.1} className="mt-14 grid lg:grid-cols-[0.85fr_1.15fr] gap-8 lg:gap-12 items-center">
+          <div className="w-full max-w-sm mx-auto">
+            <BeforeAfter />
           </div>
-          <button
-            onClick={() => document.querySelector('#booking')?.scrollIntoView({ behavior: 'smooth' })}
-            className="flex-shrink-0 px-6 py-2.5 bg-sky-500 hover:bg-sky-400 text-white text-sm font-semibold rounded-xl transition-all hover:-translate-y-0.5 hover:shadow-lg hover:shadow-sky-500/30 cursor-pointer"
-          >
-            Book Bundle
-          </button>
-        </motion.div>
+          <div>
+            <Kicker>Before &amp; after</Kicker>
+            <h3 className="font-display text-2xl sm:text-3xl font-bold text-slate-900 mt-3">Drag to see the difference</h3>
+            <p className="text-slate-600 mt-3 leading-relaxed">
+              Same sliding door, same visit. Hazy, marked glass on one side, clear and streak-free on the other.
+              Drag the handle across to compare.
+            </p>
+          </div>
+        </Reveal>
       </div>
     </section>
   );
 }
 
-// ─── About / Why Us ─────────────────────────────────────────────────────────
+// ─── Services + pricing ──────────────────────────────────────────────────────
 
-function WhyUs() {
-  const ref = useRef<HTMLElement>(null);
-  const inView = useInView(ref, { once: true, margin: '-100px' });
-
-  const reasons = [
-    { icon: Award, title: 'Award-Winning', desc: 'Named 2025 Best Window Cleaner in North Canberra by Quality Business Awards.' },
-    { icon: Shield, title: 'Fully Insured', desc: 'Fully insured and professional team. Your property is protected at all times.' },
-    { icon: Clock, title: 'Always On Time', desc: 'We respect your schedule. Punctual arrivals, every single appointment.' },
-    { icon: Sparkles, title: 'Streak-Free Results', desc: 'Professional-grade equipment and eco-safe solutions for crystal-clear windows.' },
-    { icon: ThumbsUp, title: 'Fair Pricing', desc: 'Transparent, competitive pricing with no hidden fees. Free quotes always.' },
-    { icon: MapPin, title: 'Locally Owned', desc: 'Proudly Canberran. We know the area and care about our community.' },
-  ];
-
+function Services() {
   return (
-    <section id="about" ref={ref} className="py-16 sm:py-24 lg:py-32 relative overflow-hidden">
-      <div className="absolute inset-0 bg-gradient-to-b from-navy-800 to-navy-900" />
-      <div className="absolute right-0 top-1/4 w-96 h-96 bg-sky-500/5 rounded-full blur-3xl" />
-      <div className="relative max-w-6xl mx-auto px-6">
-        <div className="grid lg:grid-cols-2 gap-16 items-center">
-          {/* Left */}
-          <motion.div variants={stagger} initial="hidden" animate={inView ? 'show' : 'hidden'}>
-            <motion.div variants={fadeUp}><SectionLabel>Why Choose Us</SectionLabel></motion.div>
-            <motion.h2 variants={fadeUp} className="font-display text-4xl sm:text-5xl font-bold text-white mt-4 leading-tight">
-              The Meticulous Local Team That Punches Above Its Weight
-            </motion.h2>
-            <motion.p variants={fadeUp} className="text-slate-400 mt-6 leading-relaxed text-lg">
-              Glass & Blast is a locally owned and operated Canberra business built on one promise: we will not leave until you are 100% satisfied. Our award-winning team brings professional-grade equipment and genuine care to every job.
-            </motion.p>
-            <motion.div variants={fadeUp} className="mt-8 flex flex-col sm:flex-row gap-4">
-              <button
-                onClick={() => document.querySelector('#booking')?.scrollIntoView({ behavior: 'smooth' })}
-                className="inline-flex items-center gap-2 px-6 py-3.5 bg-sky-500 hover:bg-sky-400 text-white font-semibold rounded-xl transition-all hover:-translate-y-0.5 hover:shadow-lg hover:shadow-sky-500/30 cursor-pointer"
-              >
-                <Calendar className="w-4 h-4" /> Get a Free Quote
-              </button>
-              <a
-                href="tel:+61466050834"
-                className="inline-flex items-center gap-2 px-6 py-3.5 glass border border-white/10 hover:border-sky-400/30 text-white font-semibold rounded-xl transition-all cursor-pointer"
-              >
-                <Phone className="w-4 h-4 text-sky-400" /> Call Us Now
-              </a>
-            </motion.div>
-          </motion.div>
+    <section id="services" className="bg-white border-t border-slate-200 py-14 sm:py-20">
+      <div className="max-w-6xl mx-auto px-6">
+        <Reveal className="max-w-2xl">
+          <Kicker>What we do</Kicker>
+          <h2 className="font-display text-3xl sm:text-4xl font-bold text-slate-900 mt-3">
+            Three things, done properly
+          </h2>
+        </Reveal>
 
-          {/* Right: grid of reasons */}
-          <motion.div
-            variants={stagger}
-            initial="hidden"
-            animate={inView ? 'show' : 'hidden'}
-            className="grid grid-cols-2 gap-4"
-          >
-            {reasons.map((r, i) => (
-              <motion.div
-                key={r.title}
-                variants={fadeUp}
-                transition={{ delay: i * 0.08 }}
-                className="glass rounded-2xl p-5 border border-white/8 hover:border-sky-400/20 transition-all duration-300 group"
-              >
-                <div className="w-10 h-10 rounded-xl bg-sky-400/10 flex items-center justify-center mb-3 group-hover:bg-sky-400/20 transition-colors">
-                  <r.icon className="w-5 h-5 text-sky-400" />
-                </div>
-                <div className="font-display font-semibold text-white text-sm mb-1">{r.title}</div>
-                <div className="text-slate-500 text-xs leading-relaxed">{r.desc}</div>
-              </motion.div>
-            ))}
-          </motion.div>
+        <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-5 mt-10">
+          {SERVICES.map((svc, i) => (
+            <Reveal key={svc.id} delay={i * 0.08} className="rounded-lg border border-slate-200 bg-white shadow-sm overflow-hidden">
+              <div className="relative h-72 sm:h-80 w-full">
+                <SkeletonImage src={svc.photo} alt={svc.photoAlt} fill style={{ objectPosition: svc.objectPos }} className="object-cover" sizes="(max-width: 1024px) 100vw, 50vw" />
+              </div>
+              <div className="p-6 sm:p-7">
+                <h3 className="font-display text-xl font-bold text-slate-900">{svc.title}</h3>
+                <p className="text-slate-600 text-sm leading-relaxed mt-3">{svc.blurb}</p>
+                <ul className="mt-5 space-y-2">
+                  {svc.points.map(p => (
+                    <li key={p} className="flex items-start gap-2.5 text-slate-700 text-sm">
+                      <Check className="w-4 h-4 text-sky-500 flex-shrink-0 mt-0.5" /> {p}
+                    </li>
+                  ))}
+                </ul>
+                <button onClick={goToBook} className="mt-6 text-sky-600 hover:text-sky-700 text-sm font-semibold cursor-pointer">
+                  Get a quote for {svc.title.toLowerCase()} →
+                </button>
+              </div>
+            </Reveal>
+          ))}
+        </div>
+
+        {/* Add-ons + bundle */}
+        <Reveal delay={0.1}>
+          <div className="mt-6 rounded-lg border border-slate-200 bg-slate-50 px-6 py-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <p className="text-slate-600 text-sm leading-relaxed max-w-2xl">
+              We also do <span className="text-slate-900 font-medium">flyscreen repairs</span>. Booking two or more
+              jobs in the one visit? We will bring the total down for you.
+            </p>
+            <button onClick={goToBook} className="flex-shrink-0 px-5 py-2.5 bg-sky-500 hover:bg-sky-600 text-white text-sm font-semibold rounded-md transition-colors cursor-pointer">
+              Ask for a price
+            </button>
+          </div>
+        </Reveal>
+      </div>
+    </section>
+  );
+}
+
+// ─── How it works ────────────────────────────────────────────────────────────
+
+function HowItWorks() {
+  return (
+    <section id="how" className="bg-slate-50 border-t border-slate-200 py-14 sm:py-20">
+      <div className="max-w-6xl mx-auto px-6">
+        <Reveal className="max-w-2xl">
+          <Kicker>How it works</Kicker>
+          <h2 className="font-display text-3xl sm:text-4xl font-bold text-slate-900 mt-3">Booking us is the easy part</h2>
+        </Reveal>
+        <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-x-6 gap-y-8 mt-10">
+          {STEPS.map((s, i) => (
+            <Reveal key={s.n} delay={i * 0.06}>
+              <div className="w-12 h-12 rounded-xl bg-sky-500 text-white font-display font-extrabold text-2xl flex items-center justify-center shadow-md shadow-sky-500/30">
+                {s.n}
+              </div>
+              <h3 className="text-slate-900 font-semibold mt-4">{s.title}</h3>
+              <p className="text-slate-600 text-sm leading-relaxed mt-2">{s.text}</p>
+            </Reveal>
+          ))}
         </div>
       </div>
     </section>
   );
 }
 
-// ─── Our Work Gallery ────────────────────────────────────────────────────────
+// ─── Plans ───────────────────────────────────────────────────────────────────
 
-function OurWork() {
-  const ref = useRef<HTMLElement>(null);
-  const inView = useInView(ref, { once: true, margin: '-80px' });
-
-  const shots = [
-    {
-      src: '/work-squeegee.jpg',
-      alt: 'Close-up of squeegee leaving a streak-free finish on a Canberra window',
-      label: 'Window Washing',
-      tag: 'Residential',
-      accent: '#38BDF8',
-    },
-    {
-      src: '/work-pressure-wash.jpg',
-      alt: 'Pressure-washed brick pathway, sparkling clean result',
-      label: 'Pressure Washing',
-      tag: 'Driveway & Paths',
-      accent: '#818CF8',
-    },
-  ];
-
+function Plans() {
   return (
-    <section ref={ref} className="py-16 sm:py-24 lg:py-32 relative overflow-hidden">
-      <div className="absolute inset-0 bg-gradient-to-b from-navy-900 to-navy-800" />
-      {/* subtle diagonal pattern */}
-      <div className="absolute inset-0 opacity-[0.03]"
-        style={{ backgroundImage: 'repeating-linear-gradient(45deg, #38BDF8 0, #38BDF8 1px, transparent 0, transparent 50%)', backgroundSize: '24px 24px' }}
-      />
+    <section id="plans" className="bg-white border-t border-slate-200 py-14 sm:py-20">
+      <div className="max-w-6xl mx-auto px-6">
+        <Reveal className="max-w-2xl">
+          <Kicker>Plans</Kicker>
+          <h2 className="font-display text-3xl sm:text-4xl font-bold text-slate-900 mt-3">Book a regular clean, pay less every time</h2>
+          <p className="text-slate-600 mt-3">
+            Put us on a cycle and we drop the price on every visit. Same clean, lower rate, and your place never gets a chance to look grubby.
+          </p>
+        </Reveal>
 
-      <div className="relative max-w-6xl mx-auto px-6">
-        <motion.div variants={stagger} initial="hidden" animate={inView ? 'show' : 'hidden'} className="text-center mb-14">
-          <motion.div variants={fadeUp}><SectionLabel>Our Work</SectionLabel></motion.div>
-          <motion.h2 variants={fadeUp} className="font-display text-4xl sm:text-5xl font-bold text-white mt-4">
-            Results That Speak for Themselves
-          </motion.h2>
-          <motion.p variants={fadeUp} className="text-slate-400 mt-4 max-w-xl mx-auto">
-            Every job we do is a showcase. Here&apos;s a glimpse of our team in action across Canberra.
-          </motion.p>
-        </motion.div>
-
-        {/* Main gallery grid */}
-        <motion.div
-          variants={stagger}
-          initial="hidden"
-          animate={inView ? 'show' : 'hidden'}
-          className="grid md:grid-cols-2 gap-6"
-        >
-          {shots.map((shot, i) => (
-            <motion.div
-              key={shot.src}
-              variants={fadeUp}
-              transition={{ delay: i * 0.15 }}
-              className="group relative overflow-hidden rounded-3xl border border-white/8"
-              whileHover={{ scale: 1.01, transition: { duration: 0.3 } }}
-            >
-              <div className="relative aspect-[5/4] w-full">
-                <Image
-                  src={shot.src}
-                  alt={shot.alt}
-                  fill
-                  className="object-cover object-center transition-transform duration-700 group-hover:scale-105"
-                  sizes="(max-width: 768px) 100vw, 50vw"
-                />
-                {/* Overlay — bottom only, keeps label readable */}
-                <div className="absolute inset-x-0 bottom-0 h-2/5 bg-gradient-to-t from-navy-900 via-navy-900/60 to-transparent transition-opacity duration-300" />
-
-                {/* Bottom label */}
-                <div className="absolute bottom-0 left-0 right-0 p-6 translate-y-2 group-hover:translate-y-0 transition-transform duration-300">
-                  <div className="flex items-end justify-between">
-                    <div>
-                      <span className="text-xs font-semibold px-2.5 py-1 rounded-full mb-2 inline-block backdrop-blur-sm"
-                        style={{ background: `rgba(6,13,26,0.78)`, color: shot.accent, border: `1px solid ${shot.accent}55` }}>
-                        {shot.tag}
-                      </span>
-                      <h3 className="font-display text-xl font-bold text-white">{shot.label}</h3>
-                      <p className="text-slate-400 text-sm mt-1">Canberra, ACT</p>
-                    </div>
-                    <motion.button
-                      whileHover={{ scale: 1.05 }}
-                      onClick={() => document.querySelector('#booking')?.scrollIntoView({ behavior: 'smooth' })}
-                      className="flex-shrink-0 px-4 py-2 rounded-xl text-sm font-semibold cursor-pointer transition-all"
-                      style={{ background: `${shot.accent}20`, color: shot.accent, border: `1px solid ${shot.accent}30` }}
-                    >
-                      Book This →
-                    </motion.button>
+        <div className="grid lg:grid-cols-3 gap-5 mt-10 items-start">
+          {PLANS.map((p, i) => {
+            const hot = p.popular;
+            return (
+              <Reveal key={p.id} delay={i * 0.07}
+                className={`rounded-lg border overflow-hidden ${hot ? 'border-sky-500 bg-sky-500 shadow-lg shadow-sky-500/20 lg:-mt-3 lg:mb-3' : 'border-slate-200 bg-white shadow-sm'}`}>
+                <div className="p-6 sm:p-7">
+                  {hot && (
+                    <span className="inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-sky-700 bg-white rounded-full px-3 py-1 mb-4">
+                      <Star className="w-3.5 h-3.5 fill-sky-700 text-sky-700" /> Most popular
+                    </span>
+                  )}
+                  <div className={`flex items-center gap-2 ${hot ? 'text-sky-50' : 'text-slate-600'}`}>
+                    <Calendar className="w-4 h-4" />
+                    <span className="font-semibold">{p.name}</span>
                   </div>
+                  <div className={`mt-4 font-display text-4xl font-extrabold ${hot ? 'text-white' : 'text-slate-900'}`}>{p.discount}</div>
+                  <div className={`text-sm ${hot ? 'text-sky-100' : 'text-slate-500'}`}>every clean · {p.cadence.toLowerCase()}</div>
+                  <ul className="mt-5 space-y-2.5">
+                    {p.points.map(pt => (
+                      <li key={pt} className={`flex items-start gap-2.5 text-sm ${hot ? 'text-sky-50' : 'text-slate-700'}`}>
+                        <Check className={`w-4 h-4 flex-shrink-0 mt-0.5 ${hot ? 'text-white' : 'text-sky-500'}`} /> {pt}
+                      </li>
+                    ))}
+                  </ul>
+                  <button onClick={goToBook}
+                    className={`mt-6 w-full py-3 rounded-md font-semibold text-sm transition-colors cursor-pointer ${hot ? 'bg-white text-sky-600 hover:bg-sky-50' : 'bg-sky-500 text-white hover:bg-sky-600'}`}>
+                    Get a free quote
+                  </button>
                 </div>
-              </div>
-            </motion.div>
-          ))}
-        </motion.div>
+              </Reveal>
+            );
+          })}
+        </div>
 
-        {/* CTA strip below gallery */}
-        <motion.div
-          variants={fadeUp}
-          initial="hidden"
-          animate={inView ? 'show' : 'hidden'}
-          transition={{ delay: 0.4 }}
-          className="mt-10 text-center"
-        >
-          <p className="text-slate-500 text-sm mb-4">Want results like these? Get a free quote today.</p>
-          <button
-            onClick={() => document.querySelector('#booking')?.scrollIntoView({ behavior: 'smooth' })}
-            className="inline-flex items-center gap-2 px-7 py-3.5 bg-sky-500 hover:bg-sky-400 text-white font-semibold rounded-2xl transition-all hover:-translate-y-0.5 hover:shadow-xl hover:shadow-sky-500/30 cursor-pointer"
-          >
-            <Calendar className="w-4 h-4" /> Book a Free Quote
-          </button>
-        </motion.div>
+        <p className="text-slate-500 text-xs mt-6 max-w-2xl">
+          Plan discounts apply to recurring window cleaning on jobs over $200. One-off cleans start from $200, always quoted free first.
+        </p>
+      </div>
+    </section>
+  );
+}
+
+// ─── About / why us ──────────────────────────────────────────────────────────
+
+function About() {
+  const points = [
+    { icon: Shield, text: 'Fully insured, so your place is covered the whole time we are on site.' },
+    { icon: Award, text: 'Named 2025 Best Window Cleaner in North Canberra.' },
+    { icon: CheckCircle, text: 'Free quotes in writing. The price we send is the price you pay, no surprises on the day.' },
+    { icon: Clock, text: 'We turn up when we say we will, and if something is not right we come back and sort it.' },
+  ];
+  return (
+    <section id="about" className="bg-slate-50 border-t border-slate-200 py-14 sm:py-20">
+      <div className="max-w-6xl mx-auto px-6 grid lg:grid-cols-[1.1fr_0.9fr] gap-10 lg:gap-16 items-center">
+        <div>
+          <Kicker>About us</Kicker>
+          <h2 className="font-display text-3xl sm:text-4xl font-bold text-slate-900 mt-3 leading-tight">
+            A local team, not a franchise
+          </h2>
+          <p className="text-slate-600 mt-5 leading-relaxed">
+            Glass &amp; Blast is a locally owned and operated business based in North Canberra. We handle every job
+            ourselves, so the people you book are the people who turn up and clean your windows. No call centre, no
+            subcontractors you have never met.
+          </p>
+          <p className="text-slate-600 mt-4 leading-relaxed">
+            A good deal of our work comes through referrals and repeat customers, and we aim to keep it that way.
+          </p>
+          <div className="mt-7 flex flex-col sm:flex-row gap-3">
+            <button onClick={goToBook} className="inline-flex items-center justify-center gap-2 px-5 py-3 bg-sky-500 hover:bg-sky-600 text-white font-semibold rounded-md transition-colors cursor-pointer">
+              Get a free quote
+            </button>
+            <a href={PHONE_HREF} className="inline-flex items-center justify-center gap-2 px-5 py-3 border border-slate-300 hover:bg-white text-slate-700 font-semibold rounded-md transition-colors cursor-pointer">
+              <Phone className="w-4 h-4 text-sky-500" /> Call {PHONE_DISPLAY}
+            </a>
+          </div>
+        </div>
+
+        <ul className="space-y-4">
+          {points.map(p => (
+            <li key={p.text} className="flex items-start gap-3">
+              <span className="flex-shrink-0 w-9 h-9 rounded-md bg-sky-50 border border-sky-200 flex items-center justify-center">
+                <p.icon className="w-5 h-5 text-sky-600" />
+              </span>
+              <span className="text-slate-600 text-sm leading-relaxed pt-1.5">{p.text}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </section>
+  );
+}
+
+// ─── Areas we serve ──────────────────────────────────────────────────────────
+
+const AREA_LINKS: Record<string, string> = { Gungahlin: 'gungahlin', Belconnen: 'belconnen', Dickson: 'dickson', Ainslie: 'ainslie' };
+
+function Areas() {
+  const suburbs = ['Gungahlin', 'Belconnen', 'Dickson', 'Braddon', 'Ainslie', 'O\'Connor', 'Lyneham', 'Watson', 'Bruce', 'Turner', 'Reid', 'Civic', 'Hackett', 'Downer'];
+  return (
+    <section id="areas" className="bg-white border-t border-slate-200 py-12 sm:py-16">
+      <div className="max-w-6xl mx-auto px-6 grid lg:grid-cols-[0.8fr_1.2fr] gap-8 lg:gap-12">
+        <div>
+          <Kicker>Where we work</Kicker>
+          <h2 className="font-display text-3xl sm:text-4xl font-bold text-slate-900 mt-3">Areas we cover</h2>
+          <p className="text-slate-600 mt-4 leading-relaxed text-sm">
+            We cover the whole of the ACT. If you are just outside the ACT we may add a small travel fee, but it is
+            case by case, so just ask and we will sort it out with your quote before you book.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2 content-start">
+          {suburbs.map(s => {
+            const slug = AREA_LINKS[s];
+            return slug ? (
+              <Link key={s} href={`/areas/${slug}`} className="px-3 py-1.5 rounded-md bg-slate-50 border border-slate-200 text-slate-700 text-sm hover:text-sky-600 hover:border-sky-300 transition-colors cursor-pointer">
+                {s}
+              </Link>
+            ) : (
+              <span key={s} className="px-3 py-1.5 rounded-md bg-slate-50 border border-slate-200 text-slate-700 text-sm">
+                {s}
+              </span>
+            );
+          })}
+          <span className="px-3 py-1.5 rounded-md bg-slate-50 border border-slate-200 text-slate-400 text-sm">
+            and the rest of the ACT
+          </span>
+        </div>
       </div>
     </section>
   );
@@ -747,10 +733,10 @@ function AddressAutocomplete({
 
   return (
     <div className="relative">
-      <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 pointer-events-none z-10" />
+      <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none z-10" />
       <input
         className="form-input pl-11"
-        placeholder="Start typing your address…"
+        placeholder="Start typing your address"
         value={street}
         autoComplete="off"
         onChange={e => { onStreet(e.target.value); query(e.target.value); }}
@@ -758,18 +744,18 @@ function AddressAutocomplete({
         onBlur={() => setTimeout(() => setOpen(false), 150)}
       />
       {loading && (
-        <div className="absolute right-4 top-1/2 -translate-y-1/2 w-4 h-4 border-2 border-white/20 border-t-sky-400 rounded-full animate-spin" />
+        <div className="absolute right-4 top-1/2 -translate-y-1/2 w-4 h-4 border-2 border-slate-200 border-t-sky-500 rounded-full animate-spin" />
       )}
       {open && results.length > 0 && (
-        <ul className="absolute z-30 mt-2 w-full max-h-64 overflow-auto rounded-xl border border-white/10 bg-navy-800/95 backdrop-blur-xl shadow-2xl shadow-black/50">
+        <ul className="absolute z-30 mt-2 w-full max-h-64 overflow-auto rounded-lg border border-slate-200 bg-white shadow-lg shadow-slate-300/40">
           {results.map((r, i) => (
             <li key={i}>
               <button
                 type="button"
                 onMouseDown={(e) => { e.preventDefault(); pick(r); }}
-                className="w-full text-left px-4 py-2.5 text-sm text-slate-300 hover:bg-sky-400/10 hover:text-white transition-colors cursor-pointer flex items-start gap-2 border-b border-white/5 last:border-0"
+                className="w-full text-left px-4 py-2.5 text-sm text-slate-700 hover:bg-sky-50 hover:text-slate-900 transition-colors cursor-pointer flex items-start gap-2 border-b border-slate-100 last:border-0"
               >
-                <MapPin className="w-3.5 h-3.5 text-sky-400 mt-0.5 flex-shrink-0" />
+                <MapPin className="w-3.5 h-3.5 text-sky-500 mt-0.5 flex-shrink-0" />
                 <span>{r.display_name}</span>
               </button>
             </li>
@@ -780,11 +766,9 @@ function AddressAutocomplete({
   );
 }
 
-// ─── Booking Form ────────────────────────────────────────────────────────────
+// ─── Book / Contact ──────────────────────────────────────────────────────────
 
-function BookingForm() {
-  const ref = useRef<HTMLElement>(null);
-  const inView = useInView(ref, { once: true, margin: '-100px' });
+function Book() {
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(false);
   const [submitted, setSubmitted] = useState(false);
@@ -794,7 +778,6 @@ function BookingForm() {
   });
 
   const set = (k: string, v: string) => setForm(f => ({ ...f, [k]: v }));
-  // Services are multi-select, stored as a comma-separated list.
   const toggleService = (v: string) => setForm(f => {
     const list = f.service ? f.service.split(',') : [];
     const next = list.includes(v) ? list.filter(x => x !== v) : [...list, v];
@@ -802,7 +785,6 @@ function BookingForm() {
   });
   const selectedServices = form.service ? form.service.split(',') : [];
 
-  // Required: name, phone, address, service. Everything else optional (lower friction).
   const canStep1 = form.name && form.phone;
   const canStep2 = !!form.service;
   const canStep3 = !!form.address;
@@ -813,338 +795,296 @@ function BookingForm() {
       const res = await fetch('/api/bookings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) });
       if (!res.ok) throw new Error('Failed');
       setSubmitted(true);
-      toast.success('Booking submitted! We\'ll be in touch shortly.');
+      toast.success('Thanks, we have got your details and will be in touch.');
     } catch {
-      toast.error('Something went wrong. Please call us directly.');
+      toast.error('Something went wrong. Please call us on 0466 050 834.');
     } finally {
       setLoading(false);
     }
   };
 
-  if (submitted) {
-    return (
-      <section id="booking" ref={ref} className="py-16 sm:py-24 lg:py-32 bg-gradient-to-b from-navy-900 to-navy-800">
-        <div className="max-w-xl mx-auto px-6 text-center">
-          <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ type: 'spring', bounce: 0.4 }}>
-            <div className="w-20 h-20 rounded-full bg-emerald-400/15 flex items-center justify-center mx-auto mb-6">
-              <CheckCircle className="w-10 h-10 text-emerald-400" />
-            </div>
-            <h2 className="font-display text-3xl font-bold text-white mb-4">Booking Received!</h2>
-            <p className="text-slate-400 text-lg">Thanks {form.name.split(' ')[0]}! We&apos;ve received your booking request and will be in touch shortly to confirm your appointment.</p>
-            <a href="tel:+61466050834" className="inline-flex items-center gap-2 mt-8 px-6 py-3 glass border border-white/10 text-sky-400 font-semibold rounded-xl cursor-pointer">
-              <Phone className="w-4 h-4" /> Questions? Call us: 0466 050 834
+  return (
+    <section id="book" className="bg-slate-50 border-t border-slate-200 py-14 sm:py-20">
+      <div className="max-w-6xl mx-auto px-6 grid lg:grid-cols-[1fr_1.1fr] gap-10 lg:gap-14">
+        {/* Left: the pitch + contact details */}
+        <div>
+          <Kicker>Get a price</Kicker>
+          <h2 className="font-display text-3xl sm:text-4xl font-bold text-slate-900 mt-3 leading-tight">
+            Book a clean or grab a quote
+          </h2>
+          <p className="text-slate-600 mt-4 leading-relaxed">
+            Fill in the form and we will get back to you, usually the same day, with a price. Rather just talk it
+            through? Give us a call.
+          </p>
+
+          <div className="mt-8 space-y-3">
+            <a href={PHONE_HREF} className="flex items-center gap-3 rounded-lg border border-slate-200 bg-white shadow-sm px-4 py-3.5 hover:border-sky-300 transition-colors cursor-pointer group">
+              <span className="w-10 h-10 rounded-md bg-sky-50 flex items-center justify-center flex-shrink-0">
+                <Phone className="w-5 h-5 text-sky-600" />
+              </span>
+              <span>
+                <span className="block text-slate-900 font-semibold leading-tight">{PHONE_DISPLAY}</span>
+                <span className="block text-slate-500 text-xs mt-0.5">Call or text, 7 days</span>
+              </span>
             </a>
-          </motion.div>
-        </div>
-      </section>
-    );
-  }
-
-  return (
-    <section id="booking" ref={ref} className="py-16 sm:py-24 lg:py-32 relative overflow-hidden">
-      <div className="absolute inset-0 bg-gradient-to-b from-navy-800 to-navy-900" />
-      <div className="absolute inset-0 opacity-40"
-        style={{ backgroundImage: 'radial-gradient(ellipse 80% 60% at 50% 50%, rgba(14,165,233,0.06) 0%, transparent 70%)' }}
-      />
-      <div className="relative max-w-2xl mx-auto px-6">
-        <motion.div variants={stagger} initial="hidden" animate={inView ? 'show' : 'hidden'} className="text-center mb-12">
-          <motion.div variants={fadeUp}><SectionLabel>Get a Quote</SectionLabel></motion.div>
-          <motion.h2 variants={fadeUp} className="font-display text-4xl sm:text-5xl font-bold text-white mt-4">
-            Book Your Clean
-          </motion.h2>
-          <motion.p variants={fadeUp} className="text-slate-400 mt-4">
-            Takes 2 minutes. We&apos;ll be in touch to confirm.
-          </motion.p>
-        </motion.div>
-
-        {/* Progress */}
-        <motion.div variants={fadeUp} initial="hidden" animate={inView ? 'show' : 'hidden'} className="flex items-center gap-3 mb-8">
-          {[1, 2, 3].map((s) => (
-            <div key={s} className="flex items-center gap-3 flex-1">
-              <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold transition-all duration-300 flex-shrink-0 ${
-                step > s ? 'bg-emerald-400 text-navy-900' : step === s ? 'bg-sky-500 text-white' : 'bg-white/10 text-slate-500'
-              }`}>
-                {step > s ? '✓' : s}
-              </div>
-              <div className={`text-xs font-medium ${step >= s ? 'text-white' : 'text-slate-600'}`}>
-                {s === 1 ? 'Your Details' : s === 2 ? 'Service' : 'Schedule'}
-              </div>
-              {s < 3 && <div className={`flex-1 h-px transition-all duration-500 ${step > s ? 'bg-sky-400' : 'bg-white/10'}`} />}
+            <div className="flex items-center gap-3 rounded-lg border border-slate-200 bg-white shadow-sm px-4 py-3.5">
+              <span className="w-10 h-10 rounded-md bg-sky-50 flex items-center justify-center flex-shrink-0">
+                <MapPin className="w-5 h-5 text-sky-600" />
+              </span>
+              <span>
+                <span className="block text-slate-900 font-semibold leading-tight">Canberra, ACT</span>
+                <span className="block text-slate-500 text-xs mt-0.5">We cover the whole of the ACT</span>
+              </span>
             </div>
-          ))}
-        </motion.div>
+            <div className="flex items-center gap-3 rounded-lg border border-slate-200 bg-white shadow-sm px-4 py-3.5">
+              <span className="w-10 h-10 rounded-md bg-sky-50 flex items-center justify-center flex-shrink-0">
+                <Clock className="w-5 h-5 text-sky-600" />
+              </span>
+              <span>
+                <span className="block text-slate-900 font-semibold leading-tight">Open 7 days</span>
+                <span className="block text-slate-500 text-xs mt-0.5">Quotes usually back the same day</span>
+              </span>
+            </div>
+          </div>
+        </div>
 
-        <motion.div variants={scaleIn} initial="hidden" animate={inView ? 'show' : 'hidden'} className="glass rounded-3xl border border-white/10 p-8">
-          <AnimatePresence mode="wait">
-
-            {/* Step 1: Contact */}
-            {step === 1 && (
-              <motion.div key="step1" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="space-y-5">
-                <div>
-                  <label className="block text-slate-400 text-sm font-medium mb-2">Name *</label>
-                  <input className="form-input" placeholder="John Smith" value={form.name} onChange={e => set('name', e.target.value)} />
-                </div>
-                <div>
-                  <label className="block text-slate-400 text-sm font-medium mb-2">Phone Number *</label>
-                  <input className="form-input" type="tel" placeholder="04XX XXX XXX" value={form.phone} onChange={e => set('phone', e.target.value)} />
-                </div>
-                <div>
-                  <label className="block text-slate-400 text-sm font-medium mb-2">Email <span className="text-slate-600">(optional)</span></label>
-                  <input className="form-input" type="email" placeholder="john@example.com" value={form.email} onChange={e => set('email', e.target.value)} />
-                </div>
-                <button disabled={!canStep1} onClick={() => setStep(2)} className="w-full py-3.5 bg-sky-500 hover:bg-sky-400 disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold rounded-xl transition-all hover:-translate-y-0.5 cursor-pointer">
-                  Next: Choose Service →
-                </button>
-              </motion.div>
-            )}
-
-            {/* Step 2: Service */}
-            {step === 2 && (
-              <motion.div key="step2" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="space-y-5">
-                <div>
-                  <label className="block text-slate-400 text-sm font-medium mb-1">Services Required *</label>
-                  <p className="text-slate-500 text-xs mb-3">Select all that apply — bundle two or more for a better price.</p>
-                  <div className="grid gap-3">
-                    {[
-                      { v: 'window-washing', l: 'Window Washing', d: 'Streak-free interior & exterior cleaning' },
-                      { v: 'pressure-washing', l: 'Pressure Washing', d: 'Driveways, paths, exterior surfaces' },
-                      { v: 'flyscreen-repair', l: 'Flyscreen Repair', d: 'Repair & replace damaged flyscreens' },
-                      { v: 'solar-panel-cleaning', l: 'Solar Panel Cleaning', d: 'Boost output with clean panels' },
-                      { v: 'other', l: 'Other', d: 'Something else? Tell us in the notes' },
-                    ].map(o => {
-                      const active = selectedServices.includes(o.v);
-                      return (
-                        <button
-                          key={o.v}
-                          onClick={() => toggleService(o.v)}
-                          className={`p-4 rounded-xl border text-left transition-all cursor-pointer flex items-center gap-3 ${
-                            active ? 'border-sky-400 bg-sky-400/10 text-white' : 'border-white/10 bg-white/3 text-slate-300 hover:border-white/20'
-                          }`}
-                        >
-                          <div className={`w-5 h-5 rounded-md border flex items-center justify-center flex-shrink-0 transition-all ${active ? 'bg-sky-400 border-sky-400' : 'border-white/25'}`}>
-                            {active && <CheckCircle className="w-4 h-4 text-navy-900" strokeWidth={3} />}
-                          </div>
-                          <div>
-                            <div className="font-semibold text-sm">{o.l}</div>
-                            <div className="text-xs opacity-70 mt-0.5">{o.d}</div>
-                          </div>
-                        </button>
-                      );
-                    })}
-                  </div>
-                  {selectedServices.length >= 2 && (
-                    <div className="mt-3 flex items-center gap-2 text-emerald-400 text-xs font-medium bg-emerald-400/10 border border-emerald-400/20 rounded-lg px-3 py-2">
-                      <Sparkles className="w-3.5 h-3.5 flex-shrink-0" /> Nice — bundling {selectedServices.length} services means a better price. We&apos;ll include a multi-service discount in your quote.
-                    </div>
-                  )}
-                </div>
-                <div>
-                  <label className="block text-slate-400 text-sm font-medium mb-3">Property Type <span className="text-slate-600">(optional)</span></label>
-                  <div className="grid grid-cols-2 gap-3">
-                    {['residential', 'commercial'].map(t => (
-                      <button
-                        key={t}
-                        onClick={() => set('propertyType', t)}
-                        className={`p-3 rounded-xl border text-sm font-medium capitalize transition-all cursor-pointer ${
-                          form.propertyType === t ? 'border-sky-400 bg-sky-400/10 text-white' : 'border-white/10 bg-white/3 text-slate-300 hover:border-white/20'
-                        }`}
-                      >
-                        {t}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                <div className="flex gap-3">
-                  <button onClick={() => setStep(1)} className="px-5 py-3 glass border border-white/10 text-slate-400 text-sm rounded-xl hover:text-white transition-all cursor-pointer">
-                    ← Back
-                  </button>
-                  <button disabled={!canStep2} onClick={() => setStep(3)} className="flex-1 py-3 bg-sky-500 hover:bg-sky-400 disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold rounded-xl transition-all cursor-pointer">
-                    Next: Schedule →
-                  </button>
-                </div>
-              </motion.div>
-            )}
-
-            {/* Step 3: Schedule */}
-            {step === 3 && (
-              <motion.div key="step3" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="space-y-5">
-                <div>
-                  <label className="block text-slate-400 text-sm font-medium mb-2">Street Address *</label>
-                  <AddressAutocomplete
-                    street={form.address}
-                    onStreet={v => set('address', v)}
-                    onSuburb={v => set('suburb', v)}
-                  />
-                  <p className="text-slate-600 text-xs mt-1.5">Start typing and pick your address, and your suburb fills in automatically.</p>
-                </div>
-                <div>
-                  <label className="block text-slate-400 text-sm font-medium mb-2">Suburb <span className="text-slate-600">(optional)</span></label>
-                  <input className="form-input" placeholder="Suburb" value={form.suburb} onChange={e => set('suburb', e.target.value)} />
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-slate-400 text-sm font-medium mb-2">Preferred Date <span className="text-slate-600">(optional)</span></label>
-                    <input
-                      className="form-input"
-                      type="date"
-                      min={new Date(Date.now() + 86400000).toISOString().split('T')[0]}
-                      value={form.preferredDate}
-                      onChange={e => set('preferredDate', e.target.value)}
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-slate-400 text-sm font-medium mb-2">Preferred Time <span className="text-slate-600">(optional)</span></label>
-                    <input className="form-input" placeholder="e.g. Morning, 9am, or no preference" value={form.preferredTime} onChange={e => set('preferredTime', e.target.value)} />
-                  </div>
-                </div>
-                <div>
-                  <label className="block text-slate-400 text-sm font-medium mb-2">Additional Notes</label>
-                  <textarea className="form-input resize-none" rows={3} placeholder="Number of windows, special requirements, access notes..." value={form.notes} onChange={e => set('notes', e.target.value)} />
-                </div>
-                <div className="flex gap-3">
-                  <button onClick={() => setStep(2)} className="px-5 py-3 glass border border-white/10 text-slate-400 text-sm rounded-xl hover:text-white transition-all cursor-pointer">
-                    ← Back
-                  </button>
-                  <button disabled={!canStep3 || loading} onClick={submit} className="flex-1 py-3.5 bg-sky-500 hover:bg-sky-400 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold rounded-xl transition-all hover:-translate-y-0.5 hover:shadow-lg hover:shadow-sky-500/30 cursor-pointer flex items-center justify-center gap-2">
-                    {loading ? (
-                      <><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Submitting...</>
-                    ) : (
-                      <><CheckCircle className="w-4 h-4" /> Submit Booking Request</>
-                    )}
-                  </button>
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </motion.div>
-
-        <motion.p variants={fadeUp} initial="hidden" animate={inView ? 'show' : 'hidden'} className="text-center text-slate-600 text-xs mt-6">
-          Prefer to call? Reach us on <a href="tel:+61466050834" className="text-sky-400 hover:underline">0466 050 834</a>, available 24/7.
-        </motion.p>
-      </div>
-    </section>
-  );
-}
-
-// ─── Contact ─────────────────────────────────────────────────────────────────
-
-function Contact() {
-  const ref = useRef<HTMLElement>(null);
-  const inView = useInView(ref, { once: true, margin: '-100px' });
-
-  return (
-    <section id="contact" ref={ref} className="py-16 sm:py-24 lg:py-32 bg-gradient-to-b from-navy-900 to-navy-900">
-      <div className="max-w-6xl mx-auto px-6">
-        <motion.div variants={stagger} initial="hidden" animate={inView ? 'show' : 'hidden'} className="text-center mb-16">
-          <motion.div variants={fadeUp}><SectionLabel>Contact</SectionLabel></motion.div>
-          <motion.h2 variants={fadeUp} className="font-display text-4xl sm:text-5xl font-bold text-white mt-4">Get in Touch</motion.h2>
-        </motion.div>
-
-        <motion.div variants={stagger} initial="hidden" animate={inView ? 'show' : 'hidden'} className="grid sm:grid-cols-2 gap-6 max-w-2xl mx-auto">
-          {[
-            { icon: Phone, label: 'Phone', value: '0466 050 834', sub: 'Available 24/7', href: 'tel:+61466050834', accent: '#38BDF8' },
-            { icon: MapPin, label: 'Location', value: 'North Canberra, ACT', sub: 'Serving greater Canberra', href: 'https://maps.google.com/?q=North+Canberra+ACT', accent: '#34D399' },
-          ].map((c, i) => (
-            <motion.a
-              key={c.label}
-              href={c.href}
-              target={c.href.startsWith('http') ? '_blank' : undefined}
-              rel={c.href.startsWith('http') ? 'noopener noreferrer' : undefined}
-              variants={scaleIn}
-              transition={{ delay: i * 0.1 }}
-              className="glass rounded-2xl border border-white/8 p-6 text-center hover:border-sky-400/20 transition-all duration-300 group hover:-translate-y-1 cursor-pointer block"
-            >
-              <div className="w-12 h-12 rounded-2xl mx-auto flex items-center justify-center mb-4 transition-all duration-300 group-hover:scale-110"
-                style={{ background: `${c.accent}15`, border: `1px solid ${c.accent}20` }}>
-                <c.icon className="w-6 h-6" style={{ color: c.accent }} />
+        {/* Right: the form */}
+        <div className="light-form rounded-lg border border-slate-200 bg-white shadow-sm p-6 sm:p-7">
+          {submitted ? (
+            <div className="text-center py-8">
+              <div className="w-16 h-16 rounded-full bg-emerald-100 flex items-center justify-center mx-auto mb-5">
+                <CheckCircle className="w-8 h-8 text-emerald-600" />
               </div>
-              <div className="text-slate-500 text-xs font-semibold uppercase tracking-wider mb-1">{c.label}</div>
-              <div className="text-white font-semibold">{c.value}</div>
-              <div className="text-slate-500 text-sm mt-1">{c.sub}</div>
-            </motion.a>
-          ))}
-        </motion.div>
+              <h3 className="font-display text-2xl font-bold text-slate-900">Got it, thanks {form.name.split(' ')[0]}</h3>
+              <p className="text-slate-600 mt-3">We have your details and will be in touch shortly to confirm a time and price.</p>
+              <a href={PHONE_HREF} className="inline-flex items-center gap-2 mt-6 px-5 py-3 border border-slate-200 text-sky-600 font-semibold rounded-md cursor-pointer">
+                <Phone className="w-4 h-4" /> Questions? Call {PHONE_DISPLAY}
+              </a>
+            </div>
+          ) : (
+            <>
+              {/* Progress */}
+              <div className="flex items-center gap-2 mb-6">
+                {[1, 2, 3].map((s) => (
+                  <div key={s} className="flex items-center gap-2 flex-1">
+                    <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 ${step > s ? 'bg-emerald-500 text-white' : step === s ? 'bg-sky-500 text-white' : 'bg-slate-200 text-slate-500'}`}>
+                      {step > s ? '✓' : s}
+                    </div>
+                    <div className={`text-xs font-medium hidden sm:block ${step >= s ? 'text-slate-900' : 'text-slate-400'}`}>
+                      {s === 1 ? 'Your details' : s === 2 ? 'Service' : 'Where & when'}
+                    </div>
+                    {s < 3 && <div className={`flex-1 h-px ${step > s ? 'bg-sky-400' : 'bg-slate-200'}`} />}
+                  </div>
+                ))}
+              </div>
 
-        {/* Areas we serve — local SEO relevance */}
-        <motion.div variants={fadeUp} initial="hidden" animate={inView ? 'show' : 'hidden'} className="mt-12 text-center">
-          <h3 className="text-slate-400 text-sm font-semibold uppercase tracking-wider mb-3">Areas We Serve in Canberra</h3>
-          <p className="text-slate-500 text-sm max-w-3xl mx-auto leading-relaxed">
-            Dickson, Braddon, Ainslie, Bruce, Gungahlin, Belconnen, Civic, Reid, Turner, O&apos;Connor, Acton,
-            Yarralumla, Deakin, Barton, Forrest, Narrabundah and surrounding suburbs across the ACT.
-          </p>
-          <p className="text-slate-500 text-sm max-w-2xl mx-auto leading-relaxed mt-3">
-            We also take bookings outside the ACT. A small travel fee may apply depending on the location, and we will always confirm it with your quote.
-          </p>
-        </motion.div>
+              <AnimatePresence mode="wait">
+                {step === 1 && (
+                  <motion.div key="s1" initial={{ opacity: 0, x: 16 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -16 }} className="space-y-4">
+                    <div>
+                      <label className="block text-slate-600 text-sm font-medium mb-2">Name *</label>
+                      <input className="form-input" placeholder="Your name" value={form.name} onChange={e => set('name', e.target.value)} />
+                    </div>
+                    <div>
+                      <label className="block text-slate-600 text-sm font-medium mb-2">Phone *</label>
+                      <input className="form-input" type="tel" placeholder="04XX XXX XXX" value={form.phone} onChange={e => set('phone', e.target.value)} />
+                    </div>
+                    <div>
+                      <label className="block text-slate-600 text-sm font-medium mb-2">Email <span className="text-slate-400">(optional)</span></label>
+                      <input className="form-input" type="email" placeholder="you@example.com" value={form.email} onChange={e => set('email', e.target.value)} />
+                    </div>
+                    <button disabled={!canStep1} onClick={() => setStep(2)} className="w-full py-3.5 bg-sky-500 hover:bg-sky-600 disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold rounded-md transition-colors cursor-pointer">
+                      Next: pick a service
+                    </button>
+                  </motion.div>
+                )}
+
+                {step === 2 && (
+                  <motion.div key="s2" initial={{ opacity: 0, x: 16 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -16 }} className="space-y-4">
+                    <div>
+                      <label className="block text-slate-600 text-sm font-medium mb-1">What do you need? *</label>
+                      <p className="text-slate-500 text-xs mb-3">Pick as many as you like. Two or more in one visit gets you a better price.</p>
+                      <div className="grid gap-2.5">
+                        {[
+                          { v: 'window-washing', l: 'Window cleaning', d: 'Inside and out, frames and screens' },
+                          { v: 'pressure-washing', l: 'Pressure washing', d: 'Driveways, paths, exterior surfaces' },
+                          { v: 'flyscreen-repair', l: 'Flyscreen repair', d: 'Repair or replace damaged screens' },
+                          { v: 'solar-panel-cleaning', l: 'Solar panel cleaning', d: 'Get your panels working better' },
+                          { v: 'other', l: 'Something else', d: 'Tell us in the notes' },
+                        ].map(o => {
+                          const active = selectedServices.includes(o.v);
+                          return (
+                            <button key={o.v} onClick={() => toggleService(o.v)} className={`p-3.5 rounded-md border text-left transition-colors cursor-pointer flex items-center gap-3 ${active ? 'border-sky-500 bg-sky-50 text-slate-900' : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300'}`}>
+                              <div className={`w-5 h-5 rounded border flex items-center justify-center flex-shrink-0 ${active ? 'bg-sky-500 border-sky-500' : 'border-slate-300'}`}>
+                                {active && <Check className="w-3.5 h-3.5 text-white" strokeWidth={3} />}
+                              </div>
+                              <div>
+                                <div className="font-semibold text-sm">{o.l}</div>
+                                <div className="text-xs opacity-70 mt-0.5">{o.d}</div>
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                      {selectedServices.length >= 2 && (
+                        <div className="mt-3 flex items-start gap-2 text-emerald-700 text-xs font-medium bg-emerald-50 border border-emerald-200 rounded-md px-3 py-2">
+                          <Check className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" /> Good call. Two jobs in one visit means we can drop the total. We will factor that into your quote.
+                        </div>
+                      )}
+                    </div>
+                    <div>
+                      <label className="block text-slate-600 text-sm font-medium mb-2.5">Home or business? <span className="text-slate-400">(optional)</span></label>
+                      <div className="grid grid-cols-2 gap-2.5">
+                        {[{ v: 'residential', l: 'Home' }, { v: 'commercial', l: 'Business' }].map(t => (
+                          <button key={t.v} onClick={() => set('propertyType', t.v)} className={`p-3 rounded-md border text-sm font-medium transition-colors cursor-pointer ${form.propertyType === t.v ? 'border-sky-500 bg-sky-50 text-slate-900' : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300'}`}>
+                            {t.l}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="flex gap-3">
+                      <button onClick={() => setStep(1)} className="px-5 py-3 border border-slate-200 text-slate-600 text-sm rounded-md hover:text-slate-900 hover:bg-slate-50 transition-colors cursor-pointer">Back</button>
+                      <button disabled={!canStep2} onClick={() => setStep(3)} className="flex-1 py-3 bg-sky-500 hover:bg-sky-600 disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold rounded-md transition-colors cursor-pointer">
+                        Next: where & when
+                      </button>
+                    </div>
+                  </motion.div>
+                )}
+
+                {step === 3 && (
+                  <motion.div key="s3" initial={{ opacity: 0, x: 16 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -16 }} className="space-y-4">
+                    <div>
+                      <label className="block text-slate-600 text-sm font-medium mb-2">Street address *</label>
+                      <AddressAutocomplete street={form.address} onStreet={v => set('address', v)} onSuburb={v => set('suburb', v)} />
+                      <p className="text-slate-500 text-xs mt-1.5">Start typing and pick your address. Your suburb fills in on its own.</p>
+                    </div>
+                    <div>
+                      <label className="block text-slate-600 text-sm font-medium mb-2">Suburb <span className="text-slate-400">(optional)</span></label>
+                      <input className="form-input" placeholder="Suburb" value={form.suburb} onChange={e => set('suburb', e.target.value)} />
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-slate-600 text-sm font-medium mb-2">Preferred date <span className="text-slate-400">(optional)</span></label>
+                        <input className="form-input" type="date" min={new Date(Date.now() + 86400000).toISOString().split('T')[0]} value={form.preferredDate} onChange={e => set('preferredDate', e.target.value)} />
+                      </div>
+                      <div>
+                        <label className="block text-slate-600 text-sm font-medium mb-2">Preferred time <span className="text-slate-400">(optional)</span></label>
+                        <input className="form-input" placeholder="Morning, 9am, no preference" value={form.preferredTime} onChange={e => set('preferredTime', e.target.value)} />
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block text-slate-600 text-sm font-medium mb-2">Anything else</label>
+                      <textarea className="form-input resize-none" rows={3} placeholder="Number of windows, access notes, anything we should know" value={form.notes} onChange={e => set('notes', e.target.value)} />
+                    </div>
+                    <div className="flex gap-3">
+                      <button onClick={() => setStep(2)} className="px-5 py-3 border border-slate-200 text-slate-600 text-sm rounded-md hover:text-slate-900 hover:bg-slate-50 transition-colors cursor-pointer">Back</button>
+                      <button disabled={!canStep3 || loading} onClick={submit} className="flex-1 py-3.5 bg-sky-500 hover:bg-sky-600 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold rounded-md transition-colors cursor-pointer flex items-center justify-center gap-2">
+                        {loading ? (<><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Sending</>) : 'Send my details'}
+                      </button>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
+              <p className="text-center text-slate-500 text-xs mt-5">
+                Prefer to call? <a href={PHONE_HREF} className="text-sky-600 hover:underline">{PHONE_DISPLAY}</a>, 7 days a week.
+              </p>
+            </>
+          )}
+        </div>
       </div>
     </section>
   );
 }
 
-// ─── Footer ─────────────────────────────────────────────────────────────────
+// ─── Sky CTA band (commit-to-color) ──────────────────────────────────────────
+
+function SkyCTA() {
+  return (
+    <section className="bg-sky-500">
+      <div className="max-w-6xl mx-auto px-6 py-12 sm:py-14 flex flex-col md:flex-row md:items-center justify-between gap-6">
+        <div>
+          <h2 className="font-display text-2xl sm:text-3xl font-bold text-white">Ready for clear windows?</h2>
+          <p className="text-sky-50 mt-2">Free quote, usually back the same day. Right across the ACT.</p>
+        </div>
+        <div className="flex flex-col sm:flex-row gap-3 flex-shrink-0">
+          <button onClick={goToBook} className="px-6 py-3.5 bg-white text-sky-600 font-semibold rounded-md hover:bg-sky-50 transition-colors cursor-pointer">
+            Get a free quote
+          </button>
+          <a href={PHONE_HREF} className="inline-flex items-center justify-center gap-2 px-6 py-3.5 bg-sky-600 hover:bg-sky-700 text-white font-semibold rounded-md transition-colors cursor-pointer">
+            <Phone className="w-4 h-4" /> Call {PHONE_DISPLAY}
+          </a>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ─── Footer (kept dark — anchors the light page, hides bottom overscroll) ────
 
 function Footer() {
   return (
-    <footer className="bg-navy-900 border-t border-white/5 py-12">
+    <footer className="bg-navy-900 border-t border-white/10 pt-12 pb-8">
       <div className="max-w-6xl mx-auto px-6">
-        <div className="flex flex-col md:flex-row items-center justify-between gap-6">
-          <div className="flex items-center gap-3">
-            <Image src="/logo.png" alt="Glass & Blast Window Cleaning" width={150} height={60} className="object-contain h-14 w-auto" />
-            <div className="hidden sm:block">
-              <div className="text-slate-400 text-xs">North Canberra, ACT · ABN available on request</div>
+        <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-8">
+          <div className="lg:col-span-1">
+            <Image src="/logo.png" alt="Glass & Blast Window Cleaning" width={170} height={68} className="object-contain h-14 w-auto" />
+            <p className="text-slate-400 text-sm mt-4 leading-relaxed">
+              Window cleaning and pressure washing across the ACT. Locally owned, fully insured.
+            </p>
+            <div className="flex gap-2.5 mt-4">
+              <a href="https://www.facebook.com/profile.php?id=61573538586021" target="_blank" rel="noopener noreferrer" aria-label="Glass & Blast on Facebook" className="w-9 h-9 rounded-md border border-white/10 flex items-center justify-center text-slate-400 hover:text-sky-400 hover:border-sky-400/40 transition-colors cursor-pointer">
+                <Facebook className="w-4 h-4" />
+              </a>
+              <a href="https://www.google.com/maps/place/Glass+%26+Blast+Canberra/@-35.2641588,149.1323995,17z" target="_blank" rel="noopener noreferrer" aria-label="Glass & Blast on Google" className="w-9 h-9 rounded-md border border-white/10 flex items-center justify-center hover:border-sky-400/40 transition-colors cursor-pointer">
+                <svg className="w-4 h-4" viewBox="0 0 24 24" aria-hidden="true">
+                  <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+                  <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+                  <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"/>
+                  <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
+                </svg>
+              </a>
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-6 text-sm text-slate-500">
-            {NAV_LINKS.map(l => (
-              <button
-                key={l.href}
-                onClick={() => document.querySelector(l.href)?.scrollIntoView({ behavior: 'smooth' })}
-                className="hover:text-sky-400 transition-colors cursor-pointer"
-              >
-                {l.label}
-              </button>
-            ))}
-            <a href="/blog" className="hover:text-sky-400 transition-colors cursor-pointer">Guides</a>
-            <a href="/services/commercial-window-cleaning-canberra" className="hover:text-sky-400 transition-colors cursor-pointer">Commercial</a>
-            <a href="/services/pressure-washing-canberra" className="hover:text-sky-400 transition-colors cursor-pointer">Pressure Washing</a>
-            <a href="/faq" className="hover:text-sky-400 transition-colors cursor-pointer">FAQ</a>
-            <a href="/privacy" className="hover:text-sky-400 transition-colors cursor-pointer">Privacy Policy</a>
+
+          <div>
+            <h3 className="text-white text-sm font-semibold">Get in touch</h3>
+            <ul className="mt-3 space-y-2 text-sm text-slate-400">
+              <li><a href={PHONE_HREF} className="hover:text-sky-400 transition-colors">{PHONE_DISPLAY}</a></li>
+              <li>info@glassandblast.com.au</li>
+              <li>Open 7 days, quotes back the same day</li>
+            </ul>
           </div>
-          <div className="flex gap-3">
-            <a
-              href="https://www.facebook.com/profile.php?id=61573538586021"
-              target="_blank"
-              rel="noopener noreferrer"
-              aria-label="Glass & Blast on Facebook"
-              className="w-9 h-9 rounded-xl glass border border-white/10 flex items-center justify-center text-slate-400 hover:text-sky-400 hover:border-sky-400/30 transition-all cursor-pointer"
-            >
-              <Facebook className="w-4 h-4" />
-            </a>
-            <a
-              href="https://www.google.com/maps/place/Glass+%26+Blast+Canberra/@-35.2642025,149.1327069,13z/data=!4m16!1m9!3m8!1s0x86988222311ebd0b:0xdc5b58d488c06a36!2sGlass+%26+Blast+Canberra!8m2!3d-35.2641588!4d149.1323995!9m1!1b1!16s%2Fg%2F11x1pjbn9b!3m5!1s0x86988222311ebd0b:0xdc5b58d488c06a36!8m2!3d-35.2641588!4d149.1323995!16s%2Fg%2F11x1pjbn9b?hl=en"
-              target="_blank"
-              rel="noopener noreferrer"
-              aria-label="Glass & Blast on Google"
-              className="w-9 h-9 rounded-xl glass border border-white/10 flex items-center justify-center hover:border-sky-400/30 transition-all cursor-pointer"
-            >
-              <svg className="w-4 h-4" viewBox="0 0 24 24" aria-hidden="true">
-                <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
-                <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
-                <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"/>
-                <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
-              </svg>
-            </a>
+
+          <div>
+            <h3 className="text-white text-sm font-semibold">Services</h3>
+            <ul className="mt-3 space-y-2 text-sm text-slate-400">
+              <li><button onClick={() => smoothScrollTo('#services')} className="hover:text-sky-400 transition-colors cursor-pointer">Window cleaning</button></li>
+              <li><a href="/services/pressure-washing-canberra" className="hover:text-sky-400 transition-colors">Pressure washing</a></li>
+              <li><a href="/services/commercial-window-cleaning-canberra" className="hover:text-sky-400 transition-colors">Commercial</a></li>
+              <li><a href="/faq" className="hover:text-sky-400 transition-colors">FAQ</a></li>
+              <li><a href="/blog" className="hover:text-sky-400 transition-colors">Window cleaning guides</a></li>
+            </ul>
+          </div>
+
+          <div>
+            <h3 className="text-white text-sm font-semibold">Areas</h3>
+            <ul className="mt-3 space-y-2 text-sm text-slate-400">
+              <li><Link href="/areas/gungahlin" className="hover:text-sky-400 transition-colors">Window cleaning Gungahlin</Link></li>
+              <li><Link href="/areas/belconnen" className="hover:text-sky-400 transition-colors">Window cleaning Belconnen</Link></li>
+              <li><Link href="/areas/dickson" className="hover:text-sky-400 transition-colors">Window cleaning Dickson</Link></li>
+              <li><Link href="/areas/ainslie" className="hover:text-sky-400 transition-colors">Window cleaning Ainslie</Link></li>
+            </ul>
+            <p className="mt-3 text-xs text-slate-500">Right across the ACT. ABN on request.</p>
           </div>
         </div>
-        <div className="mt-8 pt-6 border-t border-white/5 flex flex-col sm:flex-row items-center justify-between gap-3 text-slate-600 text-xs">
-          <span>© {new Date().getFullYear()} Glass & Blast Window Cleaning. All rights reserved.</span>
+
+        <div className="mt-10 pt-6 border-t border-white/10 flex flex-col sm:flex-row items-center justify-between gap-3 text-slate-500 text-xs">
+          <span>© {new Date().getFullYear()} Glass &amp; Blast Window Cleaning</span>
           <div className="flex items-center gap-4">
-            <span className="flex items-center gap-1">
-              <Award className="w-3 h-3 text-amber-400" /> 2025 Best Window Cleaner – North Canberra
-            </span>
-            <a href="/admin" className="flex items-center gap-1 text-slate-500 hover:text-sky-400 transition-colors cursor-pointer">
-              <Lock className="w-3 h-3" /> Sign In
-            </a>
+            <span className="flex items-center gap-1.5"><Award className="w-3.5 h-3.5 text-amber-400" /> 2025 Best Window Cleaner, North Canberra</span>
+            <a href="/admin" className="flex items-center gap-1 hover:text-sky-400 transition-colors cursor-pointer"><Lock className="w-3 h-3" /> Sign in</a>
+            <a href="/privacy" className="hover:text-sky-400 transition-colors">Privacy</a>
           </div>
         </div>
       </div>
@@ -1158,15 +1098,18 @@ export default function Home() {
   return (
     <>
       <Navbar />
-      <main>
+      <main className="bg-white">
         <Hero />
-        <StatsBar />
+        <TrustStrip />
+        <Work />
         <Services />
-        <WhyUs />
-        <OurWork />
+        <HowItWorks />
+        <Plans />
         <Reviews />
-        <BookingForm />
-        <Contact />
+        <About />
+        <Areas />
+        <SkyCTA />
+        <Book />
       </main>
       <Footer />
     </>

@@ -30,7 +30,7 @@ export const POSTS: Post[] = [
       ] },
       { h: 'What affects the price', ul: [
         'The number and size of your windows',
-        'Whether you want interior, exterior, or both',
+        'Inside only, or inside and out',
         'How accessible the windows are, including second story glass',
         'Extras like flyscreens, window tracks, or hard water stain removal',
         'How often you book, since regular cleans are usually quicker',
@@ -122,14 +122,14 @@ export const POSTS: Post[] = [
         'For a small home with easy to reach windows, doing it yourself costs only your time and a few supplies. If you are happy with a decent result and do not mind the effort, it can be enough.',
       ] },
       { h: 'Where professionals win', ul: [
-        'A genuinely streak free finish from the right tools and purified water',
-        'Safe cleaning of second story and hard to reach glass without ladders against the house',
+        'A genuinely streak free finish from the right tools and proper technique',
+        'Safe cleaning of second story and hard to reach glass',
         'Flyscreens, tracks, and frames cleaned properly, not just the glass',
         'Hours of your weekend saved',
         'Insurance cover, so any rare damage is handled',
       ] },
       { h: 'The real difference', p: [
-        'The biggest gap is the finish on high or dirty windows. Professional window cleaners use water fed poles and purified water that dries without spots, which is very hard to match with a cloth and a ladder. For two story homes in particular, the safety and result make a professional clean the clear choice.',
+        'The biggest gap is the finish on high or dirty windows. Professional window cleaners have the right squeegees, mops and technique to clear built up grime evenly, which is hard to match with a cloth on a weekend. For two story homes in particular, the safety and result make a professional clean the clear choice.',
       ] },
       { h: 'Try it once', p: [
         'If you have always done it yourself, it is worth booking one professional clean to see the difference. Get a free quote from Glass and Blast and compare the result to your usual weekend effort.',

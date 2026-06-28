@@ -27,3 +27,6 @@ npm-debug.log*
 .vercel
 *.tsbuildinfo
 next-env.d.ts
+
+# handoff doc with secrets/notes — never commit
+TRANSFER.md

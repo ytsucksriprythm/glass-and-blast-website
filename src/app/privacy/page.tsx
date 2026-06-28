@@ -22,23 +22,23 @@ const breadcrumbJsonLd = {
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section className="space-y-3">
-      <h2 className="font-display text-xl font-semibold text-white">{title}</h2>
-      <div className="space-y-3 text-slate-400 leading-relaxed text-sm">{children}</div>
+      <h2 className="font-display text-xl font-semibold text-slate-900">{title}</h2>
+      <div className="space-y-3 text-slate-600 leading-relaxed text-sm">{children}</div>
     </section>
   );
 }
 
 export default function PrivacyPolicy() {
   return (
-    <main className="min-h-screen bg-navy-900">
+    <main className="min-h-screen bg-white">
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbJsonLd) }} />
       {/* Top bar */}
-      <header className="border-b border-white/5">
+      <header className="border-b border-slate-200">
         <div className="max-w-3xl mx-auto px-6 py-5 flex items-center justify-between">
           <Link href="/" className="flex items-center gap-2 cursor-pointer">
             <Image src="/logo.png" alt="Glass & Blast Window Cleaning" width={150} height={60} className="object-contain h-12 w-auto" />
           </Link>
-          <Link href="/" className="inline-flex items-center gap-2 text-sm text-slate-400 hover:text-sky-400 transition-colors cursor-pointer">
+          <Link href="/" className="inline-flex items-center gap-2 text-sm text-slate-600 hover:text-sky-600 transition-colors cursor-pointer">
             <ArrowLeft className="w-4 h-4" /> Back to site
           </Link>
         </div>
@@ -46,16 +46,16 @@ export default function PrivacyPolicy() {
 
       <article className="max-w-3xl mx-auto px-6 py-16 space-y-10">
         <div className="space-y-3">
-          <h1 className="font-display text-4xl font-bold text-white">Privacy Policy</h1>
+          <h1 className="font-display text-4xl font-bold text-slate-900">Privacy Policy</h1>
           <p className="text-slate-500 text-sm">Last updated: {UPDATED}</p>
         </div>
 
-        <div className="space-y-3 text-slate-400 leading-relaxed text-sm">
+        <div className="space-y-3 text-slate-600 leading-relaxed text-sm">
           <p>
             Glass &amp; Blast Window Cleaning (&ldquo;we&rdquo;, &ldquo;us&rdquo;, &ldquo;our&rdquo;) is committed to protecting your privacy.
             This policy explains how we collect, use, disclose and safeguard your personal information,
-            in accordance with the <strong className="text-slate-300">Privacy Act 1988 (Cth)</strong> and the
-            <strong className="text-slate-300"> Australian Privacy Principles (APPs)</strong>.
+            in accordance with the <strong className="text-slate-900">Privacy Act 1988 (Cth)</strong> and the
+            <strong className="text-slate-900"> Australian Privacy Principles (APPs)</strong>.
           </p>
           <p>
             By using our website or booking our services, you consent to the collection and use of your
@@ -132,7 +132,7 @@ export default function PrivacyPolicy() {
             If you believe we have breached the Australian Privacy Principles or mishandled your personal
             information, please contact us first so we can address your concern. If you are not satisfied with
             our response, you may lodge a complaint with the Office of the Australian Information Commissioner
-            (OAIC) at <a href="https://www.oaic.gov.au" target="_blank" rel="noopener noreferrer" className="text-sky-400 hover:underline">www.oaic.gov.au</a>.
+            (OAIC) at <a href="https://www.oaic.gov.au" target="_blank" rel="noopener noreferrer" className="text-sky-600 hover:underline">www.oaic.gov.au</a>.
           </p>
         </Section>
 
@@ -146,14 +146,14 @@ export default function PrivacyPolicy() {
         <Section title="9. Contact Us">
           <p>For any questions about this policy or your personal information, contact us:</p>
           <ul className="list-none space-y-1">
-            <li><span className="text-slate-300">Glass &amp; Blast Window Cleaning</span></li>
+            <li><span className="text-slate-900">Glass &amp; Blast Window Cleaning</span></li>
             <li>North Canberra, ACT</li>
-            <li>Phone: <a href="tel:+61466050834" className="text-sky-400 hover:underline">0466 050 834</a></li>
+            <li>Phone: <a href="tel:+61466050834" className="text-sky-600 hover:underline">0466 050 834</a></li>
           </ul>
         </Section>
 
-        <div className="pt-6 border-t border-white/5">
-          <Link href="/" className="inline-flex items-center gap-2 text-sm text-sky-400 hover:text-sky-300 transition-colors cursor-pointer">
+        <div className="pt-6 border-t border-slate-200">
+          <Link href="/" className="inline-flex items-center gap-2 text-sm text-sky-600 hover:text-sky-700 transition-colors cursor-pointer">
             <ArrowLeft className="w-4 h-4" /> Back to Glass &amp; Blast
           </Link>
         </div>

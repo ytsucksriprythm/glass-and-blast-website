@@ -39,7 +39,7 @@ export const FAQS: FAQ[] = [
   },
   {
     q: 'Can Window Cleaners Work in Rainy Weather?',
-    a: 'Light rain does not affect a quality exterior clean, because we use purified water and proper technique. Heavy rain or unsafe conditions may mean we reschedule for your safety and ours. Interior window cleaning is not affected by the weather.',
+    a: 'Light rain does not affect a quality exterior clean, because the right tools and proper technique still leave the glass clear. Heavy rain or unsafe conditions may mean we reschedule for your safety and ours. Interior window cleaning is not affected by the weather.',
   },
   {
     q: 'What’s the Difference Between Window Cleaning Companies?',
@@ -55,11 +55,11 @@ export const FAQS: FAQ[] = [
   },
   {
     q: 'What Equipment Do Professional Window Cleaners Use?',
-    a: 'Professional window cleaners use squeegees, microfibre cloths, water fed poles, and purified water systems for high and hard to reach glass. Purified water dries without spots, which is how we get a streak free finish without leaning ladders on your home.',
+    a: 'We clean the traditional way, by hand. The main tools are squeegees, mops, and microfibre cloths, with extension poles for higher glass. Good technique and a careful final wipe down are what give you a streak free finish.',
   },
   {
     q: 'Is It Safe to Hire Someone to Clean Second-Story Windows?',
-    a: 'Yes, and it is safer than doing it yourself. Trained window cleaners use water fed poles from the ground wherever possible, which removes the need for ladders and keeps everyone safe while still getting a great result.',
+    a: 'Yes, and it is safer than doing it yourself. We are set up to work at height safely, with the right gear and proper ladder safety, so second storey glass gets the same careful clean as everything else.',
   },
   {
     q: 'How Can I Find a Reliable Window Cleaning Service?',
@@ -71,7 +71,7 @@ export const FAQS: FAQ[] = [
   },
   {
     q: 'Do Window Cleaners Bring Their Own Equipment and Water?',
-    a: 'Yes. Professional window cleaners arrive with all of their own equipment, including purified water for the water fed pole system. You do not need to provide anything.',
+    a: 'Yes. We arrive with all of our own gear, squeegees, mops, cloths and poles, ready to go. You do not need to provide anything, though a nearby tap is handy.',
   },
   {
     q: 'How Far in Advance Should I Book Window Cleaning?',

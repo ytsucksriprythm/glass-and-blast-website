@@ -30,7 +30,7 @@ export const SERVICE_PAGES: ServicePage[] = [
       ] },
       { h: 'Why businesses choose us', p: [
         'We are locally owned, fully insured, and award winning, named 2025 Best Window Cleaner in North Canberra. We turn up on time, work safely around your staff and customers, and leave the glass streak free every visit.',
-        'For higher windows we use water fed poles and purified water, which means a clean finish without ladders blocking entrances or walkways.',
+        'For higher windows we use extension poles and proper safety gear, working around your entrances and walkways so trade is never blocked.',
       ] },
       { h: 'Flexible scheduling', p: [
         'Most commercial clients book a regular schedule, often monthly or fortnightly, so your premises always look their best. We can work before or after hours to avoid disrupting trade, and we will tailor a plan to your building and budget.',

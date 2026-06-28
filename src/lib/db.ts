@@ -239,6 +239,13 @@ export async function updateBooking(id: string, updates: Partial<Booking>): Prom
     const m = { ...cur, ...updates };
     const rows = await sql`
       UPDATE bookings SET
+        name = ${m.name},
+        email = ${m.email ?? ''},
+        phone = ${m.phone ?? ''},
+        service = ${m.service},
+        property_type = ${m.propertyType},
+        address = ${m.address ?? ''},
+        suburb = ${m.suburb ?? ''},
         status = ${m.status},
         quote_amount = ${m.quoteAmount ?? null},
         admin_notes = ${m.adminNotes ?? ''},

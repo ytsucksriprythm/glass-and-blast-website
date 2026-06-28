@@ -1,6 +1,7 @@
 import type { MetadataRoute } from 'next';
 import { POSTS } from '@/lib/blog';
 import { SERVICE_PAGES } from '@/lib/services';
+import { AREA_PAGES } from '@/lib/areas';
 
 const BASE = process.env.NEXT_PUBLIC_URL || 'https://glassandblast.com.au';
 
@@ -18,5 +19,8 @@ export default function sitemap(): MetadataRoute.Sitemap {
   const blogPages: MetadataRoute.Sitemap = POSTS.map(p => ({
     url: `${BASE}/blog/${p.slug}`, lastModified: new Date(p.date), changeFrequency: 'yearly', priority: 0.6,
   }));
-  return [...staticPages, ...servicePages, ...blogPages];
+  const areaPages: MetadataRoute.Sitemap = AREA_PAGES.map(a => ({
+    url: `${BASE}/areas/${a.slug}`, lastModified: now, changeFrequency: 'monthly', priority: 0.7,
+  }));
+  return [...staticPages, ...servicePages, ...blogPages, ...areaPages];
 }

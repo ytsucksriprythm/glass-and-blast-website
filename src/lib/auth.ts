@@ -7,7 +7,10 @@ import { cookies } from 'next/headers';
 const SECRET = process.env.ADMIN_SECRET;
 const PASSWORD = process.env.ADMIN_PASSWORD;
 const COOKIE_NAME = 'gb_admin_session';
-const COOKIE_MAX_AGE = 60 * 60 * 24; // 24 hours
+// Long session so the home-screen app rarely needs a re-login. "Keep me signed in"
+// off shortens it to a day.
+const SESSION_MAX_AGE = 60 * 60 * 24 * 60; // 60 days (token validity window)
+const SHORT_MAX_AGE = 60 * 60 * 24;        // 1 day
 
 if (!SECRET || !PASSWORD) {
   console.error('[auth] ADMIN_SECRET and/or ADMIN_PASSWORD not set — admin login is disabled until configured.');
@@ -33,10 +36,10 @@ export function verifySessionToken(token: string): boolean {
     const sig = decoded.slice(lastColon + 1);
     const expected = sign(payload);
     if (sig !== expected) return false;
-    // Check token not older than 24h
+    // Check token not older than the session window
     const parts = payload.split(':');
     const ts = parseInt(parts[1]);
-    return Date.now() - ts < COOKIE_MAX_AGE * 1000;
+    return Date.now() - ts < SESSION_MAX_AGE * 1000;
   } catch {
     return false;
   }
@@ -58,14 +61,14 @@ export async function isAdminAuthenticated(): Promise<boolean> {
   return verifySessionToken(token);
 }
 
-export function getSessionCookieConfig(token: string) {
+export function getSessionCookieConfig(token: string, remember = true) {
   return {
     name: COOKIE_NAME,
     value: token,
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
     sameSite: 'lax' as const,
-    maxAge: COOKIE_MAX_AGE,
+    maxAge: remember ? SESSION_MAX_AGE : SHORT_MAX_AGE,
     path: '/',
   };
 }

@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Geist:wght@300;400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700;800;900&family=Geist:wght@300;400;500;600;700&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -26,7 +26,7 @@
   --ring: 199 89% 48%;
   --primary: 199 89% 48%;
   --primary-foreground: 210 40% 98%;
-  --radius: 0.9rem;
+  --radius: 0.5rem;
 }
 
 /* shadcn default border colour for the bare `border` utility (explicit border-* colours still win) */
@@ -46,13 +46,13 @@ html {
 
 body {
   font-family: 'Geist', system-ui, sans-serif;
-  background: #060D1A;
-  color: #fff;
+  background: #ffffff;
+  color: #0f172a;
   overflow-x: hidden;
 }
 
 h1, h2, h3, h4, h5 {
-  font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
+  font-family: 'Archivo', system-ui, sans-serif;
 }
 
 /* Custom scrollbar */
@@ -61,34 +61,24 @@ h1, h2, h3, h4, h5 {
 ::-webkit-scrollbar-thumb { background: #1E3A5F; border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: #38BDF8; }
 
-/* Glass card utility */
+/* Panel utility — flat, solid, no frosted glass (kept the .glass name so existing markup still works) */
 .glass {
-  background: rgba(255,255,255,0.04);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border: 1px solid rgba(255,255,255,0.08);
+  background: #0d1c30;
+  border: 1px solid rgba(148,163,184,0.12);
 }
 
 .glass-light {
-  background: rgba(255,255,255,0.9);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border: 1px solid rgba(255,255,255,0.6);
+  background: #ffffff;
+  border: 1px solid rgba(15,32,53,0.1);
 }
 
-/* Gradient text */
+/* Headline colour helpers — flat, no gradient text */
 .text-gradient {
-  background: linear-gradient(135deg, #38BDF8 0%, #7DD3FC 50%, #BAE6FD 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
+  color: #BAE6FD;
 }
 
 .text-gradient-gold {
-  background: linear-gradient(135deg, #F59E0B 0%, #FCD34D 50%, #FDE68A 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
+  color: #FBBF24;
 }
 
 /* Shine animation */
@@ -183,12 +173,37 @@ h1, h2, h3, h4, h5 {
   }
 }
 
+/* Light variant of .form-input, scoped to the public booking form (.light-form wrapper).
+   Higher specificity than the dark base, so the admin forms stay dark. */
+.light-form .form-input {
+  background-color: #ffffff;
+  border-color: #e2e8f0;
+  color: #0f172a;
+  color-scheme: light;
+}
+.light-form .form-input::placeholder { color: #94a3b8; }
+.light-form .form-input:focus { border-color: rgba(14, 165, 233, 0.6); }
+.light-form .form-input option { background-color: #ffffff; color: #0f172a; }
+
 /* Status badges */
 .badge-pending  { @apply bg-amber-400/15  text-amber-400  border border-amber-400/20; }
 .badge-quoted    { @apply bg-violet-400/15 text-violet-400 border border-violet-400/20; }
 .badge-confirmed { @apply bg-sky-400/15   text-sky-400    border border-sky-400/20; }
 .badge-completed { @apply bg-emerald-400/15 text-emerald-400 border border-emerald-400/20; }
 .badge-cancelled { @apply bg-red-400/15   text-red-400    border border-red-400/20; }
+
+/* ── App / PWA niceties (admin on iPhone home screen) ──────────────────────── */
+* { -webkit-tap-highlight-color: transparent; }
+html { -webkit-text-size-adjust: 100%; }
+
+/* iOS zooms the page when a focused field is under 16px. Keep inputs at 16px on phones. */
+@media (max-width: 640px) {
+  input, select, textarea { font-size: 16px; }
+}
+
+/* Safe-area helpers for notch + home indicator */
+.safe-top    { padding-top: env(safe-area-inset-top); }
+.safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
