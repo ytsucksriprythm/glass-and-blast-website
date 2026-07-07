@@ -51,6 +51,13 @@ body {
   overflow-x: hidden;
 }
 
+/* Admin runs on the dark theme. Paint the page background (and the iOS
+   status-bar / overscroll area that shows through the translucent header) navy
+   instead of the public site's white body — kills the white bar up top. */
+html:has(.admin-shell), body:has(.admin-shell) {
+  background: #060D1A;
+}
+
 h1, h2, h3, h4, h5 {
   font-family: 'Archivo', system-ui, sans-serif;
 }

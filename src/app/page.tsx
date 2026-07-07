@@ -138,20 +138,23 @@ function Stars({ n = 5 }: { n?: number }) {
 }
 
 // Scroll a section into a comfortable position: centred in the space under the
-// fixed navbar when it fits, otherwise its heading sits just below the navbar.
-// Avoids the default scrollIntoView behaviour where the target hides under the
-// navbar or (near the page end) gets clamped to the very bottom.
+// fixed navbar when it fits, otherwise its heading sits in the upper third so it
+// reads as deliberately placed on phones (where most sections are taller than the
+// screen) instead of jammed under the navbar. Avoids the default scrollIntoView
+// behaviour where the target hides under the navbar or clamps to the page bottom.
 function smoothScrollTo(href: string) {
   const el = document.querySelector(href);
   if (!el) return;
-  const navH = 84;          // fixed header allowance
-  const gapWhenTall = 28;   // breathing room for sections taller than the screen
+  // Measure the real fixed header (64px mobile / 80px desktop) rather than guess,
+  // so the centring is accurate on every screen size.
+  const header = document.querySelector('header');
+  const navH = (header ? header.getBoundingClientRect().height : 72) + 12; // + breathing room
   const rect = el.getBoundingClientRect();
   const elTop = rect.top + window.scrollY;
   const usable = window.innerHeight - navH;
   const target = rect.height <= usable
-    ? elTop - navH - (usable - rect.height) / 2   // centre it
-    : elTop - navH - gapWhenTall;                 // heading just below the navbar
+    ? elTop - navH - (usable - rect.height) / 2          // fits: centre it
+    : elTop - navH - Math.min(usable * 0.18, 140);       // taller than screen: heading in upper third
   window.scrollTo({ top: Math.max(0, target), behavior: 'smooth' });
 }
 

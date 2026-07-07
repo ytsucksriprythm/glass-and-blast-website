@@ -27,6 +27,7 @@ export interface Booking {
   adminNotes?: string;
   paid: boolean;
   source: BookingSource;
+  completedAt?: string | null; // date the job was marked completed (editable)
   createdAt: string;
   updatedAt: string;
 }
@@ -102,6 +103,7 @@ function rowToBooking(r: any): Booking {
     adminNotes: r.admin_notes ?? '',
     paid: r.paid === true || r.paid === 1,
     source: r.source ?? 'website',
+    completedAt: r.completed_at == null ? null : (typeof r.completed_at === 'string' ? r.completed_at : new Date(r.completed_at).toISOString()),
     createdAt: typeof r.created_at === 'string' ? r.created_at : new Date(r.created_at).toISOString(),
     updatedAt: typeof r.updated_at === 'string' ? r.updated_at : new Date(r.updated_at).toISOString(),
   };
@@ -139,6 +141,7 @@ async function ensureSchema(): Promise<void> {
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS admin_notes TEXT DEFAULT ''`;
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS paid BOOLEAN NOT NULL DEFAULT false`;
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'website'`;
+      await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ`;
       // Site traffic tracking
       await sql`
         CREATE TABLE IF NOT EXISTS pageviews (
@@ -231,11 +234,22 @@ export async function addBooking(data: NewBooking): Promise<Booking> {
   return booking;
 }
 
-export async function updateBooking(id: string, updates: Partial<Booking>): Promise<Booking | null> {
+// Stamp completedAt the first time a booking flips to "completed", unless the
+// caller passed an explicit value (e.g. the owner edited the completion date).
+function withCompletedAt(cur: Booking, updates: Partial<Booking>): Partial<Booking> {
+  if ('completedAt' in updates) return updates; // explicit edit (incl. clearing it)
+  if (updates.status === 'completed' && cur.status !== 'completed' && !cur.completedAt) {
+    return { ...updates, completedAt: new Date().toISOString() };
+  }
+  return updates;
+}
+
+export async function updateBooking(id: string, rawUpdates: Partial<Booking>): Promise<Booking | null> {
   if (sql) {
     await ensureSchema();
     const cur = await getBookingById(id);
     if (!cur) return null;
+    const updates = withCompletedAt(cur, rawUpdates);
     const m = { ...cur, ...updates };
     const rows = await sql`
       UPDATE bookings SET
@@ -253,6 +267,7 @@ export async function updateBooking(id: string, updates: Partial<Booking>): Prom
         notes = ${m.notes ?? ''},
         preferred_date = ${m.preferredDate ?? ''},
         preferred_time = ${m.preferredTime ?? ''},
+        completed_at = ${m.completedAt ?? null},
         updated_at = now()
       WHERE id = ${id}
       RETURNING *
@@ -264,6 +279,7 @@ export async function updateBooking(id: string, updates: Partial<Booking>): Prom
   const rows = readFile();
   const idx = rows.findIndex(b => b.id === id);
   if (idx === -1) return null;
+  const updates = withCompletedAt(rows[idx], rawUpdates);
   rows[idx] = { ...rows[idx], ...updates, updatedAt: new Date().toISOString() };
   writeFile(rows);
   return rows[idx];

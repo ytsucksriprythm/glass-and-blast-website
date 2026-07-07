@@ -14,7 +14,8 @@ export type Job = {
   mon: string;   // 'Jan'
   timeLabel: string; // '9:00am' or 'All day'
   allDay: boolean;
-  sortKey: number;
+  sortKey: number;   // start instant (epoch ms)
+  endKey: number;    // end of the slot (epoch ms) — used to drop jobs once they're over
 };
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -86,12 +87,18 @@ function parseIcs(text: string): Job[] {
     if (line === 'END:VEVENT') {
       const dt = cur?.dt as ReturnType<typeof parseDt> | undefined;
       if (cur && dt) {
+        const end = cur.dtend as ReturnType<typeof parseDt> | undefined;
+        // When the slot is "over": the event's DTEND if present, otherwise the
+        // end of the all-day (start + 24h) or an assumed 2h slot for timed events.
+        const endKey = end
+          ? end.sortKey
+          : dt.allDay ? dt.sortKey + 24 * 60 * 60 * 1000 : dt.sortKey + 2 * 60 * 60 * 1000;
         jobs.push({
           uid: (cur.uid as string) || `${dt.sortKey}-${(cur.title as string) || ''}`,
           title: (cur.title as string) || '(no title)',
           location: (cur.location as string) || '',
           dow: dt.dow, day: dt.day, mon: dt.mon,
-          timeLabel: dt.timeLabel, allDay: dt.allDay, sortKey: dt.sortKey,
+          timeLabel: dt.timeLabel, allDay: dt.allDay, sortKey: dt.sortKey, endKey,
         });
       }
       cur = null; continue;
@@ -111,6 +118,10 @@ function parseIcs(text: string): Job[] {
       const isDate = /VALUE=DATE(?!-TIME)/i.test(left) || !/T\d{4}/.test(value);
       cur.dt = parseDt(value, isDate);
     }
+    else if (name === 'DTEND') {
+      const isDate = /VALUE=DATE(?!-TIME)/i.test(left) || !/T\d{4}/.test(value);
+      cur.dtend = parseDt(value, isDate);
+    }
   }
   return jobs;
 }
@@ -126,9 +137,9 @@ export async function getUpcomingJobs(): Promise<{ configured: boolean; events: 
     });
     if (!res.ok) return { configured: true, events: [] };
     const text = await res.text();
-    const cutoff = Date.now() - 18 * 60 * 60 * 1000; // keep today's earlier jobs (timezone cushion)
+    const now = Date.now();
     const upcoming = parseIcs(text)
-      .filter(j => j.sortKey >= cutoff)
+      .filter(j => j.endKey > now) // drop a job once its time slot has passed
       .sort((a, b) => a.sortKey - b.sortKey)
       .slice(0, 8);
     cache = { ts: Date.now(), data: upcoming };

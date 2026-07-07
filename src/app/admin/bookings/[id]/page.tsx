@@ -6,7 +6,7 @@ import Link from 'next/link';
 import toast from 'react-hot-toast';
 import {
   ArrowLeft, Phone, Mail, MapPin, CalendarDays, DollarSign, StickyNote,
-  CalendarPlus, User, Wallet, Clock, Edit3, Check, X,
+  CalendarPlus, User, Wallet, Clock, Edit3, Check, X, CalendarCheck,
 } from 'lucide-react';
 import type { Booking, BookingStatus } from '@/lib/db';
 
@@ -31,9 +31,22 @@ const STATUS_LABEL: Record<string, string> = { pending: 'Pending', quoted: 'Quot
 const serviceText = (s: string) => (s ?? '').split(',').filter(Boolean).map(x => SERVICE_LABELS[x] ?? x).join(' + ') || '-';
 const money = (n?: number | null) => typeof n === 'number' ? `$${n.toLocaleString('en-AU', { maximumFractionDigits: 0 })}` : '';
 
-// Editable form: quoteAmount held as a string for the input; service is a CSV string.
-type EditForm = Omit<Booking, 'quoteAmount' | 'service'> & { quoteAmount: string; service: string };
-const toForm = (b: Booking): EditForm => ({ ...b, quoteAmount: b.quoteAmount != null ? String(b.quoteAmount) : '' });
+// Editable form: quoteAmount held as a string for the input; service is a CSV string;
+// completedAt held as a YYYY-MM-DD string for the date input.
+type EditForm = Omit<Booking, 'quoteAmount' | 'service' | 'completedAt'> & { quoteAmount: string; service: string; completedAt: string };
+const toForm = (b: Booking): EditForm => ({
+  ...b,
+  quoteAmount: b.quoteAmount != null ? String(b.quoteAmount) : '',
+  completedAt: b.completedAt ? b.completedAt.slice(0, 10) : '',
+});
+
+// A matched Google Calendar event (read-only feed).
+type CalEvent = { uid: string; title: string; location: string; dow: string; day: string; mon: string; timeLabel: string; allDay: boolean };
+function eventMatchesBooking(title: string, b: Booking): boolean {
+  const t = title.toLowerCase();
+  return !!(b.name && t.includes(b.name.toLowerCase().trim()))
+    || !!(b.address && b.address.length > 3 && t.includes(b.address.toLowerCase().trim()));
+}
 
 function gcalUrl(b: Booking): string {
   const place = [b.address, b.suburb].filter(Boolean).join(', ');
@@ -77,6 +90,7 @@ export default function BookingView() {
   const [edit, setEdit] = useState(false);
   const [form, setForm] = useState<EditForm | null>(null);
   const [saving, setSaving] = useState(false);
+  const [calEvents, setCalEvents] = useState<CalEvent[]>([]);
 
   useEffect(() => {
     (async () => {
@@ -89,6 +103,20 @@ export default function BookingView() {
       } catch { setState('notfound'); }
     })();
   }, [id, router]);
+
+  // Pull the read-only Google Calendar feed so we can show the scheduled slot if matched.
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch('/api/admin/calendar');
+        if (!res.ok) return;
+        const data = await res.json();
+        if (Array.isArray(data?.events)) setCalEvents(data.events);
+      } catch { /* no calendar — fine */ }
+    })();
+  }, []);
+
+  const calMatch = b ? calEvents.find(e => eventMatchesBooking(e.title, b)) : undefined;
 
   const set = (k: keyof EditForm, v: string | boolean) => setForm(f => f ? { ...f, [k]: v } : f);
   const toggleService = (v: string) => setForm(f => {
@@ -105,13 +133,17 @@ export default function BookingView() {
     if (!form) return;
     setSaving(true);
     try {
-      const patch = {
+      const patch: Record<string, unknown> = {
         name: form.name, phone: form.phone, email: form.email, service: form.service,
         propertyType: form.propertyType, address: form.address, suburb: form.suburb,
         preferredDate: form.preferredDate, preferredTime: form.preferredTime,
         status: form.status, paid: form.paid, notes: form.notes, adminNotes: form.adminNotes,
         quoteAmount: form.quoteAmount.trim() === '' ? null : Number(form.quoteAmount.replace(/[^0-9.]/g, '')),
       };
+      // Completion date: send an explicit value when set or when clearing an existing
+      // one. Leaving it out lets the server auto-stamp the day it flips to completed.
+      if (form.completedAt.trim() !== '') patch.completedAt = new Date(`${form.completedAt}T00:00:00`).toISOString();
+      else if (b?.completedAt) patch.completedAt = null;
       const res = await fetch(`/api/admin/bookings/${id}`, {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
       });
@@ -187,8 +219,18 @@ export default function BookingView() {
               <Row icon={User} label="Service">{serviceText(b.service)} · <span className="capitalize">{b.propertyType}</span></Row>
               {(b.address || b.suburb) && <Row icon={MapPin} label="Address">{[b.address, b.suburb].filter(Boolean).join(', ')}</Row>}
               {(b.preferredDate || b.preferredTime) && <Row icon={CalendarDays} label="Preferred time">{[b.preferredDate, b.preferredTime].filter(Boolean).join(' ')}</Row>}
+              {calMatch && (
+                <Row icon={CalendarCheck} label="Scheduled (Google Calendar)">
+                  <span className="text-sky-300">{calMatch.dow} {calMatch.day} {calMatch.mon}{calMatch.allDay ? '' : ` · ${calMatch.timeLabel}`}</span>
+                </Row>
+              )}
               <Row icon={DollarSign} label="Quote">{typeof b.quoteAmount === 'number' && b.quoteAmount > 0 ? money(b.quoteAmount) : 'No quote yet'}</Row>
               <Row icon={Wallet} label="Payment"><span className={b.paid ? 'text-emerald-400' : 'text-red-300'}>{b.paid ? 'Paid' : 'Not paid'}</span></Row>
+              {b.status === 'completed' && (
+                <Row icon={Check} label="Completed on">
+                  {b.completedAt ? new Date(b.completedAt).toLocaleDateString('en-AU', { day: 'numeric', month: 'long', year: 'numeric' }) : 'Date not set'}
+                </Row>
+              )}
             </div>
 
             {(b.notes || b.adminNotes) && (
@@ -271,6 +313,13 @@ export default function BookingView() {
                   </span>
                 </button>
               </div>
+              {form.status === 'completed' && (
+                <div>
+                  <FieldLabel>Completed on</FieldLabel>
+                  <input className="form-input" type="date" value={form.completedAt} onChange={e => set('completedAt', e.target.value)} />
+                  <p className="text-slate-500 text-xs mt-1">Leave blank to use the day it was marked completed.</p>
+                </div>
+              )}
             </div>
 
             <div><FieldLabel>Customer note</FieldLabel><textarea className="form-input resize-none" rows={2} value={form.notes} onChange={e => set('notes', e.target.value)} /></div>

@@ -207,11 +207,13 @@ function UpcomingJobs({ data, bookings }: { data: CalData | null; bookings: Book
         <p className="text-slate-500 text-sm leading-relaxed">
           Not connected yet. Add your calendar&apos;s secret iCal URL to <code className="text-slate-400 bg-white/5 px-1 py-0.5 rounded">GOOGLE_CALENDAR_ICS_URL</code> and upcoming jobs show up here.
         </p>
-      ) : data.events.length === 0 ? (
-        <p className="text-slate-500 text-sm">No upcoming jobs on the calendar.</p>
-      ) : (
+      ) : (() => {
+        // Hide jobs whose matched booking is already marked completed.
+        const visible = data.events.filter(e => matchBooking(e.title, bookings)?.status !== 'completed');
+        if (visible.length === 0) return <p className="text-slate-500 text-sm">No upcoming jobs on the calendar.</p>;
+        return (
         <ul className="divide-y divide-white/5">
-          {data.events.map(e => {
+          {visible.map(e => {
             const match = matchBooking(e.title, bookings);
             return (
               <li key={e.uid} className="flex items-center gap-3 py-2.5">
@@ -239,7 +241,8 @@ function UpcomingJobs({ data, bookings }: { data: CalData | null; bookings: Book
             );
           })}
         </ul>
-      )}
+        );
+      })()}
     </div>
   );
 }

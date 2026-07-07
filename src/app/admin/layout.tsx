@@ -26,5 +26,7 @@ export const viewport: Viewport = {
 
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
   // The admin stays on the dark theme even though the public site is now light.
-  return <div className="bg-navy-900 text-slate-100 min-h-[100svh]">{children}</div>;
+  // `admin-shell` lets globals.css paint the page background (incl. the iOS
+  // status-bar / overscroll area) dark instead of the site's white body.
+  return <div className="admin-shell bg-navy-900 text-slate-100 min-h-[100svh]">{children}</div>;
 }
