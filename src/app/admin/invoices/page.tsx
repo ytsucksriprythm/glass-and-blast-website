@@ -20,16 +20,25 @@ export default function InvoicesPage() {
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
+  // Guests share this page but only ever see their own invoices, and Back must
+  // return them to the guest dashboard rather than the admin one.
+  const [isGuest, setIsGuest] = useState(false);
 
   useEffect(() => {
     (async () => {
       try {
-        const res = await fetch('/api/admin/invoices');
+        const [meRes, res] = await Promise.all([
+          fetch('/api/auth/me'),
+          fetch('/api/admin/invoices'),
+        ]);
+        if (meRes.ok) setIsGuest((await meRes.json()).role === 'guest');
         if (res.status === 401) { router.push('/admin'); return; }
         if (res.ok) setInvoices(await res.json());
       } finally { setLoading(false); }
     })();
   }, [router]);
+
+  const backHref = isGuest ? '/guest' : '/admin/dashboard';
 
   const unpaidTotal = invoices.filter(i => i.status !== 'paid' && i.status !== 'cancelled').reduce((s, i) => s + i.total, 0);
 
@@ -68,8 +77,8 @@ export default function InvoicesPage() {
         className="sticky top-0 z-30 bg-navy-900/90 backdrop-blur border-b border-white/10 px-4 flex items-center justify-between"
         style={{ paddingTop: 'calc(env(safe-area-inset-top) + 0.85rem)', paddingBottom: '0.85rem' }}
       >
-        <button onClick={() => router.push('/admin/dashboard')} className="inline-flex items-center gap-2 text-slate-300 hover:text-white text-sm cursor-pointer">
-          <ArrowLeft className="w-5 h-5" /> Dashboard
+        <button onClick={() => router.push(backHref)} className="inline-flex items-center gap-2 text-slate-300 hover:text-white text-sm cursor-pointer">
+          <ArrowLeft className="w-5 h-5" /> {isGuest ? 'My jobs' : 'Dashboard'}
         </button>
         <Link href="/admin/invoices/new" className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-white text-sm font-semibold cursor-pointer">
           <Plus className="w-4 h-4" /> New invoice

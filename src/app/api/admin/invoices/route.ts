@@ -1,18 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getInvoices, createInvoice } from '@/lib/db';
-import { isAdminAuthenticated } from '@/lib/auth';
+import { getActiveContext } from '@/lib/auth';
 import { BUSINESS_DEFAULTS, PAYMENT_DEFAULTS, type InvoiceInput } from '@/lib/invoice';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
-  if (!await isAdminAuthenticated()) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  const invoices = await getInvoices();
+  const ctx = await getActiveContext();
+  if (!ctx) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  // Guests only ever see their own invoices; the admin sees everything.
+  const invoices = await getInvoices(ctx.role === 'guest' ? ctx.guestId : undefined);
   return NextResponse.json(invoices);
 }
 
 export async function POST(req: NextRequest) {
-  if (!await isAdminAuthenticated()) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  const ctx = await getActiveContext();
+  if (!ctx) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   try {
     const b = await req.json();
     const items = Array.isArray(b.items) ? b.items : [];
@@ -52,6 +55,8 @@ export async function POST(req: NextRequest) {
       payBsb: b.payBsb ?? PAYMENT_DEFAULTS.payBsb,
       payAccountNumber: b.payAccountNumber ?? PAYMENT_DEFAULTS.payAccountNumber,
       bookingId: b.bookingId ?? null,
+      // An invoice a guest creates belongs to them; admin invoices are unowned.
+      ownerGuestId: ctx.role === 'guest' ? ctx.guestId : null,
     };
     const invoice = await createInvoice(input);
     return NextResponse.json(invoice, { status: 201 });

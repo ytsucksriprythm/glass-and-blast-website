@@ -23,7 +23,9 @@ export default function AdminLogin() {
         body: JSON.stringify({ password, remember }),
       });
       if (!res.ok) { toast.error('Incorrect password'); setLoading(false); return; }
-      router.push('/admin/dashboard');
+      // The same box accepts the admin password or any guest's password.
+      const { role } = await res.json();
+      router.push(role === 'guest' ? '/guest' : '/admin/dashboard');
     } catch {
       toast.error('Something went wrong');
       setLoading(false);

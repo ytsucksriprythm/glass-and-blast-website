@@ -60,6 +60,7 @@ export interface Invoice {
 
   token: string;           // unguessable public-link token
   bookingId: string | null; // linked booking, if generated from one
+  ownerGuestId: string | null; // guest who created it (null = admin-owned)
   createdAt: string;
   updatedAt: string;
   sentAt: string | null;
@@ -80,6 +81,9 @@ export type InvoiceInput = Omit<
 > & {
   status?: InvoiceStatus;
 };
+
+// ownerGuestId is part of InvoiceInput (via the Omit above it stays), set by the
+// create endpoint based on who is logged in.
 
 // ─── Business + payment defaults (from the Glass and Blast DVA invoice) ───────
 // Editable per invoice in the form; these are just the pre-filled starting values.
@@ -181,5 +185,6 @@ export function blankInvoiceInput(todayStr: string): InvoiceInput {
     notes: 'Thank you for your business.',
     ...PAYMENT_DEFAULTS,
     bookingId: null,
+    ownerGuestId: null,
   };
 }

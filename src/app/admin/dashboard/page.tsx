@@ -12,7 +12,7 @@ import {
   ChevronDown, Search, RefreshCw, DollarSign,
   ArrowUpRight, ArrowDownRight, Edit3, Check, Plus, X, StickyNote, BadgeCheck, Wallet,
   BarChart3, Globe, Eye, Users, Link2, MapPin, Target, ClipboardCopy, CalendarDays, CalendarPlus, ArrowRight,
-  Repeat, PhoneCall, FileText,
+  Repeat, PhoneCall, FileText, Send,
 } from 'lucide-react';
 import Image from 'next/image';
 import Link from 'next/link';
@@ -248,6 +248,26 @@ function UpcomingJobs({ data, bookings }: { data: CalData | null; bookings: Book
   );
 }
 
+// ─── Guest assignment ────────────────────────────────────────────────────
+
+export type GuestProfile = { id: string; name: string; active: boolean; createdAt: string };
+
+// Shows at a glance whether a job has been sent to a subcontractor.
+function AssignBadge({ guestId, name }: { guestId?: string | null; name: string }) {
+  if (!guestId) {
+    return (
+      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-white/5 text-slate-500 border border-white/10">
+        Unassigned
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-sky-400/15 text-sky-300 border border-sky-400/25" title={`Sent to ${name}`}>
+      <Send className="w-2.5 h-2.5" /> {name}
+    </span>
+  );
+}
+
 // ─── Bottom tab bar (mobile / installed app) ─────────────────────────────
 
 type TabKey = 'overview' | 'bookings' | 'business' | 'site';
@@ -328,6 +348,29 @@ export default function Dashboard() {
       } catch { /* card just stays hidden */ }
     })();
   }, []);
+
+  // Guest logins — used for the "sent to" badges and the view-as selector.
+  const [guests, setGuests] = useState<GuestProfile[]>([]);
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch('/api/admin/guests');
+        if (res.ok) setGuests(await res.json());
+      } catch { /* selector just stays empty */ }
+    })();
+  }, []);
+  const guestName = (id?: string | null) => guests.find(g => g.id === id)?.name ?? 'guest';
+
+  // Switch into a guest's dashboard. No password — the admin session is kept,
+  // so the "Admin" button over there brings you straight back.
+  const viewAsGuest = async (guestId: string) => {
+    const res = await fetch('/api/admin/switch', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ guestId }),
+    });
+    if (res.ok) router.push('/guest');
+    else toast.error('Could not switch');
+  };
 
   // Filters
   const [search, setSearch] = useState('');
@@ -519,6 +562,9 @@ export default function Dashboard() {
           <Link href="/admin/invoices" className="admin-sidebar-link w-full">
             <FileText className="w-4 h-4" /> Invoices
           </Link>
+          <Link href="/admin/guests" className="admin-sidebar-link w-full">
+            <Users className="w-4 h-4" /> Guest Logins
+          </Link>
         </nav>
 
         <div className="border-t border-white/5 pt-4 space-y-2">
@@ -671,6 +717,34 @@ export default function Dashboard() {
                           </span>
                           <ArrowRight className="w-4 h-4 text-slate-500 flex-shrink-0" />
                         </Link>
+
+                        {/* Guest logins + view-as selector */}
+                        <div className="glass rounded-2xl border border-white/8 p-5">
+                          <div className="flex items-center gap-3">
+                            <span className="w-10 h-10 rounded-xl bg-sky-400/10 flex items-center justify-center flex-shrink-0">
+                              <Users className="w-5 h-5 text-sky-400" />
+                            </span>
+                            <span className="min-w-0 flex-1">
+                              <span className="block text-white text-sm font-semibold">Guest logins</span>
+                              <span className="block text-slate-500 text-xs mt-0.5">
+                                {guests.filter(g => g.active).length} active
+                              </span>
+                            </span>
+                            <Link href="/admin/guests" className="flex-shrink-0 text-xs text-sky-400 hover:text-sky-300 cursor-pointer">Manage</Link>
+                          </div>
+                          {guests.filter(g => g.active).length > 0 && (
+                            <div className="mt-3 pt-3 border-t border-white/5">
+                              <div className="text-slate-500 text-[11px] mb-2">View dashboard as</div>
+                              <div className="flex flex-wrap gap-2">
+                                {guests.filter(g => g.active).map(g => (
+                                  <button key={g.id} onClick={() => viewAsGuest(g.id)} className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-white/10 text-slate-300 hover:text-white hover:border-sky-400/40 text-xs font-semibold cursor-pointer">
+                                    <Eye className="w-3.5 h-3.5" /> {g.name}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
                       </div>
                     </div>
                   );
@@ -781,6 +855,7 @@ export default function Dashboard() {
                           <div className="text-white font-semibold flex items-center gap-2 flex-wrap">
                             {b.name}
                             {b.source === 'manual' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-400/15 text-violet-300 border border-violet-400/20">Added</span>}
+                            <AssignBadge guestId={b.assignedGuestId} name={guestName(b.assignedGuestId)} />
                           </div>
                           <a href={`tel:${b.phone}`} onClick={e => e.stopPropagation()} className="text-sky-400 text-sm cursor-pointer">{b.phone}</a>
                           <div className="text-slate-500 text-xs mt-0.5">{serviceText(b.service)} · <span className="capitalize">{b.propertyType}</span></div>
@@ -868,9 +943,10 @@ export default function Dashboard() {
                       <motion.div key={b.id} initial={{ opacity: 0 }} animate={{ opacity: 1 }} onClick={() => openBooking(b.id)} className="group grid grid-cols-[1.3fr_1fr_1fr_1fr_1fr_3rem_auto] gap-4 px-6 py-4 border-b border-white/5 hover:bg-white/[0.04] transition-colors items-center cursor-pointer">
                         {/* Customer — whole row opens the booking */}
                         <div className="min-w-0">
-                          <div className="text-white group-hover:text-sky-400 transition-colors text-sm font-medium flex items-center gap-2">
+                          <div className="text-white group-hover:text-sky-400 transition-colors text-sm font-medium flex items-center gap-2 flex-wrap">
                             {b.name}
                             {b.source === 'manual' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-400/15 text-violet-300 border border-violet-400/20">Added</span>}
+                            <AssignBadge guestId={b.assignedGuestId} name={guestName(b.assignedGuestId)} />
                           </div>
                           <div className="text-slate-500 text-xs">{b.phone}</div>
                           <div className="text-slate-600 text-xs truncate">{b.suburb}{b.address ? ` · ${b.address}` : ''}</div>

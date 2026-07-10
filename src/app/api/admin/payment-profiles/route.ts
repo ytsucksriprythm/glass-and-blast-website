@@ -1,16 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getPaymentProfiles, addPaymentProfile } from '@/lib/db';
-import { isAdminAuthenticated } from '@/lib/auth';
+import { isAdminAuthenticated, getActiveContext } from '@/lib/auth';
 
 export const dynamic = 'force-dynamic';
 
+// Guests need to read profiles so they can pick who gets paid on their invoices.
 export async function GET() {
-  if (!await isAdminAuthenticated()) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  if (!await getActiveContext()) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   return NextResponse.json(await getPaymentProfiles());
 }
 
+// Creating a shared payment profile stays admin-only.
 export async function POST(req: NextRequest) {
-  if (!await isAdminAuthenticated()) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  if (!await isAdminAuthenticated()) return NextResponse.json({ error: 'Access denied' }, { status: 403 });
   try {
     const b = await req.json();
     const name = (b.name ?? '').trim();

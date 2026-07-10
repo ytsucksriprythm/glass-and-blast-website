@@ -4,7 +4,7 @@ import { type Invoice, money, longDate, shortDate, computeTotals, GST_NOTE } fro
 // object (number may be a placeholder) before the invoice is saved.
 export type InvoicePreviewData = Omit<
   Invoice,
-  'id' | 'seq' | 'token' | 'bookingId' | 'createdAt' | 'updatedAt' | 'sentAt' | 'paidAt' | 'status'
+  'id' | 'seq' | 'token' | 'bookingId' | 'ownerGuestId' | 'createdAt' | 'updatedAt' | 'sentAt' | 'paidAt' | 'status'
   | 'viewCount' | 'firstViewedAt' | 'lastViewedAt'
 >;
 

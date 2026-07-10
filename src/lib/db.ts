@@ -13,6 +13,7 @@ const PHOTO_PATH = path.join(process.cwd(), 'data', 'photos.json');
 const RECURRING_PATH = path.join(process.cwd(), 'data', 'recurring.json');
 const INVOICE_PATH = path.join(process.cwd(), 'data', 'invoices.json');
 const PAYMENT_PROFILE_PATH = path.join(process.cwd(), 'data', 'payment-profiles.json');
+const GUEST_PATH = path.join(process.cwd(), 'data', 'guests.json');
 
 export type BookingStatus = 'pending' | 'quoted' | 'confirmed' | 'completed' | 'cancelled';
 export type ServiceType = 'window-washing' | 'pressure-washing' | 'both' | 'flyscreen-repair' | 'solar-panel-cleaning' | 'other';
@@ -38,9 +39,21 @@ export interface Booking {
   source: BookingSource;
   paidAt?: string | null;      // date the booking was marked paid (editable)
   completedAt?: string | null; // date the job was marked completed (editable)
+  assignedGuestId?: string | null; // guest (subcontractor) this job was sent to
+  assignedAt?: string | null;      // when it was assigned
   createdAt: string;
   updatedAt: string;
 }
+
+// ─── Guests (subcontractor / guest logins) ──────────────────────────────────
+export interface Guest {
+  id: string;            // GST-timestamp
+  name: string;
+  passwordHash: string;  // HMAC hash — never sent to the client
+  active: boolean;
+  createdAt: string;
+}
+export type NewGuest = { name: string; passwordHash: string; active?: boolean };
 
 export type NewBooking = Omit<Booking, 'id' | 'createdAt' | 'updatedAt' | 'status' | 'source' | 'paid'> & {
   status?: BookingStatus;
@@ -148,6 +161,8 @@ function rowToBooking(r: any): Booking {
     source: r.source ?? 'website',
     paidAt: r.paid_at == null ? null : (typeof r.paid_at === 'string' ? r.paid_at : new Date(r.paid_at).toISOString()),
     completedAt: r.completed_at == null ? null : (typeof r.completed_at === 'string' ? r.completed_at : new Date(r.completed_at).toISOString()),
+    assignedGuestId: r.assigned_guest_id ?? null,
+    assignedAt: r.assigned_at == null ? null : (typeof r.assigned_at === 'string' ? r.assigned_at : new Date(r.assigned_at).toISOString()),
     createdAt: typeof r.created_at === 'string' ? r.created_at : new Date(r.created_at).toISOString(),
     updatedAt: typeof r.updated_at === 'string' ? r.updated_at : new Date(r.updated_at).toISOString(),
   };
@@ -187,6 +202,18 @@ async function ensureSchema(): Promise<void> {
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'website'`;
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ`;
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS paid_at TIMESTAMPTZ`;
+      await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS assigned_guest_id TEXT`;
+      await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS assigned_at TIMESTAMPTZ`;
+      // Guests (subcontractor logins)
+      await sql`
+        CREATE TABLE IF NOT EXISTS guests (
+          id            TEXT PRIMARY KEY,
+          name          TEXT NOT NULL,
+          password_hash TEXT NOT NULL,
+          active        BOOLEAN NOT NULL DEFAULT true,
+          created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+      `;
       // Site traffic tracking
       await sql`
         CREATE TABLE IF NOT EXISTS pageviews (
@@ -277,6 +304,7 @@ async function ensureSchema(): Promise<void> {
       await sql`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS view_count INTEGER NOT NULL DEFAULT 0`;
       await sql`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS first_viewed_at TIMESTAMPTZ`;
       await sql`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS last_viewed_at TIMESTAMPTZ`;
+      await sql`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS owner_guest_id TEXT`;
       await sql`CREATE UNIQUE INDEX IF NOT EXISTS invoices_token_idx ON invoices (token)`;
       await sql`CREATE UNIQUE INDEX IF NOT EXISTS invoices_number_idx ON invoices (number)`;
       await sql`CREATE TABLE IF NOT EXISTS invoice_counter (id TEXT PRIMARY KEY, last_seq INTEGER NOT NULL)`;
@@ -361,6 +389,8 @@ export async function addBooking(data: NewBooking): Promise<Booking> {
     quoteAmount: data.quoteAmount ?? null,
     adminNotes: data.adminNotes ?? '',
     paid: data.paid ?? false,
+    assignedGuestId: data.assignedGuestId ?? null,
+    assignedAt: data.assignedGuestId ? now : null,
     id: `BK-${Date.now()}`,
     status: data.status ?? 'pending',
     source: data.source ?? 'website',
@@ -371,8 +401,8 @@ export async function addBooking(data: NewBooking): Promise<Booking> {
   if (sql) {
     await ensureSchema();
     await sql`
-      INSERT INTO bookings (id, name, email, phone, service, property_type, address, suburb, preferred_date, preferred_time, notes, status, quote_amount, admin_notes, paid, source)
-      VALUES (${booking.id}, ${booking.name}, ${booking.email}, ${booking.phone}, ${booking.service}, ${booking.propertyType}, ${booking.address}, ${booking.suburb}, ${booking.preferredDate}, ${booking.preferredTime}, ${booking.notes}, ${booking.status}, ${booking.quoteAmount}, ${booking.adminNotes}, ${booking.paid}, ${booking.source})
+      INSERT INTO bookings (id, name, email, phone, service, property_type, address, suburb, preferred_date, preferred_time, notes, status, quote_amount, admin_notes, paid, source, assigned_guest_id, assigned_at)
+      VALUES (${booking.id}, ${booking.name}, ${booking.email}, ${booking.phone}, ${booking.service}, ${booking.propertyType}, ${booking.address}, ${booking.suburb}, ${booking.preferredDate}, ${booking.preferredTime}, ${booking.notes}, ${booking.status}, ${booking.quoteAmount}, ${booking.adminNotes}, ${booking.paid}, ${booking.source}, ${booking.assignedGuestId}, ${booking.assignedAt})
     `;
     return booking;
   }
@@ -403,12 +433,22 @@ function withPaidAt(cur: Booking, updates: Partial<Booking>): Partial<Booking> {
   return updates;
 }
 
+// Stamp assignedAt whenever the assigned guest changes (and clear it on unassign).
+function withAssignedAt(cur: Booking, updates: Partial<Booking>): Partial<Booking> {
+  if (!('assignedGuestId' in updates)) return updates;
+  if (updates.assignedGuestId && updates.assignedGuestId !== cur.assignedGuestId) {
+    return { ...updates, assignedAt: new Date().toISOString() };
+  }
+  if (!updates.assignedGuestId) return { ...updates, assignedAt: null };
+  return updates;
+}
+
 export async function updateBooking(id: string, rawUpdates: Partial<Booking>): Promise<Booking | null> {
   if (sql) {
     await ensureSchema();
     const cur = await getBookingById(id);
     if (!cur) return null;
-    const updates = withPaidAt(cur, withCompletedAt(cur, rawUpdates));
+    const updates = withAssignedAt(cur, withPaidAt(cur, withCompletedAt(cur, rawUpdates)));
     const m = { ...cur, ...updates };
     const rows = await sql`
       UPDATE bookings SET
@@ -428,6 +468,8 @@ export async function updateBooking(id: string, rawUpdates: Partial<Booking>): P
         preferred_time = ${m.preferredTime ?? ''},
         completed_at = ${m.completedAt ?? null},
         paid_at = ${m.paidAt ?? null},
+        assigned_guest_id = ${m.assignedGuestId ?? null},
+        assigned_at = ${m.assignedAt ?? null},
         updated_at = now()
       WHERE id = ${id}
       RETURNING *
@@ -439,7 +481,7 @@ export async function updateBooking(id: string, rawUpdates: Partial<Booking>): P
   const rows = readFile();
   const idx = rows.findIndex(b => b.id === id);
   if (idx === -1) return null;
-  const updates = withPaidAt(rows[idx], withCompletedAt(rows[idx], rawUpdates));
+  const updates = withAssignedAt(rows[idx], withPaidAt(rows[idx], withCompletedAt(rows[idx], rawUpdates)));
   rows[idx] = { ...rows[idx], ...updates, updatedAt: new Date().toISOString() };
   writeFile(rows);
   return rows[idx];
@@ -1007,6 +1049,7 @@ function rowToInvoice(r: any): Invoice {
     payAccountNumber: r.pay_account_number ?? '',
     token: r.token,
     bookingId: r.booking_id ?? null,
+    ownerGuestId: r.owner_guest_id ?? null,
     createdAt: typeof r.created_at === 'string' ? r.created_at : new Date(r.created_at).toISOString(),
     updatedAt: typeof r.updated_at === 'string' ? r.updated_at : new Date(r.updated_at).toISOString(),
     sentAt: r.sent_at == null ? null : (typeof r.sent_at === 'string' ? r.sent_at : new Date(r.sent_at).toISOString()),
@@ -1029,15 +1072,20 @@ async function nextInvoiceSeq(): Promise<number> {
   return maxSeq + 1;
 }
 
-export async function getInvoices(): Promise<Invoice[]> {
+// Pass a guestId to scope the list to that guest's own invoices; omit for the
+// admin view (all invoices).
+export async function getInvoices(ownerGuestId?: string): Promise<Invoice[]> {
   if (sql) {
     return withTimeout((async () => {
       await ensureSchema();
-      const rows = await sql`SELECT * FROM invoices ORDER BY seq DESC`;
+      const rows = ownerGuestId
+        ? await sql`SELECT * FROM invoices WHERE owner_guest_id = ${ownerGuestId} ORDER BY seq DESC`
+        : await sql`SELECT * FROM invoices ORDER BY seq DESC`;
       return (rows as any[]).map(rowToInvoice);
     })());
   }
-  return readInvoices().sort((a, b) => b.seq - a.seq);
+  const all = readInvoices().sort((a, b) => b.seq - a.seq);
+  return ownerGuestId ? all.filter(i => i.ownerGuestId === ownerGuestId) : all;
 }
 
 export async function getInvoiceById(id: string): Promise<Invoice | null> {
@@ -1090,6 +1138,7 @@ export async function createInvoice(input: InvoiceInput): Promise<Invoice> {
       payAccountName: input.payAccountName ?? '', payBsb: input.payBsb ?? '', payAccountNumber: input.payAccountNumber ?? '',
       token: `inv_${crypto.randomBytes(12).toString('hex')}`,
       bookingId: input.bookingId ?? null,
+      ownerGuestId: input.ownerGuestId ?? null,
       createdAt: now, updatedAt: now, sentAt: null, paidAt: null,
       viewCount: 0, firstViewedAt: null, lastViewedAt: null,
     };
@@ -1102,7 +1151,7 @@ export async function createInvoice(input: InvoiceInput): Promise<Invoice> {
         invoice_date, service_date, due_date,
         items, subtotal, total, notes,
         pay_account_name, pay_bsb, pay_account_number,
-        token, booking_id
+        token, booking_id, owner_guest_id
       ) VALUES (
         ${invoice.id}, ${invoice.number}, ${invoice.seq}, ${invoice.isTaxInvoice}, ${invoice.status},
         ${invoice.fromName}, ${invoice.fromTradingAs}, ${invoice.fromAbn}, ${invoice.fromAddress}, ${invoice.fromEmail}, ${invoice.fromPhone},
@@ -1111,7 +1160,7 @@ export async function createInvoice(input: InvoiceInput): Promise<Invoice> {
         ${invoice.invoiceDate}, ${invoice.serviceDate}, ${invoice.dueDate},
         ${JSON.stringify(invoice.items)}, ${invoice.subtotal}, ${invoice.total}, ${invoice.notes},
         ${invoice.payAccountName}, ${invoice.payBsb}, ${invoice.payAccountNumber},
-        ${invoice.token}, ${invoice.bookingId}
+        ${invoice.token}, ${invoice.bookingId}, ${invoice.ownerGuestId}
       )
     `;
     return invoice;
@@ -1135,6 +1184,7 @@ export async function createInvoice(input: InvoiceInput): Promise<Invoice> {
     payAccountName: input.payAccountName ?? '', payBsb: input.payBsb ?? '', payAccountNumber: input.payAccountNumber ?? '',
     token: `inv_${crypto.randomBytes(12).toString('hex')}`,
     bookingId: input.bookingId ?? null,
+    ownerGuestId: input.ownerGuestId ?? null,
     createdAt: now, updatedAt: now, sentAt: null, paidAt: null,
     viewCount: 0, firstViewedAt: null, lastViewedAt: null,
   };
@@ -1309,6 +1359,124 @@ export async function addPaymentProfile(data: { name: string; accountName: strin
   rows.push(profile);
   writePaymentProfiles(rows);
   return profile;
+}
+
+// ─── Guests (subcontractor logins) ──────────────────────────────────────────
+
+function readGuests(): Guest[] {
+  try {
+    if (!fs.existsSync(GUEST_PATH)) return [];
+    return JSON.parse(fs.readFileSync(GUEST_PATH, 'utf-8'));
+  } catch { return []; }
+}
+function writeGuests(rows: Guest[]): void {
+  const dir = path.dirname(GUEST_PATH);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(GUEST_PATH, JSON.stringify(rows, null, 2));
+}
+
+function rowToGuest(r: any): Guest {
+  return {
+    id: r.id,
+    name: r.name,
+    passwordHash: r.password_hash,
+    active: r.active === true || r.active === 1,
+    createdAt: typeof r.created_at === 'string' ? r.created_at : new Date(r.created_at).toISOString(),
+  };
+}
+
+export async function getGuests(): Promise<Guest[]> {
+  if (sql) {
+    return withTimeout((async () => {
+      await ensureSchema();
+      const rows = await sql`SELECT * FROM guests ORDER BY created_at ASC`;
+      return (rows as any[]).map(rowToGuest);
+    })());
+  }
+  return readGuests();
+}
+
+export async function getGuestById(id: string): Promise<Guest | null> {
+  if (sql) {
+    await ensureSchema();
+    const rows = await sql`SELECT * FROM guests WHERE id = ${id} LIMIT 1`;
+    const arr = rows as any[];
+    return arr.length ? rowToGuest(arr[0]) : null;
+  }
+  return readGuests().find(g => g.id === id) ?? null;
+}
+
+export async function addGuest(data: NewGuest): Promise<Guest> {
+  const guest: Guest = {
+    id: `GST-${Date.now()}`,
+    name: data.name,
+    passwordHash: data.passwordHash,
+    active: data.active ?? true,
+    createdAt: new Date().toISOString(),
+  };
+  if (sql) {
+    await ensureSchema();
+    await sql`INSERT INTO guests (id, name, password_hash, active) VALUES (${guest.id}, ${guest.name}, ${guest.passwordHash}, ${guest.active})`;
+    return guest;
+  }
+  const rows = readGuests();
+  rows.push(guest);
+  writeGuests(rows);
+  return guest;
+}
+
+export async function updateGuest(id: string, updates: Partial<Pick<Guest, 'name' | 'active' | 'passwordHash'>>): Promise<Guest | null> {
+  if (sql) {
+    await ensureSchema();
+    const cur = await getGuestById(id);
+    if (!cur) return null;
+    const m = { ...cur, ...updates };
+    const rows = await sql`
+      UPDATE guests SET name = ${m.name}, password_hash = ${m.passwordHash}, active = ${m.active}
+      WHERE id = ${id} RETURNING *
+    `;
+    const arr = rows as any[];
+    return arr.length ? rowToGuest(arr[0]) : null;
+  }
+  const rows = readGuests();
+  const idx = rows.findIndex(g => g.id === id);
+  if (idx === -1) return null;
+  rows[idx] = { ...rows[idx], ...updates };
+  writeGuests(rows);
+  return rows[idx];
+}
+
+// Deleting a guest unassigns their jobs (jobs are never deleted with the guest).
+export async function deleteGuest(id: string): Promise<boolean> {
+  if (sql) {
+    await ensureSchema();
+    await sql`UPDATE bookings SET assigned_guest_id = NULL, assigned_at = NULL WHERE assigned_guest_id = ${id}`;
+    const rows = await sql`DELETE FROM guests WHERE id = ${id} RETURNING id`;
+    return (rows as any[]).length > 0;
+  }
+  const guests = readGuests();
+  const filtered = guests.filter(g => g.id !== id);
+  if (filtered.length === guests.length) return false;
+  writeGuests(filtered);
+  const bookings = readFile();
+  let touched = false;
+  bookings.forEach(b => {
+    if (b.assignedGuestId === id) { b.assignedGuestId = null; b.assignedAt = null; touched = true; }
+  });
+  if (touched) writeFile(bookings);
+  return true;
+}
+
+// Jobs sent to a particular guest (their whole dashboard).
+export async function getBookingsForGuest(guestId: string): Promise<Booking[]> {
+  if (sql) {
+    return withTimeout((async () => {
+      await ensureSchema();
+      const rows = await sql`SELECT * FROM bookings WHERE assigned_guest_id = ${guestId} ORDER BY created_at DESC`;
+      return (rows as any[]).map(rowToBooking);
+    })());
+  }
+  return readFile().filter(b => b.assignedGuestId === guestId).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
 // Built-in profiles can't be deleted.

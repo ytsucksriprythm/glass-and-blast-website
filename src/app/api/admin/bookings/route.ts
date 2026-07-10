@@ -1,17 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getBookings, getStats, addBooking } from '@/lib/db';
-import { isAdminAuthenticated } from '@/lib/auth';
+import { getBookings, getBookingsForGuest, getStats, addBooking } from '@/lib/db';
+import { getActiveContext } from '@/lib/auth';
 
-// Manually add a booking from the admin (door-to-door / business / phone).
+// Add a booking. Admin adds unassigned jobs; a guest's own bookings are
+// auto-assigned to them so they show on their dashboard straight away.
 export async function POST(req: NextRequest) {
-  if (!await isAdminAuthenticated()) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+  const ctx = await getActiveContext();
+  if (!ctx) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   try {
     const b = await req.json();
     if (!b.name) {
       return NextResponse.json({ error: 'Name is required' }, { status: 400 });
     }
+    // A guest can never assign a job to someone else.
+    const assignedGuestId = ctx.role === 'guest'
+      ? ctx.guestId
+      : (typeof b.assignedGuestId === 'string' && b.assignedGuestId ? b.assignedGuestId : null);
+
     const booking = await addBooking({
       name: b.name,
       email: b.email ?? '',
@@ -27,6 +32,7 @@ export async function POST(req: NextRequest) {
       quoteAmount: typeof b.quoteAmount === 'number' ? b.quoteAmount : null,
       status: b.status ?? 'pending',
       source: 'manual',
+      assignedGuestId,
     });
     return NextResponse.json({ success: true, booking }, { status: 201 });
   } catch {
@@ -35,45 +41,50 @@ export async function POST(req: NextRequest) {
 }
 
 export async function GET(req: NextRequest) {
-  if (!await isAdminAuthenticated()) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+  const ctx = await getActiveContext();
+  if (!ctx) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   const { searchParams } = new URL(req.url);
   const type = searchParams.get('type');
 
   try {
-  if (type === 'stats') {
-    return NextResponse.json(await getStats());
-  }
+    if (type === 'stats') {
+      // Business-wide stats are admin-only.
+      if (ctx.role !== 'admin') return NextResponse.json({ error: 'Access denied' }, { status: 403 });
+      return NextResponse.json(await getStats());
+    }
 
-  const bookings = await getBookings();
-  const status = searchParams.get('status');
-  const service = searchParams.get('service');
-  const sort = searchParams.get('sort') ?? 'createdAt';
-  const order = searchParams.get('order') ?? 'desc';
-  const search = searchParams.get('search')?.toLowerCase() ?? '';
+    // Guests only ever see the jobs sent to them.
+    const bookings = ctx.role === 'guest'
+      ? await getBookingsForGuest(ctx.guestId)
+      : await getBookings();
 
-  let filtered = bookings;
-  if (status && status !== 'all') filtered = filtered.filter(b => b.status === status);
-  if (service && service !== 'all') filtered = filtered.filter(b => (b.service ?? '').split(',').includes(service));
-  if (search) filtered = filtered.filter(b =>
-    b.name.toLowerCase().includes(search) ||
-    b.email.toLowerCase().includes(search) ||
-    b.phone.includes(search) ||
-    b.address.toLowerCase().includes(search) ||
-    b.suburb.toLowerCase().includes(search)
-  );
+    const status = searchParams.get('status');
+    const service = searchParams.get('service');
+    const sort = searchParams.get('sort') ?? 'createdAt';
+    const order = searchParams.get('order') ?? 'desc';
+    const search = searchParams.get('search')?.toLowerCase() ?? '';
 
-  filtered.sort((a, b) => {
-    const av = a[sort as keyof typeof a] ?? '';
-    const bv = b[sort as keyof typeof b] ?? '';
-    return order === 'asc'
-      ? String(av).localeCompare(String(bv))
-      : String(bv).localeCompare(String(av));
-  });
+    let filtered = bookings;
+    if (status && status !== 'all') filtered = filtered.filter(b => b.status === status);
+    if (service && service !== 'all') filtered = filtered.filter(b => (b.service ?? '').split(',').includes(service));
+    if (search) filtered = filtered.filter(b =>
+      b.name.toLowerCase().includes(search) ||
+      b.email.toLowerCase().includes(search) ||
+      b.phone.includes(search) ||
+      b.address.toLowerCase().includes(search) ||
+      b.suburb.toLowerCase().includes(search)
+    );
 
-  return NextResponse.json(filtered);
+    filtered.sort((a, b) => {
+      const av = a[sort as keyof typeof a] ?? '';
+      const bv = b[sort as keyof typeof b] ?? '';
+      return order === 'asc'
+        ? String(av).localeCompare(String(bv))
+        : String(bv).localeCompare(String(av));
+    });
+
+    return NextResponse.json(filtered);
   } catch (e) {
     return NextResponse.json({ error: 'DB_ERROR', message: e instanceof Error ? e.message : String(e), hasDbUrl: Boolean(process.env.DATABASE_URL) }, { status: 500 });
   }

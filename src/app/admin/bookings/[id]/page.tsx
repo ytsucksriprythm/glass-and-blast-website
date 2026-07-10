@@ -7,9 +7,11 @@ import toast from 'react-hot-toast';
 import {
   ArrowLeft, Phone, Mail, MapPin, CalendarDays, DollarSign, StickyNote,
   CalendarPlus, User, Wallet, Clock, Edit3, Check, X, CalendarCheck,
-  Camera, Trash2, Repeat, FileText,
+  Camera, Trash2, Repeat, FileText, Send,
 } from 'lucide-react';
 import type { Booking, BookingStatus, BookingPhoto, PhotoType } from '@/lib/db';
+
+type GuestProfile = { id: string; name: string; active: boolean; createdAt: string };
 
 const SERVICE_LABELS: Record<string, string> = {
   'window-washing': 'Window Washing',
@@ -207,6 +209,11 @@ export default function BookingView() {
   const [calEvents, setCalEvents] = useState<CalEvent[]>([]);
   const [from, setFrom] = useState<string | null>(null);
 
+  // Guest assignment ("Send to")
+  const [guests, setGuests] = useState<GuestProfile[]>([]);
+  const [showSend, setShowSend] = useState(false);
+  const [sending, setSending] = useState(false);
+
   // Remember the page we were opened from (passed as ?from=…) so Back returns
   // there exactly — including the dashboard tab — instead of relying on browser
   // history, which resets the dashboard to its default tab or exits the PWA.
@@ -244,6 +251,34 @@ export default function BookingView() {
       } catch { /* no calendar — fine */ }
     })();
   }, []);
+
+  // Guest logins, for the "Send to" selector.
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch('/api/admin/guests');
+        if (res.ok) setGuests(await res.json());
+      } catch { /* selector stays empty */ }
+    })();
+  }, []);
+
+  // Assign (or unassign) this job to a subcontractor.
+  const assignTo = async (guestId: string | null) => {
+    if (!b) return;
+    setSending(true);
+    try {
+      const res = await fetch(`/api/admin/bookings/${b.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ assignedGuestId: guestId }),
+      });
+      if (!res.ok) throw new Error();
+      const updated: Booking = await res.json();
+      setB(updated);
+      setShowSend(false);
+      toast.success(guestId ? `Sent to ${guests.find(g => g.id === guestId)?.name ?? 'guest'}` : 'Job unassigned');
+    } catch { toast.error('Could not send job'); }
+    finally { setSending(false); }
+  };
 
   const calMatch = b ? calEvents.find(e => eventMatchesBooking(e.title, b)) : undefined;
 
@@ -342,9 +377,14 @@ export default function BookingView() {
               </span>
             </div>
 
-            <a href={gcalUrl(b)} target="_blank" rel="noopener noreferrer" className="mb-5 w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-lg border border-sky-400/30 bg-sky-400/10 text-sky-300 hover:bg-sky-400/15 text-sm font-semibold transition-colors cursor-pointer">
-              <CalendarPlus className="w-4 h-4" /> Add to Google Calendar
-            </a>
+            <div className="mb-5 grid grid-cols-2 gap-3">
+              <a href={gcalUrl(b)} target="_blank" rel="noopener noreferrer" className="inline-flex items-center justify-center gap-2 px-4 py-3 rounded-lg border border-sky-400/30 bg-sky-400/10 text-sky-300 hover:bg-sky-400/15 text-sm font-semibold transition-colors cursor-pointer">
+                <CalendarPlus className="w-4 h-4" /> Calendar
+              </a>
+              <button onClick={() => setShowSend(true)} className="inline-flex items-center justify-center gap-2 px-4 py-3 rounded-lg border border-sky-400/30 bg-sky-400/10 text-sky-300 hover:bg-sky-400/15 text-sm font-semibold transition-colors cursor-pointer touch-manipulation">
+                <Send className="w-4 h-4" /> Send to
+              </button>
+            </div>
 
             <div className="rounded-lg border border-white/10 bg-navy-800 px-4">
               {b.phone && <Row icon={Phone} label="Phone"><a href={`tel:${b.phone}`} className="text-sky-400">{b.phone}</a></Row>}
@@ -357,6 +397,16 @@ export default function BookingView() {
                   <span className="text-sky-300">{calMatch.dow} {calMatch.day} {calMatch.mon}{calMatch.allDay ? '' : ` · ${calMatch.timeLabel}`}</span>
                 </Row>
               )}
+              <Row icon={Send} label="Assigned to">
+                {b.assignedGuestId ? (
+                  <span className="text-sky-300">
+                    {guests.find(g => g.id === b.assignedGuestId)?.name ?? 'Guest'}
+                    {b.assignedAt && <span className="text-slate-500"> · sent {longDate(b.assignedAt)}</span>}
+                  </span>
+                ) : (
+                  <span className="text-slate-500">Unassigned</span>
+                )}
+              </Row>
               <Row icon={DollarSign} label="Quote">{typeof b.quoteAmount === 'number' && b.quoteAmount > 0 ? money(b.quoteAmount) : 'No quote yet'}</Row>
               <Row icon={Wallet} label="Payment">
                 <span className={b.paid ? 'text-emerald-400' : 'text-red-300'}>{b.paid ? 'Paid' : 'Not paid'}</span>
@@ -493,6 +543,49 @@ export default function BookingView() {
           </div>
         )}
       </main>
+
+      {/* ── Send to guest ─────────────────────────────────────────── */}
+      {showSend && b && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 sm:p-4" onClick={() => setShowSend(false)}>
+          <div className="bg-navy-800 border border-white/10 rounded-t-2xl sm:rounded-2xl w-full sm:max-w-sm max-h-[80svh] flex flex-col" onClick={e => e.stopPropagation()}>
+            <div className="p-4 border-b border-white/10 flex items-center justify-between">
+              <h3 className="text-white font-semibold flex items-center gap-2"><Send className="w-4 h-4 text-sky-400" /> Send job to</h3>
+              <button onClick={() => setShowSend(false)} className="text-slate-400 hover:text-white cursor-pointer"><X className="w-5 h-5" /></button>
+            </div>
+            <div className="overflow-y-auto p-2" style={{ paddingBottom: 'calc(0.5rem + env(safe-area-inset-bottom))' }}>
+              {guests.filter(g => g.active).length === 0 ? (
+                <div className="p-6 text-center text-slate-500 text-sm">
+                  No guest logins yet.
+                  <Link href="/admin/guests" className="block mt-2 text-sky-400 hover:text-sky-300">Create one</Link>
+                </div>
+              ) : (
+                guests.filter(g => g.active).map(g => {
+                  const on = b.assignedGuestId === g.id;
+                  return (
+                    <button
+                      key={g.id}
+                      onClick={() => assignTo(g.id)}
+                      disabled={sending}
+                      className={`w-full flex items-center gap-3 p-3 rounded-lg text-left cursor-pointer disabled:opacity-50 ${on ? 'bg-sky-400/10 text-sky-300' : 'hover:bg-white/5 text-white'}`}
+                    >
+                      <span className="w-8 h-8 rounded-lg bg-white/5 flex items-center justify-center text-xs font-bold flex-shrink-0">
+                        {g.name.slice(0, 2).toUpperCase()}
+                      </span>
+                      <span className="flex-1 text-sm font-medium">{g.name}</span>
+                      {on && <Check className="w-4 h-4 flex-shrink-0" />}
+                    </button>
+                  );
+                })
+              )}
+              {b.assignedGuestId && (
+                <button onClick={() => assignTo(null)} disabled={sending} className="w-full mt-1 p-3 rounded-lg text-left text-sm font-medium text-red-400 hover:bg-red-400/10 cursor-pointer disabled:opacity-50">
+                  Unassign this job
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
