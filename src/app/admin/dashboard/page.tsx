@@ -411,7 +411,8 @@ export default function Dashboard() {
   };
 
   const removeBooking = async (id: string) => {
-    if (!confirm('Delete this booking?')) return;
+    const target = bookings.find(x => x.id === id);
+    if (!confirm(`Delete the booking for ${target?.name ?? 'this customer'}? This cannot be undone.`)) return;
     try {
       await fetch(`/api/admin/bookings/${id}`, { method: 'DELETE' });
       setBookings(prev => prev.filter(b => b.id !== id));
@@ -746,8 +747,12 @@ export default function Dashboard() {
                       <Calendar className="w-8 h-8 mx-auto mb-3 opacity-30" /> No bookings found
                     </div>
                   ) : bookings.map((b) => (
-                    <div key={b.id} className="glass rounded-2xl border border-white/8 p-4">
-                      <div className="flex items-start justify-between gap-3 cursor-pointer" onClick={() => openBooking(b.id)}>
+                    <div
+                      key={b.id}
+                      onClick={() => openBooking(b.id)}
+                      className="glass rounded-2xl border border-white/8 p-4 cursor-pointer hover:border-white/20 hover:bg-white/[0.03] active:bg-white/[0.05] transition-colors"
+                    >
+                      <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
                           <div className="text-white font-semibold flex items-center gap-2 flex-wrap">
                             {b.name}
@@ -772,7 +777,9 @@ export default function Dashboard() {
                           <StickyNote className="w-3 h-3 mt-0.5 flex-shrink-0 text-slate-500" /> {b.adminNotes}
                         </div>
                       )}
-                      <div className="mt-4 pt-3 border-t border-white/5 space-y-2">
+                      {/* Controls strip — dead zone: stopPropagation so taps here (and in the
+                          gaps between buttons) never open the booking, only the buttons act. */}
+                      <div className="mt-4 pt-3 border-t border-white/5 space-y-2.5" onClick={e => e.stopPropagation()}>
                         <select
                           value={b.status}
                           onChange={e => onInlineStatus(b, e.target.value as BookingStatus)}
@@ -780,7 +787,7 @@ export default function Dashboard() {
                         >
                           {STATUS_KEYS.map(s => <option key={s} value={s} className="bg-navy-800 text-white">{STATUS_CONFIG[s].label}</option>)}
                         </select>
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-3">
                           <button
                             onClick={() => onTogglePaid(b)}
                             title={b.paid ? 'Mark unpaid' : 'Mark paid'}
@@ -834,9 +841,9 @@ export default function Dashboard() {
                     </div>
                   ) : (
                     bookings.map((b) => (
-                      <motion.div key={b.id} initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="grid grid-cols-[1.3fr_1fr_1fr_1fr_1fr_3rem_auto] gap-4 px-6 py-4 border-b border-white/5 hover:bg-white/2 transition-colors items-center">
-                        {/* Customer (tap to view full booking) */}
-                        <div className="min-w-0 cursor-pointer group" onClick={() => openBooking(b.id)}>
+                      <motion.div key={b.id} initial={{ opacity: 0 }} animate={{ opacity: 1 }} onClick={() => openBooking(b.id)} className="group grid grid-cols-[1.3fr_1fr_1fr_1fr_1fr_3rem_auto] gap-4 px-6 py-4 border-b border-white/5 hover:bg-white/[0.04] transition-colors items-center cursor-pointer">
+                        {/* Customer — whole row opens the booking */}
+                        <div className="min-w-0">
                           <div className="text-white group-hover:text-sky-400 transition-colors text-sm font-medium flex items-center gap-2">
                             {b.name}
                             {b.source === 'manual' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-400/15 text-violet-300 border border-violet-400/20">Added</span>}
@@ -854,8 +861,8 @@ export default function Dashboard() {
                           <div className="text-slate-300 text-sm">{b.preferredDate || '—'}</div>
                           <div className="text-slate-600 text-xs">{b.preferredTime}</div>
                         </div>
-                        {/* Status (inline dropdown) */}
-                        <div>
+                        {/* Status — stopPropagation keeps the row-open off this control */}
+                        <div onClick={e => e.stopPropagation()}>
                           <select
                             value={b.status}
                             onChange={e => onInlineStatus(b, e.target.value as BookingStatus)}
@@ -871,8 +878,8 @@ export default function Dashboard() {
                             : <span className="text-slate-600">—</span>}
                           {b.adminNotes ? <StickyNote className="inline w-3 h-3 ml-1.5 text-slate-500" /> : null}
                         </div>
-                        {/* Paid */}
-                        <div>
+                        {/* Paid — stopPropagation dead zone */}
+                        <div onClick={e => e.stopPropagation()}>
                           <button
                             onClick={() => onTogglePaid(b)}
                             title={b.paid ? 'Mark unpaid' : 'Mark paid'}
@@ -881,8 +888,9 @@ export default function Dashboard() {
                             {b.paid ? '✓ Paid' : 'Not Paid'}
                           </button>
                         </div>
-                        {/* Actions */}
-                        <div className="flex gap-2">
+                        {/* Actions — dead-zone wrapper (with left padding buffer) so stray
+                            clicks near the icons never open the row */}
+                        <div className="flex gap-2 pl-3" onClick={e => e.stopPropagation()}>
                           <button onClick={() => setManage(b)} className="p-1.5 rounded-lg text-slate-500 hover:text-sky-400 hover:bg-sky-400/10 transition-all cursor-pointer" title="Manage / notes / quote">
                             <Edit3 className="w-3.5 h-3.5" />
                           </button>
