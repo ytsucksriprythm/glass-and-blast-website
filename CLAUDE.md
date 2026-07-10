@@ -119,8 +119,10 @@ Cropped gray UI bars (phone UI):
 - `work-solar-2.jpg` — landscape (solar-3.png converted), no bars, clean framing
 
 ### Images
-- `/work-pole-window.jpg` — removed (water-fed pole, against policy)
+- `/work-pole-window.jpg` — O'Connor, extension pole WITH SQUEEGEE head (owner confirmed real technique, NOT water-fed — do not remove again). In gallery.
+- `/work-window-pole.jpg` — hero video poster (same squeegee-on-pole technique)
 - `/work-squeegee-hand.jpg` — Ainslie, hand technique
+- `/work-pressure-wash.jpg` — driveway pressure wash, in gallery
 - `/work-solar-2.jpg` — Ainslie, landscape
 - `/before-sliding-door.jpg`, `/after-sliding-door.jpg` — before/after slider
 - Solar service card uses `/work-solar-1.jpg` (portrait)

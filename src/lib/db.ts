@@ -4,6 +4,8 @@ import { neon } from '@neondatabase/serverless';
 
 const DB_PATH = path.join(process.cwd(), 'data', 'bookings.json');
 const PV_PATH = path.join(process.cwd(), 'data', 'pageviews.json');
+const PHOTO_PATH = path.join(process.cwd(), 'data', 'photos.json');
+const RECURRING_PATH = path.join(process.cwd(), 'data', 'recurring.json');
 
 export type BookingStatus = 'pending' | 'quoted' | 'confirmed' | 'completed' | 'cancelled';
 export type ServiceType = 'window-washing' | 'pressure-washing' | 'both' | 'flyscreen-repair' | 'solar-panel-cleaning' | 'other';
@@ -27,6 +29,7 @@ export interface Booking {
   adminNotes?: string;
   paid: boolean;
   source: BookingSource;
+  paidAt?: string | null;      // date the booking was marked paid (editable)
   completedAt?: string | null; // date the job was marked completed (editable)
   createdAt: string;
   updatedAt: string;
@@ -45,6 +48,39 @@ export interface PageView {
   createdAt: string;
 }
 export type NewPageView = Omit<PageView, 'createdAt'>;
+
+// ─── Job photos (before / after documentation) ──────────────────────────────
+export type PhotoType = 'before' | 'after' | 'progress';
+export interface BookingPhoto {
+  id: string;         // PH-timestamp-rand
+  bookingId: string;
+  type: PhotoType;
+  url: string;        // Vercel Blob URL in prod, /uploads/... locally
+  createdAt: string;
+}
+
+// ─── Recurring jobs (plan customers: monthly / quarterly / biannual) ────────
+export type RecurringFrequency = 'monthly' | 'quarterly' | 'biannual';
+export interface RecurringJob {
+  id: string;         // RJ-timestamp
+  name: string;
+  phone: string;
+  email: string;
+  address: string;
+  suburb: string;
+  service: string;    // comma-separated, same convention as bookings
+  propertyType: PropertyType;
+  frequency: RecurringFrequency;
+  nextDate: string;   // YYYY-MM-DD of the next visit; advanced by the cron after each auto-create
+  preferredTime: string;
+  notes: string;
+  discount: number | null;  // $ off per clean under the plan
+  active: boolean;
+  lastBookingId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+export type NewRecurringJob = Omit<RecurringJob, 'id' | 'createdAt' | 'updatedAt' | 'lastBookingId' | 'active'> & { active?: boolean };
 
 // ─── Storage mode ────────────────────────────────────────────────────────────
 // DATABASE_URL set  → Neon Postgres (production / Vercel)
@@ -103,6 +139,7 @@ function rowToBooking(r: any): Booking {
     adminNotes: r.admin_notes ?? '',
     paid: r.paid === true || r.paid === 1,
     source: r.source ?? 'website',
+    paidAt: r.paid_at == null ? null : (typeof r.paid_at === 'string' ? r.paid_at : new Date(r.paid_at).toISOString()),
     completedAt: r.completed_at == null ? null : (typeof r.completed_at === 'string' ? r.completed_at : new Date(r.completed_at).toISOString()),
     createdAt: typeof r.created_at === 'string' ? r.created_at : new Date(r.created_at).toISOString(),
     updatedAt: typeof r.updated_at === 'string' ? r.updated_at : new Date(r.updated_at).toISOString(),
@@ -142,6 +179,7 @@ async function ensureSchema(): Promise<void> {
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS paid BOOLEAN NOT NULL DEFAULT false`;
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'website'`;
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ`;
+      await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS paid_at TIMESTAMPTZ`;
       // Site traffic tracking
       await sql`
         CREATE TABLE IF NOT EXISTS pageviews (
@@ -153,6 +191,39 @@ async function ensureSchema(): Promise<void> {
         )
       `;
       await sql`CREATE INDEX IF NOT EXISTS pageviews_created_idx ON pageviews (created_at)`;
+      // Job photos
+      await sql`
+        CREATE TABLE IF NOT EXISTS booking_photos (
+          id          TEXT PRIMARY KEY,
+          booking_id  TEXT NOT NULL,
+          type        TEXT NOT NULL DEFAULT 'before',
+          url         TEXT NOT NULL,
+          created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS booking_photos_booking_idx ON booking_photos (booking_id)`;
+      // Recurring plan jobs
+      await sql`
+        CREATE TABLE IF NOT EXISTS recurring_jobs (
+          id              TEXT PRIMARY KEY,
+          name            TEXT NOT NULL,
+          phone           TEXT NOT NULL DEFAULT '',
+          email           TEXT NOT NULL DEFAULT '',
+          address         TEXT NOT NULL DEFAULT '',
+          suburb          TEXT NOT NULL DEFAULT '',
+          service         TEXT NOT NULL,
+          property_type   TEXT NOT NULL DEFAULT 'residential',
+          frequency       TEXT NOT NULL,
+          next_date       TEXT NOT NULL,
+          preferred_time  TEXT NOT NULL DEFAULT '',
+          notes           TEXT DEFAULT '',
+          discount        NUMERIC,
+          active          BOOLEAN NOT NULL DEFAULT true,
+          last_booking_id TEXT,
+          created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+          updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+      `;
     })();
   }
   return schemaReady;
@@ -244,12 +315,22 @@ function withCompletedAt(cur: Booking, updates: Partial<Booking>): Partial<Booki
   return updates;
 }
 
+// Stamp paidAt the first time a booking flips to paid, unless the caller passed
+// an explicit value (e.g. the owner edited or cleared the paid date).
+function withPaidAt(cur: Booking, updates: Partial<Booking>): Partial<Booking> {
+  if ('paidAt' in updates) return updates; // explicit edit (incl. clearing it)
+  if (updates.paid === true && !cur.paid && !cur.paidAt) {
+    return { ...updates, paidAt: new Date().toISOString() };
+  }
+  return updates;
+}
+
 export async function updateBooking(id: string, rawUpdates: Partial<Booking>): Promise<Booking | null> {
   if (sql) {
     await ensureSchema();
     const cur = await getBookingById(id);
     if (!cur) return null;
-    const updates = withCompletedAt(cur, rawUpdates);
+    const updates = withPaidAt(cur, withCompletedAt(cur, rawUpdates));
     const m = { ...cur, ...updates };
     const rows = await sql`
       UPDATE bookings SET
@@ -268,6 +349,7 @@ export async function updateBooking(id: string, rawUpdates: Partial<Booking>): P
         preferred_date = ${m.preferredDate ?? ''},
         preferred_time = ${m.preferredTime ?? ''},
         completed_at = ${m.completedAt ?? null},
+        paid_at = ${m.paidAt ?? null},
         updated_at = now()
       WHERE id = ${id}
       RETURNING *
@@ -279,7 +361,7 @@ export async function updateBooking(id: string, rawUpdates: Partial<Booking>): P
   const rows = readFile();
   const idx = rows.findIndex(b => b.id === id);
   if (idx === -1) return null;
-  const updates = withCompletedAt(rows[idx], rawUpdates);
+  const updates = withPaidAt(rows[idx], withCompletedAt(rows[idx], rawUpdates));
   rows[idx] = { ...rows[idx], ...updates, updatedAt: new Date().toISOString() };
   writeFile(rows);
   return rows[idx];
@@ -549,4 +631,243 @@ export async function getBusinessStats() {
     topSuburbs,
     serviceBreakdown: Object.entries(serviceBreakdown).map(([name, value]) => ({ name, value })),
   };
+}
+
+// ─── Booking photos ──────────────────────────────────────────────────────────
+
+function readPhotos(): BookingPhoto[] {
+  try {
+    if (!fs.existsSync(PHOTO_PATH)) return [];
+    return JSON.parse(fs.readFileSync(PHOTO_PATH, 'utf-8'));
+  } catch { return []; }
+}
+function writePhotos(rows: BookingPhoto[]): void {
+  const dir = path.dirname(PHOTO_PATH);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(PHOTO_PATH, JSON.stringify(rows, null, 2));
+}
+
+function rowToPhoto(r: any): BookingPhoto {
+  return {
+    id: r.id,
+    bookingId: r.booking_id,
+    type: r.type,
+    url: r.url,
+    createdAt: typeof r.created_at === 'string' ? r.created_at : new Date(r.created_at).toISOString(),
+  };
+}
+
+export async function getPhotos(bookingId: string): Promise<BookingPhoto[]> {
+  if (sql) {
+    await ensureSchema();
+    const rows = await sql`SELECT * FROM booking_photos WHERE booking_id = ${bookingId} ORDER BY created_at ASC`;
+    return (rows as any[]).map(rowToPhoto);
+  }
+  return readPhotos().filter(p => p.bookingId === bookingId);
+}
+
+export async function addPhoto(data: { bookingId: string; type: PhotoType; url: string }): Promise<BookingPhoto> {
+  const photo: BookingPhoto = {
+    id: `PH-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    bookingId: data.bookingId,
+    type: data.type,
+    url: data.url,
+    createdAt: new Date().toISOString(),
+  };
+  if (sql) {
+    await ensureSchema();
+    await sql`INSERT INTO booking_photos (id, booking_id, type, url) VALUES (${photo.id}, ${photo.bookingId}, ${photo.type}, ${photo.url})`;
+    return photo;
+  }
+  const rows = readPhotos();
+  rows.push(photo);
+  writePhotos(rows);
+  return photo;
+}
+
+// Returns the deleted photo (caller needs the url to remove the blob file too).
+export async function deletePhoto(id: string): Promise<BookingPhoto | null> {
+  if (sql) {
+    await ensureSchema();
+    const rows = await sql`DELETE FROM booking_photos WHERE id = ${id} RETURNING *`;
+    const arr = rows as any[];
+    return arr.length ? rowToPhoto(arr[0]) : null;
+  }
+  const rows = readPhotos();
+  const idx = rows.findIndex(p => p.id === id);
+  if (idx === -1) return null;
+  const [removed] = rows.splice(idx, 1);
+  writePhotos(rows);
+  return removed;
+}
+
+// ─── Recurring jobs ──────────────────────────────────────────────────────────
+
+function readRecurring(): RecurringJob[] {
+  try {
+    if (!fs.existsSync(RECURRING_PATH)) return [];
+    return JSON.parse(fs.readFileSync(RECURRING_PATH, 'utf-8'));
+  } catch { return []; }
+}
+function writeRecurring(rows: RecurringJob[]): void {
+  const dir = path.dirname(RECURRING_PATH);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(RECURRING_PATH, JSON.stringify(rows, null, 2));
+}
+
+function rowToRecurring(r: any): RecurringJob {
+  return {
+    id: r.id,
+    name: r.name,
+    phone: r.phone ?? '',
+    email: r.email ?? '',
+    address: r.address ?? '',
+    suburb: r.suburb ?? '',
+    service: r.service,
+    propertyType: r.property_type ?? 'residential',
+    frequency: r.frequency,
+    nextDate: r.next_date,
+    preferredTime: r.preferred_time ?? '',
+    notes: r.notes ?? '',
+    discount: r.discount === null || r.discount === undefined ? null : Number(r.discount),
+    active: r.active === true || r.active === 1,
+    lastBookingId: r.last_booking_id ?? null,
+    createdAt: typeof r.created_at === 'string' ? r.created_at : new Date(r.created_at).toISOString(),
+    updatedAt: typeof r.updated_at === 'string' ? r.updated_at : new Date(r.updated_at).toISOString(),
+  };
+}
+
+export async function getRecurringJobs(): Promise<RecurringJob[]> {
+  if (sql) {
+    return withTimeout((async () => {
+      await ensureSchema();
+      const rows = await sql`SELECT * FROM recurring_jobs ORDER BY next_date ASC`;
+      return (rows as any[]).map(rowToRecurring);
+    })());
+  }
+  return readRecurring().sort((a, b) => a.nextDate.localeCompare(b.nextDate));
+}
+
+export async function addRecurringJob(data: NewRecurringJob): Promise<RecurringJob> {
+  const now = new Date().toISOString();
+  const job: RecurringJob = {
+    id: `RJ-${Date.now()}`,
+    name: data.name,
+    phone: data.phone ?? '',
+    email: data.email ?? '',
+    address: data.address ?? '',
+    suburb: data.suburb ?? '',
+    service: data.service,
+    propertyType: data.propertyType ?? 'residential',
+    frequency: data.frequency,
+    nextDate: data.nextDate,
+    preferredTime: data.preferredTime ?? '',
+    notes: data.notes ?? '',
+    discount: data.discount ?? null,
+    active: data.active ?? true,
+    lastBookingId: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+  if (sql) {
+    await ensureSchema();
+    await sql`
+      INSERT INTO recurring_jobs (id, name, phone, email, address, suburb, service, property_type, frequency, next_date, preferred_time, notes, discount, active)
+      VALUES (${job.id}, ${job.name}, ${job.phone}, ${job.email}, ${job.address}, ${job.suburb}, ${job.service}, ${job.propertyType}, ${job.frequency}, ${job.nextDate}, ${job.preferredTime}, ${job.notes}, ${job.discount}, ${job.active})
+    `;
+    return job;
+  }
+  const rows = readRecurring();
+  rows.push(job);
+  writeRecurring(rows);
+  return job;
+}
+
+export async function updateRecurringJob(id: string, updates: Partial<RecurringJob>): Promise<RecurringJob | null> {
+  if (sql) {
+    await ensureSchema();
+    const rows = await sql`SELECT * FROM recurring_jobs WHERE id = ${id} LIMIT 1`;
+    const arr = rows as any[];
+    if (!arr.length) return null;
+    const m = { ...rowToRecurring(arr[0]), ...updates };
+    const updated = await sql`
+      UPDATE recurring_jobs SET
+        name = ${m.name}, phone = ${m.phone}, email = ${m.email},
+        address = ${m.address}, suburb = ${m.suburb}, service = ${m.service},
+        property_type = ${m.propertyType}, frequency = ${m.frequency},
+        next_date = ${m.nextDate}, preferred_time = ${m.preferredTime},
+        notes = ${m.notes}, discount = ${m.discount ?? null}, active = ${m.active},
+        last_booking_id = ${m.lastBookingId}, updated_at = now()
+      WHERE id = ${id}
+      RETURNING *
+    `;
+    const uarr = updated as any[];
+    return uarr.length ? rowToRecurring(uarr[0]) : null;
+  }
+  const rows = readRecurring();
+  const idx = rows.findIndex(j => j.id === id);
+  if (idx === -1) return null;
+  rows[idx] = { ...rows[idx], ...updates, updatedAt: new Date().toISOString() };
+  writeRecurring(rows);
+  return rows[idx];
+}
+
+export async function deleteRecurringJob(id: string): Promise<boolean> {
+  if (sql) {
+    await ensureSchema();
+    const rows = await sql`DELETE FROM recurring_jobs WHERE id = ${id} RETURNING id`;
+    return (rows as any[]).length > 0;
+  }
+  const rows = readRecurring();
+  const filtered = rows.filter(j => j.id !== id);
+  if (filtered.length === rows.length) return false;
+  writeRecurring(filtered);
+  return true;
+}
+
+// Advance a YYYY-MM-DD date by the plan's cadence. Clamps to end of month
+// (e.g. 31 Jan + 1 month = 28/29 Feb, not 3 Mar).
+export function advanceDate(dateStr: string, frequency: RecurringFrequency): string {
+  const months = frequency === 'monthly' ? 1 : frequency === 'quarterly' ? 3 : 6;
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const target = new Date(y, m - 1 + months, 1);
+  const lastDay = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate();
+  target.setDate(Math.min(d, lastDay));
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${target.getFullYear()}-${pad(target.getMonth() + 1)}-${pad(target.getDate())}`;
+}
+
+// Create bookings for every active recurring job that has come due, then push
+// its nextDate forward one cycle. Called by the daily cron. Returns what it made.
+export async function runRecurringDue(): Promise<{ job: RecurringJob; booking: Booking }[]> {
+  const today = new Date().toISOString().slice(0, 10);
+  const jobs = await getRecurringJobs();
+  const due = jobs.filter(j => j.active && j.nextDate <= today);
+  const created: { job: RecurringJob; booking: Booking }[] = [];
+
+  for (const job of due) {
+    const booking = await addBooking({
+      name: job.name,
+      phone: job.phone,
+      email: job.email,
+      address: job.address,
+      suburb: job.suburb,
+      // Bookings store services as a comma-separated string (same as the website form)
+      service: job.service as ServiceType,
+      propertyType: job.propertyType,
+      preferredDate: job.nextDate,
+      preferredTime: job.preferredTime,
+      notes: job.notes,
+      quoteAmount: null,
+      adminNotes: `Auto-created from ${job.frequency} plan ${job.id}${job.discount ? ` (plan discount $${job.discount}/clean)` : ''}`,
+      status: 'confirmed',
+      source: 'manual',
+    });
+    const advanced = await updateRecurringJob(job.id, {
+      nextDate: advanceDate(job.nextDate, job.frequency),
+      lastBookingId: booking.id,
+    });
+    created.push({ job: advanced ?? job, booking });
+  }
+  return created;
 }

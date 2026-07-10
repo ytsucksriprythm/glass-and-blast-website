@@ -7,8 +7,9 @@ import toast from 'react-hot-toast';
 import {
   ArrowLeft, Phone, Mail, MapPin, CalendarDays, DollarSign, StickyNote,
   CalendarPlus, User, Wallet, Clock, Edit3, Check, X, CalendarCheck,
+  Camera, Trash2, Repeat,
 } from 'lucide-react';
-import type { Booking, BookingStatus } from '@/lib/db';
+import type { Booking, BookingStatus, BookingPhoto, PhotoType } from '@/lib/db';
 
 const SERVICE_LABELS: Record<string, string> = {
   'window-washing': 'Window Washing',
@@ -32,13 +33,16 @@ const serviceText = (s: string) => (s ?? '').split(',').filter(Boolean).map(x =>
 const money = (n?: number | null) => typeof n === 'number' ? `$${n.toLocaleString('en-AU', { maximumFractionDigits: 0 })}` : '';
 
 // Editable form: quoteAmount held as a string for the input; service is a CSV string;
-// completedAt held as a YYYY-MM-DD string for the date input.
-type EditForm = Omit<Booking, 'quoteAmount' | 'service' | 'completedAt'> & { quoteAmount: string; service: string; completedAt: string };
+// paidAt / completedAt held as YYYY-MM-DD strings for the date inputs.
+type EditForm = Omit<Booking, 'quoteAmount' | 'service' | 'completedAt' | 'paidAt'> & { quoteAmount: string; service: string; completedAt: string; paidAt: string };
 const toForm = (b: Booking): EditForm => ({
   ...b,
   quoteAmount: b.quoteAmount != null ? String(b.quoteAmount) : '',
   completedAt: b.completedAt ? b.completedAt.slice(0, 10) : '',
+  paidAt: b.paidAt ? b.paidAt.slice(0, 10) : '',
 });
+
+const longDate = (iso: string) => new Date(iso).toLocaleDateString('en-AU', { day: 'numeric', month: 'long', year: 'numeric' });
 
 // A matched Google Calendar event (read-only feed).
 type CalEvent = { uid: string; title: string; location: string; dow: string; day: string; mon: string; timeLabel: string; allDay: boolean };
@@ -81,6 +85,116 @@ function FieldLabel({ children }: { children: React.ReactNode }) {
   return <label className="block text-slate-400 text-xs font-medium mb-1.5">{children}</label>;
 }
 
+// ─── Before / after photo gallery ────────────────────────────────────────────
+// Camera-first: on iPhone the "Add" buttons open the camera straight away.
+// Uploads are compressed server-side (HEIC → JPEG, resized) so slow mobile
+// connections only carry the file once.
+
+function PhotoGallery({ bookingId }: { bookingId: string }) {
+  const [photos, setPhotos] = useState<BookingPhoto[]>([]);
+  const [uploading, setUploading] = useState<PhotoType | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch(`/api/admin/bookings/${bookingId}/photos`);
+        if (res.ok) setPhotos(await res.json());
+      } catch { /* gallery is optional — fail quiet */ }
+      finally { setLoading(false); }
+    })();
+  }, [bookingId]);
+
+  const upload = async (type: PhotoType, file: File | null) => {
+    if (!file) return;
+    setUploading(type);
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      fd.append('type', type);
+      const res = await fetch(`/api/admin/bookings/${bookingId}/photos`, { method: 'POST', body: fd });
+      if (!res.ok) throw new Error((await res.json()).error || 'Upload failed');
+      const photo: BookingPhoto = await res.json();
+      setPhotos(p => [...p, photo]);
+      toast.success(`${type === 'before' ? 'Before' : 'After'} photo added`);
+      if (navigator.vibrate) navigator.vibrate(50);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Upload failed, try again');
+    } finally {
+      setUploading(null);
+    }
+  };
+
+  const remove = async (photo: BookingPhoto) => {
+    if (!window.confirm('Delete this photo?')) return;
+    const prev = photos;
+    setPhotos(p => p.filter(x => x.id !== photo.id));
+    try {
+      const res = await fetch(`/api/admin/bookings/${bookingId}/photos/${photo.id}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error();
+    } catch {
+      setPhotos(prev);
+      toast.error('Delete failed');
+    }
+  };
+
+  const groups: { type: PhotoType; label: string }[] = [
+    { type: 'before', label: 'Before' },
+    { type: 'after', label: 'After' },
+  ];
+
+  return (
+    <div className="mt-4 rounded-lg border border-white/10 bg-navy-800 p-4">
+      <div className="text-slate-500 text-xs mb-3 flex items-center gap-1.5">
+        <Camera className="w-3.5 h-3.5" /> Job photos
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        {groups.map(g => {
+          const list = photos.filter(p => p.type === g.type);
+          return (
+            <div key={g.type}>
+              <div className="text-slate-400 text-xs font-semibold mb-2">{g.label} {loading ? '' : `(${list.length})`}</div>
+              <div className="grid grid-cols-2 gap-2">
+                {loading && [0, 1].map(i => <div key={i} className="aspect-square rounded-md bg-white/5 animate-pulse" />)}
+                {!loading && list.map(p => (
+                  <div key={p.id} className="relative group aspect-square rounded-md overflow-hidden border border-white/10">
+                    {/* Blob URLs are cross-origin; plain img keeps it simple */}
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <a href={p.url} target="_blank" rel="noopener noreferrer">
+                      <img src={p.url} alt={`${g.label} photo`} className="w-full h-full object-cover" loading="lazy" />
+                    </a>
+                    <button
+                      onClick={() => remove(p)}
+                      aria-label="Delete photo"
+                      className="absolute top-1 right-1 w-7 h-7 rounded-md bg-black/60 text-red-300 flex items-center justify-center cursor-pointer"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                ))}
+                {!loading && (
+                <label className={`aspect-square rounded-md border border-dashed border-white/20 hover:border-sky-400/50 flex flex-col items-center justify-center gap-1 text-slate-400 hover:text-sky-300 text-xs cursor-pointer transition-colors ${uploading === g.type ? 'opacity-50 pointer-events-none' : ''}`}>
+                  {uploading === g.type
+                    ? <div className="w-5 h-5 border-2 border-white/20 border-t-sky-400 rounded-full animate-spin" />
+                    : <><Camera className="w-5 h-5" /> Add</>}
+                  <input
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    className="hidden"
+                    onChange={e => { upload(g.type, e.target.files?.[0] ?? null); e.target.value = ''; }}
+                  />
+                </label>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export default function BookingView() {
   const router = useRouter();
   const params = useParams<{ id: string }>();
@@ -91,6 +205,21 @@ export default function BookingView() {
   const [form, setForm] = useState<EditForm | null>(null);
   const [saving, setSaving] = useState(false);
   const [calEvents, setCalEvents] = useState<CalEvent[]>([]);
+  const [from, setFrom] = useState<string | null>(null);
+
+  // Remember the page we were opened from (passed as ?from=…) so Back returns
+  // there exactly — including the dashboard tab — instead of relying on browser
+  // history, which resets the dashboard to its default tab or exits the PWA.
+  useEffect(() => {
+    const f = new URLSearchParams(window.location.search).get('from');
+    if (f && f.startsWith('/admin')) setFrom(f); // same-app paths only
+  }, []);
+
+  const goBack = () => {
+    if (from) router.push(from);
+    else if (window.history.length > 1) router.back();
+    else router.push('/admin/dashboard');
+  };
 
   useEffect(() => {
     (async () => {
@@ -144,6 +273,10 @@ export default function BookingView() {
       // one. Leaving it out lets the server auto-stamp the day it flips to completed.
       if (form.completedAt.trim() !== '') patch.completedAt = new Date(`${form.completedAt}T00:00:00`).toISOString();
       else if (b?.completedAt) patch.completedAt = null;
+      // Paid date: same rules. If not paid, clear any existing date; if paid with a
+      // set date, send it; if paid but blank, omit so the server stamps today.
+      if (!form.paid) { if (b?.paidAt) patch.paidAt = null; }
+      else if (form.paidAt.trim() !== '') patch.paidAt = new Date(`${form.paidAt}T00:00:00`).toISOString();
       const res = await fetch(`/api/admin/bookings/${id}`, {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
       });
@@ -169,7 +302,7 @@ export default function BookingView() {
             <X className="w-5 h-5" /> Cancel
           </button>
         ) : (
-          <button onClick={() => router.back()} className="inline-flex items-center gap-2 text-slate-300 hover:text-white text-sm cursor-pointer">
+          <button onClick={goBack} className="inline-flex items-center gap-2 -ml-2 px-2 py-2 rounded-lg text-slate-300 hover:text-white active:bg-white/10 text-sm cursor-pointer transition-colors touch-manipulation">
             <ArrowLeft className="w-5 h-5" /> Back
           </button>
         )}
@@ -225,10 +358,13 @@ export default function BookingView() {
                 </Row>
               )}
               <Row icon={DollarSign} label="Quote">{typeof b.quoteAmount === 'number' && b.quoteAmount > 0 ? money(b.quoteAmount) : 'No quote yet'}</Row>
-              <Row icon={Wallet} label="Payment"><span className={b.paid ? 'text-emerald-400' : 'text-red-300'}>{b.paid ? 'Paid' : 'Not paid'}</span></Row>
+              <Row icon={Wallet} label="Payment">
+                <span className={b.paid ? 'text-emerald-400' : 'text-red-300'}>{b.paid ? 'Paid' : 'Not paid'}</span>
+                {b.paid && <span className="text-slate-500"> · {b.paidAt ? longDate(b.paidAt) : 'date not set'}</span>}
+              </Row>
               {b.status === 'completed' && (
                 <Row icon={Check} label="Completed on">
-                  {b.completedAt ? new Date(b.completedAt).toLocaleDateString('en-AU', { day: 'numeric', month: 'long', year: 'numeric' }) : 'Date not set'}
+                  {b.completedAt ? longDate(b.completedAt) : 'Date not set'}
                 </Row>
               )}
             </div>
@@ -249,6 +385,15 @@ export default function BookingView() {
                 )}
               </div>
             )}
+
+            <PhotoGallery bookingId={b.id} />
+
+            <Link
+              href={`/admin/recurring?prefill=${b.id}`}
+              className="mt-4 w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-lg border border-white/10 bg-white/[0.03] text-slate-300 hover:text-white hover:border-sky-400/40 text-sm font-semibold transition-colors cursor-pointer"
+            >
+              <Repeat className="w-4 h-4 text-sky-400" /> Put this customer on a recurring plan
+            </Link>
 
             <div className="mt-4 text-slate-600 text-xs flex items-center gap-2">
               <Clock className="w-3 h-3" /> Updated {new Date(b.updatedAt).toLocaleString('en-AU')}
@@ -313,6 +458,13 @@ export default function BookingView() {
                   </span>
                 </button>
               </div>
+              {form.paid && (
+                <div>
+                  <FieldLabel>Paid on</FieldLabel>
+                  <input className="form-input" type="date" value={form.paidAt} onChange={e => set('paidAt', e.target.value)} />
+                  <p className="text-slate-500 text-xs mt-1">Leave blank to use the day it was marked paid.</p>
+                </div>
+              )}
               {form.status === 'completed' && (
                 <div>
                   <FieldLabel>Completed on</FieldLabel>

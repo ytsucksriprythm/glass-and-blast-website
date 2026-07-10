@@ -30,3 +30,6 @@ next-env.d.ts
 
 # handoff doc with secrets/notes — never commit
 TRANSFER.md
+
+# local dev photo uploads (Vercel Blob in prod)
+/public/uploads

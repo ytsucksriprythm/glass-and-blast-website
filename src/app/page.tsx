@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, useScroll, useTransform, useReducedMotion } from 'framer-motion';
 import Image, { type ImageProps } from 'next/image';
 import Link from 'next/link';
 import toast from 'react-hot-toast';
@@ -105,15 +105,22 @@ const SERVICES = [
 
 // ─── Small helpers ───────────────────────────────────────────────────────────
 
+// Scroll-scrubbed reveal: progress is tied to how far the element has travelled up
+// the viewport (fades in between the 97% and ~78% lines), so scrolling drives the
+// animation directly — stop scrolling and it pauses, scroll back and it reverses.
+// `delay` shifts the finish line down slightly so staggered items trail each other.
 function Reveal({ children, className, delay = 0 }: { children: React.ReactNode; className?: string; delay?: number }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const reduce = useReducedMotion();
+  const { scrollYProgress } = useScroll({
+    target: ref,
+    offset: ['start 0.97', `start ${0.78 - Math.min(delay, 0.18)}`],
+  });
+  const y = useTransform(scrollYProgress, [0, 1], [28, 0]);
+
+  if (reduce) return <div className={className}>{children}</div>;
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 14 }}
-      whileInView={{ opacity: 1, y: 0 }}
-      viewport={{ once: true, margin: '-70px' }}
-      transition={{ duration: 0.45, ease: [0.22, 1, 0.36, 1], delay }}
-      className={className}
-    >
+    <motion.div ref={ref} style={{ opacity: scrollYProgress, y }} className={className}>
       {children}
     </motion.div>
   );
@@ -121,7 +128,8 @@ function Reveal({ children, className, delay = 0 }: { children: React.ReactNode;
 
 function Kicker({ children }: { children: React.ReactNode }) {
   return (
-    <span className="inline-block text-sky-600 text-xs font-semibold uppercase tracking-[0.18em]">
+    <span className="inline-flex items-center gap-3 text-sky-600 text-xs font-semibold uppercase tracking-[0.22em]">
+      <span aria-hidden className="h-px w-8 bg-sky-500/60" />
       {children}
     </span>
   );
@@ -217,14 +225,14 @@ function Navbar() {
             <Phone className="w-4 h-4 text-sky-500" />
             {PHONE_DISPLAY}
           </a>
-          <button onClick={goToBook} className="px-4 py-2 bg-sky-500 hover:bg-sky-600 text-white text-sm font-semibold rounded-md transition-colors cursor-pointer">
+          <button onClick={goToBook} className="px-5 py-2.5 bg-sky-500 hover:bg-sky-600 text-white text-sm font-semibold rounded-full transition-colors cursor-pointer">
             Get a free quote
           </button>
         </div>
 
         {/* Mobile: phone always visible + menu toggle */}
         <div className="flex items-center gap-1.5 md:hidden">
-          <a href={PHONE_HREF} aria-label={`Call ${PHONE_DISPLAY}`} className="flex items-center gap-1.5 px-3 py-2 bg-sky-500 text-white text-sm font-semibold rounded-md cursor-pointer">
+          <a href={PHONE_HREF} aria-label={`Call ${PHONE_DISPLAY}`} className="flex items-center gap-1.5 px-3.5 py-2 bg-sky-500 text-white text-sm font-semibold rounded-full cursor-pointer">
             <Phone className="w-4 h-4" /> Call
           </a>
           <button onClick={() => setOpen(o => !o)} aria-label="Menu" className={`p-2 cursor-pointer ${onDark ? 'text-white' : 'text-slate-800'}`}>
@@ -249,7 +257,7 @@ function Navbar() {
                 </button>
               ))}
               <a href="/faq" className="py-3 text-slate-700 text-base font-medium border-b border-slate-100">FAQ</a>
-              <button onClick={() => scrollTo('#book')} className="mt-3 px-4 py-3 bg-sky-500 text-white text-base font-semibold rounded-md cursor-pointer">
+              <button onClick={() => scrollTo('#book')} className="mt-3 px-4 py-3 bg-sky-500 text-white text-base font-semibold rounded-full cursor-pointer">
                 Get a free quote
               </button>
             </div>
@@ -296,7 +304,7 @@ function Hero() {
           </Reveal>
 
           <Reveal delay={0.05}>
-            <h1 className="font-display text-4xl sm:text-5xl lg:text-6xl font-extrabold text-white leading-[1.05] tracking-tight mt-4">
+            <h1 className="font-display text-[2.6rem] leading-[1.06] sm:text-6xl lg:text-[4.25rem] sm:leading-[1.03] font-extrabold text-white tracking-[-0.02em] mt-5">
               The window cleaners North Canberra keeps calling back
             </h1>
           </Reveal>
@@ -310,10 +318,10 @@ function Hero() {
 
           <Reveal delay={0.15}>
             <div className="flex flex-col sm:flex-row gap-3 mt-7">
-              <button onClick={goToBook} className="inline-flex items-center justify-center gap-2 px-6 py-3.5 bg-sky-500 hover:bg-sky-400 text-white font-semibold rounded-md transition-colors cursor-pointer">
+              <button onClick={goToBook} className="inline-flex items-center justify-center gap-2 px-7 py-3.5 bg-sky-500 hover:bg-sky-400 text-white font-semibold rounded-full transition-colors cursor-pointer">
                 Get a free quote
               </button>
-              <a href={PHONE_HREF} className="inline-flex items-center justify-center gap-2 px-6 py-3.5 bg-white/10 hover:bg-white/20 border border-white/20 text-white font-semibold rounded-md transition-colors cursor-pointer">
+              <a href={PHONE_HREF} className="inline-flex items-center justify-center gap-2 px-7 py-3.5 bg-white/10 hover:bg-white/20 border border-white/25 text-white font-semibold rounded-full transition-colors cursor-pointer">
                 <Phone className="w-4 h-4 text-sky-300" /> Call {PHONE_DISPLAY}
               </a>
             </div>
@@ -325,7 +333,7 @@ function Hero() {
                 <Stars /> <span className="font-semibold text-white">5.0</span> on Google
               </span>
               <span className="inline-flex items-center gap-1.5 text-slate-200">
-                <Award className="w-4 h-4 text-amber-400" /> 2025 Best Window Cleaner, North Canberra
+                <Award className="w-4 h-4 text-sky-300" /> 2025 Best Window Cleaner, North Canberra
               </span>
               <span className="inline-flex items-center gap-1.5 text-slate-200">
                 <Shield className="w-4 h-4 text-sky-300" /> Fully insured
@@ -349,9 +357,9 @@ function TrustStrip() {
   ];
   return (
     <section className="bg-white border-b border-slate-200">
-      <div className="max-w-6xl mx-auto px-6 py-5 grid grid-cols-2 lg:grid-cols-4 gap-x-6 gap-y-4">
+      <div className="max-w-6xl mx-auto px-6 py-6 grid grid-cols-2 lg:grid-cols-4 gap-y-5 lg:divide-x lg:divide-slate-200">
         {items.map(i => (
-          <div key={i.text} className="flex items-center gap-2.5 text-slate-700 text-sm">
+          <div key={i.text} className="flex items-center gap-2.5 text-slate-600 text-[13px] font-medium lg:justify-center lg:px-4">
             <i.icon className="w-4 h-4 text-sky-500 flex-shrink-0" />
             <span>{i.text}</span>
           </div>
@@ -378,7 +386,7 @@ function BeforeAfter() {
   return (
     <div
       ref={ref}
-      className="relative aspect-[3/4] w-full overflow-hidden rounded-lg border border-slate-200 shadow-sm select-none touch-pan-y cursor-ew-resize"
+      className="relative aspect-[3/4] w-full overflow-hidden rounded-xl select-none touch-pan-y cursor-ew-resize"
       onPointerDown={(e) => { dragging.current = true; e.currentTarget.setPointerCapture(e.pointerId); move(e.clientX); }}
       onPointerMove={(e) => { if (dragging.current) move(e.clientX); }}
       onPointerUp={() => { dragging.current = false; }}
@@ -412,16 +420,17 @@ function BeforeAfter() {
 
 function Work() {
   const shots = [
-    { src: '/work-pole-window.jpg', label: 'Two-storey exterior clean', place: 'O\'Connor', pos: 'center 38%' },
+    { src: '/work-pole-window.jpg', label: 'Second-storey window clean', place: "O'Connor", pos: 'center 40%' },
     { src: '/work-squeegee-hand.jpg', label: 'Streak-free window clean', place: 'Ainslie', pos: 'center 28%' },
+    { src: '/work-pressure-wash.jpg', label: 'Driveway pressure wash', place: 'Canberra', pos: 'center 50%' },
     { src: '/work-solar-2.jpg', label: 'Solar panel clean', place: 'Ainslie', pos: 'center 45%' },
   ];
   return (
-    <section id="work" className="bg-slate-50 py-14 sm:py-20">
+    <section id="work" className="bg-slate-50 py-20 sm:py-28">
       <div className="max-w-6xl mx-auto px-6">
         <Reveal className="max-w-2xl">
           <Kicker>Recent work</Kicker>
-          <h2 className="font-display text-3xl sm:text-4xl font-bold text-slate-900 mt-3">
+          <h2 className="font-display text-[1.9rem] leading-[1.15] sm:text-[2.75rem] sm:leading-[1.12] font-bold tracking-tight text-slate-900 mt-3">
             A few jobs from around the inner north
           </h2>
           <p className="text-slate-600 mt-3">
@@ -429,10 +438,10 @@ function Work() {
           </p>
         </Reveal>
 
-        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4 mt-10">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 mt-12">
           {shots.map((s, i) => (
-            <Reveal key={s.src} delay={i * 0.06} className="group relative overflow-hidden rounded-lg border border-slate-200 shadow-sm">
-              <div className="relative aspect-[4/5]">
+            <Reveal key={s.src} delay={i * 0.06} className="group relative overflow-hidden rounded-xl">
+              <div className="relative aspect-[3/4]">
                 <SkeletonImage src={s.src} alt={`${s.label} in ${s.place}, Canberra`} fill style={{ objectPosition: s.pos }} className="object-cover transition-transform duration-500 group-hover:scale-[1.04]" sizes="(max-width: 1024px) 100vw, 33vw" />
                 <div className="absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-navy-900/90 to-transparent" />
                 <div className="absolute bottom-0 inset-x-0 p-4">
@@ -469,18 +478,18 @@ function Work() {
 
 function Services() {
   return (
-    <section id="services" className="bg-white border-t border-slate-200 py-14 sm:py-20">
+    <section id="services" className="bg-white border-t border-slate-200 py-20 sm:py-28">
       <div className="max-w-6xl mx-auto px-6">
         <Reveal className="max-w-2xl">
           <Kicker>What we do</Kicker>
-          <h2 className="font-display text-3xl sm:text-4xl font-bold text-slate-900 mt-3">
+          <h2 className="font-display text-[1.9rem] leading-[1.15] sm:text-[2.75rem] sm:leading-[1.12] font-bold tracking-tight text-slate-900 mt-3">
             Three things, done properly
           </h2>
         </Reveal>
 
         <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-5 mt-10">
           {SERVICES.map((svc, i) => (
-            <Reveal key={svc.id} delay={i * 0.08} className="rounded-lg border border-slate-200 bg-white shadow-sm overflow-hidden">
+            <Reveal key={svc.id} delay={i * 0.08} className="rounded-xl bg-white overflow-hidden">
               <div className="relative h-72 sm:h-80 w-full">
                 <SkeletonImage src={svc.photo} alt={svc.photoAlt} fill style={{ objectPosition: svc.objectPos }} className="object-cover" sizes="(max-width: 1024px) 100vw, 50vw" />
               </div>
@@ -504,12 +513,13 @@ function Services() {
 
         {/* Add-ons + bundle */}
         <Reveal delay={0.1}>
-          <div className="mt-6 rounded-lg border border-slate-200 bg-slate-50 px-6 py-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="mt-6 rounded-xl border border-slate-200 bg-slate-50 px-6 py-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <p className="text-slate-600 text-sm leading-relaxed max-w-2xl">
-              We also do <span className="text-slate-900 font-medium">flyscreen repairs</span>. Booking two or more
-              jobs in the one visit? We will bring the total down for you.
+              We also do <span className="text-slate-900 font-medium">flyscreen repairs, gutter and roof cleaning,
+              soft washing and end-of-lease cleans</span> — and if you need something else sorted, just give us a call.
+              Booking two or more jobs in the one visit? We will bring the total down for you.
             </p>
-            <button onClick={goToBook} className="flex-shrink-0 px-5 py-2.5 bg-sky-500 hover:bg-sky-600 text-white text-sm font-semibold rounded-md transition-colors cursor-pointer">
+            <button onClick={goToBook} className="flex-shrink-0 px-6 py-2.5 bg-sky-500 hover:bg-sky-600 text-white text-sm font-semibold rounded-full transition-colors cursor-pointer">
               Ask for a price
             </button>
           </div>
@@ -523,17 +533,17 @@ function Services() {
 
 function HowItWorks() {
   return (
-    <section id="how" className="bg-slate-50 border-t border-slate-200 py-14 sm:py-20">
+    <section id="how" className="bg-slate-50 border-t border-slate-200 py-20 sm:py-28">
       <div className="max-w-6xl mx-auto px-6">
         <Reveal className="max-w-2xl">
           <Kicker>How it works</Kicker>
-          <h2 className="font-display text-3xl sm:text-4xl font-bold text-slate-900 mt-3">Booking us is the easy part</h2>
+          <h2 className="font-display text-[1.9rem] leading-[1.15] sm:text-[2.75rem] sm:leading-[1.12] font-bold tracking-tight text-slate-900 mt-3">Booking us is the easy part</h2>
         </Reveal>
         <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-x-6 gap-y-8 mt-10">
           {STEPS.map((s, i) => (
-            <Reveal key={s.n} delay={i * 0.06}>
-              <div className="w-12 h-12 rounded-xl bg-sky-500 text-white font-display font-extrabold text-2xl flex items-center justify-center shadow-md shadow-sky-500/30">
-                {s.n}
+            <Reveal key={s.n} delay={i * 0.06} className="border-t-2 border-navy-900 pt-5">
+              <div className="font-display text-5xl font-extrabold text-slate-200 leading-none select-none" aria-hidden>
+                {s.n.padStart(2, '0')}
               </div>
               <h3 className="text-slate-900 font-semibold mt-4">{s.title}</h3>
               <p className="text-slate-600 text-sm leading-relaxed mt-2">{s.text}</p>
@@ -549,11 +559,11 @@ function HowItWorks() {
 
 function Plans() {
   return (
-    <section id="plans" className="bg-white border-t border-slate-200 py-14 sm:py-20">
+    <section id="plans" className="bg-white border-t border-slate-200 py-20 sm:py-28">
       <div className="max-w-6xl mx-auto px-6">
         <Reveal className="max-w-2xl">
           <Kicker>Plans</Kicker>
-          <h2 className="font-display text-3xl sm:text-4xl font-bold text-slate-900 mt-3">Book a regular clean, pay less every time</h2>
+          <h2 className="font-display text-[1.9rem] leading-[1.15] sm:text-[2.75rem] sm:leading-[1.12] font-bold tracking-tight text-slate-900 mt-3">Book a regular clean, pay less every time</h2>
           <p className="text-slate-600 mt-3">
             Put us on a cycle and we drop the price on every visit. Same clean, lower rate, and your place never gets a chance to look grubby.
           </p>
@@ -564,28 +574,28 @@ function Plans() {
             const hot = p.popular;
             return (
               <Reveal key={p.id} delay={i * 0.07}
-                className={`rounded-lg border overflow-hidden ${hot ? 'border-sky-500 bg-sky-500 shadow-lg shadow-sky-500/20 lg:-mt-3 lg:mb-3' : 'border-slate-200 bg-white shadow-sm'}`}>
-                <div className="p-6 sm:p-7">
+                className={`rounded-xl border overflow-hidden ${hot ? 'border-navy-900 bg-navy-900 shadow-card-lg lg:-mt-3 lg:mb-3' : 'border-slate-200 bg-white shadow-card'}`}>
+                <div className="p-6 sm:p-8">
                   {hot && (
-                    <span className="inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-sky-700 bg-white rounded-full px-3 py-1 mb-4">
-                      <Star className="w-3.5 h-3.5 fill-sky-700 text-sky-700" /> Most popular
+                    <span className="inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-white bg-sky-500 rounded-full px-3 py-1 mb-4">
+                      <Star className="w-3.5 h-3.5 fill-white text-white" /> Most popular
                     </span>
                   )}
-                  <div className={`flex items-center gap-2 ${hot ? 'text-sky-50' : 'text-slate-600'}`}>
+                  <div className={`flex items-center gap-2 ${hot ? 'text-slate-300' : 'text-slate-600'}`}>
                     <Calendar className="w-4 h-4" />
                     <span className="font-semibold">{p.name}</span>
                   </div>
-                  <div className={`mt-4 font-display text-4xl font-extrabold ${hot ? 'text-white' : 'text-slate-900'}`}>{p.discount}</div>
-                  <div className={`text-sm ${hot ? 'text-sky-100' : 'text-slate-500'}`}>every clean · {p.cadence.toLowerCase()}</div>
-                  <ul className="mt-5 space-y-2.5">
+                  <div className={`mt-4 font-display text-4xl font-extrabold tracking-tight ${hot ? 'text-white' : 'text-slate-900'}`}>{p.discount}</div>
+                  <div className={`text-sm ${hot ? 'text-slate-400' : 'text-slate-500'}`}>every clean · {p.cadence.toLowerCase()}</div>
+                  <ul className="mt-6 space-y-2.5">
                     {p.points.map(pt => (
-                      <li key={pt} className={`flex items-start gap-2.5 text-sm ${hot ? 'text-sky-50' : 'text-slate-700'}`}>
-                        <Check className={`w-4 h-4 flex-shrink-0 mt-0.5 ${hot ? 'text-white' : 'text-sky-500'}`} /> {pt}
+                      <li key={pt} className={`flex items-start gap-2.5 text-sm ${hot ? 'text-slate-200' : 'text-slate-700'}`}>
+                        <Check className={`w-4 h-4 flex-shrink-0 mt-0.5 ${hot ? 'text-sky-400' : 'text-sky-500'}`} /> {pt}
                       </li>
                     ))}
                   </ul>
                   <button onClick={goToBook}
-                    className={`mt-6 w-full py-3 rounded-md font-semibold text-sm transition-colors cursor-pointer ${hot ? 'bg-white text-sky-600 hover:bg-sky-50' : 'bg-sky-500 text-white hover:bg-sky-600'}`}>
+                    className={`mt-7 w-full py-3 rounded-full font-semibold text-sm transition-colors cursor-pointer ${hot ? 'bg-sky-500 text-white hover:bg-sky-400' : 'bg-sky-500 text-white hover:bg-sky-600'}`}>
                     Get a free quote
                   </button>
                 </div>
@@ -612,11 +622,11 @@ function About() {
     { icon: Clock, text: 'We turn up when we say we will, and if something is not right we come back and sort it.' },
   ];
   return (
-    <section id="about" className="bg-slate-50 border-t border-slate-200 py-14 sm:py-20">
+    <section id="about" className="bg-slate-50 border-t border-slate-200 py-20 sm:py-28">
       <div className="max-w-6xl mx-auto px-6 grid lg:grid-cols-[1.1fr_0.9fr] gap-10 lg:gap-16 items-center">
         <div>
           <Kicker>About us</Kicker>
-          <h2 className="font-display text-3xl sm:text-4xl font-bold text-slate-900 mt-3 leading-tight">
+          <h2 className="font-display text-[1.9rem] leading-[1.15] sm:text-[2.75rem] sm:leading-[1.12] font-bold tracking-tight text-slate-900 mt-3 leading-tight">
             A local team, not a franchise
           </h2>
           <p className="text-slate-600 mt-5 leading-relaxed">
@@ -628,10 +638,10 @@ function About() {
             A good deal of our work comes through referrals and repeat customers, and we aim to keep it that way.
           </p>
           <div className="mt-7 flex flex-col sm:flex-row gap-3">
-            <button onClick={goToBook} className="inline-flex items-center justify-center gap-2 px-5 py-3 bg-sky-500 hover:bg-sky-600 text-white font-semibold rounded-md transition-colors cursor-pointer">
+            <button onClick={goToBook} className="inline-flex items-center justify-center gap-2 px-6 py-3 bg-sky-500 hover:bg-sky-600 text-white font-semibold rounded-full transition-colors cursor-pointer">
               Get a free quote
             </button>
-            <a href={PHONE_HREF} className="inline-flex items-center justify-center gap-2 px-5 py-3 border border-slate-300 hover:bg-white text-slate-700 font-semibold rounded-md transition-colors cursor-pointer">
+            <a href={PHONE_HREF} className="inline-flex items-center justify-center gap-2 px-6 py-3 border border-slate-300 hover:bg-white text-slate-700 font-semibold rounded-full transition-colors cursor-pointer">
               <Phone className="w-4 h-4 text-sky-500" /> Call {PHONE_DISPLAY}
             </a>
           </div>
@@ -659,11 +669,11 @@ const AREA_LINKS: Record<string, string> = { Gungahlin: 'gungahlin', Belconnen: 
 function Areas() {
   const suburbs = ['Gungahlin', 'Belconnen', 'Dickson', 'Braddon', 'Ainslie', 'O\'Connor', 'Lyneham', 'Watson', 'Bruce', 'Turner', 'Reid', 'Civic', 'Hackett', 'Downer'];
   return (
-    <section id="areas" className="bg-white border-t border-slate-200 py-12 sm:py-16">
+    <section id="areas" className="bg-white border-t border-slate-200 py-16 sm:py-24">
       <div className="max-w-6xl mx-auto px-6 grid lg:grid-cols-[0.8fr_1.2fr] gap-8 lg:gap-12">
         <div>
           <Kicker>Where we work</Kicker>
-          <h2 className="font-display text-3xl sm:text-4xl font-bold text-slate-900 mt-3">Areas we cover</h2>
+          <h2 className="font-display text-[1.9rem] leading-[1.15] sm:text-[2.75rem] sm:leading-[1.12] font-bold tracking-tight text-slate-900 mt-3">Areas we cover</h2>
           <p className="text-slate-600 mt-4 leading-relaxed text-sm">
             We cover the whole of the ACT. If you are just outside the ACT we may add a small travel fee, but it is
             case by case, so just ask and we will sort it out with your quote before you book.
@@ -772,9 +782,9 @@ function AddressAutocomplete({
 // ─── Book / Contact ──────────────────────────────────────────────────────────
 
 function Book() {
-  const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  const [showExtras, setShowExtras] = useState(false);
   const [form, setForm] = useState({
     name: '', email: '', phone: '', service: '', propertyType: '',
     address: '', suburb: '', preferredDate: '', preferredTime: '', notes: '',
@@ -788,9 +798,7 @@ function Book() {
   });
   const selectedServices = form.service ? form.service.split(',') : [];
 
-  const canStep1 = form.name && form.phone;
-  const canStep2 = !!form.service;
-  const canStep3 = !!form.address;
+  const canSubmit = form.name && form.phone && form.service && form.address;
 
   const submit = async () => {
     setLoading(true);
@@ -807,12 +815,12 @@ function Book() {
   };
 
   return (
-    <section id="book" className="bg-slate-50 border-t border-slate-200 py-14 sm:py-20">
+    <section id="book" className="bg-slate-50 border-t border-slate-200 py-20 sm:py-28">
       <div className="max-w-6xl mx-auto px-6 grid lg:grid-cols-[1fr_1.1fr] gap-10 lg:gap-14">
         {/* Left: the pitch + contact details */}
         <div>
           <Kicker>Get a price</Kicker>
-          <h2 className="font-display text-3xl sm:text-4xl font-bold text-slate-900 mt-3 leading-tight">
+          <h2 className="font-display text-[1.9rem] leading-[1.15] sm:text-[2.75rem] sm:leading-[1.12] font-bold tracking-tight text-slate-900 mt-3 leading-tight">
             Book a clean or grab a quote
           </h2>
           <p className="text-slate-600 mt-4 leading-relaxed">
@@ -821,7 +829,7 @@ function Book() {
           </p>
 
           <div className="mt-8 space-y-3">
-            <a href={PHONE_HREF} className="flex items-center gap-3 rounded-lg border border-slate-200 bg-white shadow-sm px-4 py-3.5 hover:border-sky-300 transition-colors cursor-pointer group">
+            <a href={PHONE_HREF} className="flex items-center gap-3 rounded-xl border border-slate-200 bg-white shadow-card px-4 py-3.5 hover:border-sky-300 transition-colors cursor-pointer group">
               <span className="w-10 h-10 rounded-md bg-sky-50 flex items-center justify-center flex-shrink-0">
                 <Phone className="w-5 h-5 text-sky-600" />
               </span>
@@ -830,7 +838,7 @@ function Book() {
                 <span className="block text-slate-500 text-xs mt-0.5">Call or text, 7 days</span>
               </span>
             </a>
-            <div className="flex items-center gap-3 rounded-lg border border-slate-200 bg-white shadow-sm px-4 py-3.5">
+            <div className="flex items-center gap-3 rounded-xl border border-slate-200 bg-white shadow-card px-4 py-3.5">
               <span className="w-10 h-10 rounded-md bg-sky-50 flex items-center justify-center flex-shrink-0">
                 <MapPin className="w-5 h-5 text-sky-600" />
               </span>
@@ -839,7 +847,7 @@ function Book() {
                 <span className="block text-slate-500 text-xs mt-0.5">We cover the whole of the ACT</span>
               </span>
             </div>
-            <div className="flex items-center gap-3 rounded-lg border border-slate-200 bg-white shadow-sm px-4 py-3.5">
+            <div className="flex items-center gap-3 rounded-xl border border-slate-200 bg-white shadow-card px-4 py-3.5">
               <span className="w-10 h-10 rounded-md bg-sky-50 flex items-center justify-center flex-shrink-0">
                 <Clock className="w-5 h-5 text-sky-600" />
               </span>
@@ -852,147 +860,104 @@ function Book() {
         </div>
 
         {/* Right: the form */}
-        <div className="light-form rounded-lg border border-slate-200 bg-white shadow-sm p-6 sm:p-7">
+        <div className="light-form rounded-xl border border-slate-200 bg-white shadow-card p-6 sm:p-8">
           {submitted ? (
             <div className="text-center py-8">
-              <div className="w-16 h-16 rounded-full bg-emerald-100 flex items-center justify-center mx-auto mb-5">
-                <CheckCircle className="w-8 h-8 text-emerald-600" />
+              <div className="w-16 h-16 rounded-full bg-sky-100 flex items-center justify-center mx-auto mb-5">
+                <CheckCircle className="w-8 h-8 text-sky-600" />
               </div>
               <h3 className="font-display text-2xl font-bold text-slate-900">Got it, thanks {form.name.split(' ')[0]}</h3>
               <p className="text-slate-600 mt-3">We have your details and will be in touch shortly to confirm a time and price.</p>
-              <a href={PHONE_HREF} className="inline-flex items-center gap-2 mt-6 px-5 py-3 border border-slate-200 text-sky-600 font-semibold rounded-md cursor-pointer">
+              <a href={PHONE_HREF} className="inline-flex items-center gap-2 mt-6 px-6 py-3 border border-slate-200 text-sky-600 font-semibold rounded-full cursor-pointer">
                 <Phone className="w-4 h-4" /> Questions? Call {PHONE_DISPLAY}
               </a>
             </div>
           ) : (
-            <>
-              {/* Progress */}
-              <div className="flex items-center gap-2 mb-6">
-                {[1, 2, 3].map((s) => (
-                  <div key={s} className="flex items-center gap-2 flex-1">
-                    <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 ${step > s ? 'bg-emerald-500 text-white' : step === s ? 'bg-sky-500 text-white' : 'bg-slate-200 text-slate-500'}`}>
-                      {step > s ? '✓' : s}
-                    </div>
-                    <div className={`text-xs font-medium hidden sm:block ${step >= s ? 'text-slate-900' : 'text-slate-400'}`}>
-                      {s === 1 ? 'Your details' : s === 2 ? 'Service' : 'Where & when'}
-                    </div>
-                    {s < 3 && <div className={`flex-1 h-px ${step > s ? 'bg-sky-400' : 'bg-slate-200'}`} />}
-                  </div>
-                ))}
+            <div className="space-y-5">
+              {/* Who you are */}
+              <div className="grid sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-slate-600 text-sm font-medium mb-2">Name *</label>
+                  <input className="form-input" placeholder="Your name" autoComplete="name" value={form.name} onChange={e => set('name', e.target.value)} />
+                </div>
+                <div>
+                  <label className="block text-slate-600 text-sm font-medium mb-2">Phone *</label>
+                  <input className="form-input" type="tel" placeholder="04XX XXX XXX" autoComplete="tel" value={form.phone} onChange={e => set('phone', e.target.value)} />
+                </div>
               </div>
 
-              <AnimatePresence mode="wait">
-                {step === 1 && (
-                  <motion.div key="s1" initial={{ opacity: 0, x: 16 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -16 }} className="space-y-4">
-                    <div>
-                      <label className="block text-slate-600 text-sm font-medium mb-2">Name *</label>
-                      <input className="form-input" placeholder="Your name" value={form.name} onChange={e => set('name', e.target.value)} />
-                    </div>
-                    <div>
-                      <label className="block text-slate-600 text-sm font-medium mb-2">Phone *</label>
-                      <input className="form-input" type="tel" placeholder="04XX XXX XXX" value={form.phone} onChange={e => set('phone', e.target.value)} />
-                    </div>
-                    <div>
-                      <label className="block text-slate-600 text-sm font-medium mb-2">Email <span className="text-slate-400">(optional)</span></label>
-                      <input className="form-input" type="email" placeholder="you@example.com" value={form.email} onChange={e => set('email', e.target.value)} />
-                    </div>
-                    <button disabled={!canStep1} onClick={() => setStep(2)} className="w-full py-3.5 bg-sky-500 hover:bg-sky-600 disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold rounded-md transition-colors cursor-pointer">
-                      Next: pick a service
-                    </button>
-                  </motion.div>
-                )}
-
-                {step === 2 && (
-                  <motion.div key="s2" initial={{ opacity: 0, x: 16 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -16 }} className="space-y-4">
-                    <div>
-                      <label className="block text-slate-600 text-sm font-medium mb-1">What do you need? *</label>
-                      <p className="text-slate-500 text-xs mb-3">Pick as many as you like. Two or more in one visit gets you a better price.</p>
-                      <div className="grid gap-2.5">
-                        {[
-                          { v: 'window-washing', l: 'Window cleaning', d: 'Inside and out, frames and screens' },
-                          { v: 'pressure-washing', l: 'Pressure washing', d: 'Driveways, paths, exterior surfaces' },
-                          { v: 'flyscreen-repair', l: 'Flyscreen repair', d: 'Repair or replace damaged screens' },
-                          { v: 'solar-panel-cleaning', l: 'Solar panel cleaning', d: 'Get your panels working better' },
-                          { v: 'other', l: 'Something else', d: 'Tell us in the notes' },
-                        ].map(o => {
-                          const active = selectedServices.includes(o.v);
-                          return (
-                            <button key={o.v} onClick={() => toggleService(o.v)} className={`p-3.5 rounded-md border text-left transition-colors cursor-pointer flex items-center gap-3 ${active ? 'border-sky-500 bg-sky-50 text-slate-900' : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300'}`}>
-                              <div className={`w-5 h-5 rounded border flex items-center justify-center flex-shrink-0 ${active ? 'bg-sky-500 border-sky-500' : 'border-slate-300'}`}>
-                                {active && <Check className="w-3.5 h-3.5 text-white" strokeWidth={3} />}
-                              </div>
-                              <div>
-                                <div className="font-semibold text-sm">{o.l}</div>
-                                <div className="text-xs opacity-70 mt-0.5">{o.d}</div>
-                              </div>
-                            </button>
-                          );
-                        })}
-                      </div>
-                      {selectedServices.length >= 2 && (
-                        <div className="mt-3 flex items-start gap-2 text-emerald-700 text-xs font-medium bg-emerald-50 border border-emerald-200 rounded-md px-3 py-2">
-                          <Check className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" /> Good call. Two jobs in one visit means we can drop the total. We will factor that into your quote.
-                        </div>
-                      )}
-                    </div>
-                    <div>
-                      <label className="block text-slate-600 text-sm font-medium mb-2.5">Home or business? <span className="text-slate-400">(optional)</span></label>
-                      <div className="grid grid-cols-2 gap-2.5">
-                        {[{ v: 'residential', l: 'Home' }, { v: 'commercial', l: 'Business' }].map(t => (
-                          <button key={t.v} onClick={() => set('propertyType', t.v)} className={`p-3 rounded-md border text-sm font-medium transition-colors cursor-pointer ${form.propertyType === t.v ? 'border-sky-500 bg-sky-50 text-slate-900' : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300'}`}>
-                            {t.l}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                    <div className="flex gap-3">
-                      <button onClick={() => setStep(1)} className="px-5 py-3 border border-slate-200 text-slate-600 text-sm rounded-md hover:text-slate-900 hover:bg-slate-50 transition-colors cursor-pointer">Back</button>
-                      <button disabled={!canStep2} onClick={() => setStep(3)} className="flex-1 py-3 bg-sky-500 hover:bg-sky-600 disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold rounded-md transition-colors cursor-pointer">
-                        Next: where & when
+              {/* What you need */}
+              <div>
+                <label className="block text-slate-600 text-sm font-medium mb-2">What do you need? *</label>
+                <div className="grid grid-cols-2 gap-2">
+                  {[
+                    { v: 'window-washing', l: 'Window cleaning' },
+                    { v: 'pressure-washing', l: 'Pressure washing' },
+                    { v: 'solar-panel-cleaning', l: 'Solar panels' },
+                    { v: 'flyscreen-repair', l: 'Flyscreen repair' },
+                    { v: 'other', l: 'Something else' },
+                  ].map(o => {
+                    const active = selectedServices.includes(o.v);
+                    return (
+                      <button key={o.v} onClick={() => toggleService(o.v)} className={`px-3 py-3 rounded-md border text-sm font-medium text-left transition-colors cursor-pointer flex items-center gap-2 ${active ? 'border-sky-500 bg-sky-50 text-slate-900' : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300'}`}>
+                        <span className={`w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 ${active ? 'bg-sky-500 border-sky-500' : 'border-slate-300'}`}>
+                          {active && <Check className="w-3 h-3 text-white" strokeWidth={3} />}
+                        </span>
+                        {o.l}
                       </button>
-                    </div>
-                  </motion.div>
+                    );
+                  })}
+                </div>
+                {selectedServices.length >= 2 && (
+                  <div className="mt-2.5 flex items-start gap-2 text-sky-700 text-xs font-medium bg-sky-50 border border-sky-200 rounded-md px-3 py-2">
+                    <Check className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" /> Two or more jobs in one visit gets you a better price. We will factor that into your quote.
+                  </div>
                 )}
+              </div>
 
-                {step === 3 && (
-                  <motion.div key="s3" initial={{ opacity: 0, x: 16 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -16 }} className="space-y-4">
-                    <div>
-                      <label className="block text-slate-600 text-sm font-medium mb-2">Street address *</label>
-                      <AddressAutocomplete street={form.address} onStreet={v => set('address', v)} onSuburb={v => set('suburb', v)} />
-                      <p className="text-slate-500 text-xs mt-1.5">Start typing and pick your address. Your suburb fills in on its own.</p>
-                    </div>
-                    <div>
-                      <label className="block text-slate-600 text-sm font-medium mb-2">Suburb <span className="text-slate-400">(optional)</span></label>
-                      <input className="form-input" placeholder="Suburb" value={form.suburb} onChange={e => set('suburb', e.target.value)} />
-                    </div>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <label className="block text-slate-600 text-sm font-medium mb-2">Preferred date <span className="text-slate-400">(optional)</span></label>
-                        <input className="form-input" type="date" min={new Date(Date.now() + 86400000).toISOString().split('T')[0]} value={form.preferredDate} onChange={e => set('preferredDate', e.target.value)} />
-                      </div>
-                      <div>
-                        <label className="block text-slate-600 text-sm font-medium mb-2">Preferred time <span className="text-slate-400">(optional)</span></label>
-                        <input className="form-input" placeholder="Morning, 9am, no preference" value={form.preferredTime} onChange={e => set('preferredTime', e.target.value)} />
-                      </div>
-                    </div>
-                    <div>
-                      <label className="block text-slate-600 text-sm font-medium mb-2">Anything else</label>
-                      <textarea className="form-input resize-none" rows={3} placeholder="Number of windows, access notes, anything we should know" value={form.notes} onChange={e => set('notes', e.target.value)} />
-                    </div>
-                    <div className="flex gap-3">
-                      <button onClick={() => setStep(2)} className="px-5 py-3 border border-slate-200 text-slate-600 text-sm rounded-md hover:text-slate-900 hover:bg-slate-50 transition-colors cursor-pointer">Back</button>
-                      <button disabled={!canStep3 || loading} onClick={submit} className="flex-1 py-3.5 bg-sky-500 hover:bg-sky-600 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold rounded-md transition-colors cursor-pointer flex items-center justify-center gap-2">
-                        {loading ? (<><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Sending</>) : 'Send my details'}
-                      </button>
-                    </div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
+              {/* Where */}
+              <div>
+                <label className="block text-slate-600 text-sm font-medium mb-2">Street address *</label>
+                <AddressAutocomplete street={form.address} onStreet={v => set('address', v)} onSuburb={v => set('suburb', v)} />
+                <p className="text-slate-500 text-xs mt-1.5">Start typing and pick your address, the suburb fills itself in.</p>
+              </div>
 
-              <p className="text-center text-slate-500 text-xs mt-5">
-                Prefer to call? <a href={PHONE_HREF} className="text-sky-600 hover:underline">{PHONE_DISPLAY}</a>, 7 days a week.
+              {/* Optional extras, collapsed by default */}
+              {!showExtras ? (
+                <button onClick={() => setShowExtras(true)} className="text-sky-600 hover:text-sky-700 text-sm font-medium cursor-pointer">
+                  + Add a preferred day, email or notes (optional)
+                </button>
+              ) : (
+                <div className="space-y-4 border-t border-slate-100 pt-4">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-slate-600 text-sm font-medium mb-2">Preferred date</label>
+                      <input className="form-input" type="date" min={new Date(Date.now() + 86400000).toISOString().split('T')[0]} value={form.preferredDate} onChange={e => set('preferredDate', e.target.value)} />
+                    </div>
+                    <div>
+                      <label className="block text-slate-600 text-sm font-medium mb-2">Preferred time</label>
+                      <input className="form-input" placeholder="Morning, 9am…" value={form.preferredTime} onChange={e => set('preferredTime', e.target.value)} />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-slate-600 text-sm font-medium mb-2">Email</label>
+                    <input className="form-input" type="email" placeholder="you@example.com" autoComplete="email" value={form.email} onChange={e => set('email', e.target.value)} />
+                  </div>
+                  <div>
+                    <label className="block text-slate-600 text-sm font-medium mb-2">Anything else</label>
+                    <textarea className="form-input resize-none" rows={2} placeholder="Number of windows, access notes, anything we should know" value={form.notes} onChange={e => set('notes', e.target.value)} />
+                  </div>
+                </div>
+              )}
+
+              <button disabled={!canSubmit || loading} onClick={submit} className="w-full py-4 bg-sky-500 hover:bg-sky-600 disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold text-base rounded-full transition-colors cursor-pointer flex items-center justify-center gap-2">
+                {loading ? (<><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Sending</>) : 'Get my free quote'}
+              </button>
+
+              <p className="text-center text-slate-500 text-xs">
+                No obligation, we call you back with a price. Prefer to talk now? <a href={PHONE_HREF} className="text-sky-600 hover:underline">{PHONE_DISPLAY}</a>
               </p>
-            </>
+            </div>
           )}
         </div>
       </div>
@@ -1000,22 +965,60 @@ function Book() {
   );
 }
 
+// ─── Sticky mobile CTA (call / book always one tap away) ────────────────────
+
+function StickyCTA() {
+  const [show, setShow] = useState(false);
+  const [bookVisible, setBookVisible] = useState(false);
+
+  useEffect(() => {
+    const onScroll = () => setShow(window.scrollY > 500);
+    onScroll();
+    window.addEventListener('scroll', onScroll, { passive: true });
+
+    const book = document.querySelector('#book');
+    let io: IntersectionObserver | null = null;
+    if (book) {
+      io = new IntersectionObserver(([e]) => setBookVisible(e.isIntersecting), { threshold: 0.15 });
+      io.observe(book);
+    }
+    return () => { window.removeEventListener('scroll', onScroll); io?.disconnect(); };
+  }, []);
+
+  const visible = show && !bookVisible;
+
+  return (
+    <div className={`md:hidden fixed bottom-0 inset-x-0 z-40 transition-transform duration-300 ${visible ? 'translate-y-0' : 'translate-y-full'}`}>
+      <div className="bg-white/95 backdrop-blur-sm border-t border-slate-200 shadow-[0_-4px_16px_rgba(15,23,42,0.08)] px-4 pt-3 safe-bottom pb-3">
+        <div className="flex gap-2.5">
+          <a href={PHONE_HREF} className="flex-1 inline-flex items-center justify-center gap-2 py-3 border border-slate-300 text-slate-800 font-semibold text-sm rounded-full cursor-pointer">
+            <Phone className="w-4 h-4 text-sky-500" /> Call us
+          </a>
+          <button onClick={goToBook} className="flex-[1.4] py-3 bg-sky-500 text-white font-semibold text-sm rounded-full cursor-pointer">
+            Get a free quote
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Sky CTA band (commit-to-color) ──────────────────────────────────────────
 
 function SkyCTA() {
   return (
-    <section className="bg-sky-500">
-      <div className="max-w-6xl mx-auto px-6 py-12 sm:py-14 flex flex-col md:flex-row md:items-center justify-between gap-6">
+    <section className="bg-navy-900">
+      <div className="max-w-6xl mx-auto px-6 py-16 sm:py-20 flex flex-col md:flex-row md:items-center justify-between gap-8">
         <div>
-          <h2 className="font-display text-2xl sm:text-3xl font-bold text-white">Ready for clear windows?</h2>
-          <p className="text-sky-50 mt-2">Free quote, usually back the same day. Right across the ACT.</p>
+          <h2 className="font-display text-[1.9rem] leading-[1.15] sm:text-4xl font-bold tracking-tight text-white">Ready for clear windows?</h2>
+          <p className="text-slate-400 mt-3">Free quote, usually back the same day. Right across the ACT.</p>
         </div>
         <div className="flex flex-col sm:flex-row gap-3 flex-shrink-0">
-          <button onClick={goToBook} className="px-6 py-3.5 bg-white text-sky-600 font-semibold rounded-md hover:bg-sky-50 transition-colors cursor-pointer">
+          <button onClick={goToBook} className="px-7 py-3.5 bg-sky-500 text-white font-semibold rounded-full hover:bg-sky-400 transition-colors cursor-pointer">
             Get a free quote
           </button>
-          <a href={PHONE_HREF} className="inline-flex items-center justify-center gap-2 px-6 py-3.5 bg-sky-600 hover:bg-sky-700 text-white font-semibold rounded-md transition-colors cursor-pointer">
-            <Phone className="w-4 h-4" /> Call {PHONE_DISPLAY}
+          <a href={PHONE_HREF} className="inline-flex items-center justify-center gap-2 px-7 py-3.5 border border-white/25 hover:bg-white/10 text-white font-semibold rounded-full transition-colors cursor-pointer">
+            <Phone className="w-4 h-4 text-sky-400" /> Call {PHONE_DISPLAY}
           </a>
         </div>
       </div>
@@ -1085,7 +1088,7 @@ function Footer() {
         <div className="mt-10 pt-6 border-t border-white/10 flex flex-col sm:flex-row items-center justify-between gap-3 text-slate-500 text-xs">
           <span>© {new Date().getFullYear()} Glass &amp; Blast Window Cleaning</span>
           <div className="flex items-center gap-4">
-            <span className="flex items-center gap-1.5"><Award className="w-3.5 h-3.5 text-amber-400" /> 2025 Best Window Cleaner, North Canberra</span>
+            <span className="flex items-center gap-1.5"><Award className="w-3.5 h-3.5 text-sky-400" /> 2025 Best Window Cleaner, North Canberra</span>
             <a href="/admin" className="flex items-center gap-1 hover:text-sky-400 transition-colors cursor-pointer"><Lock className="w-3 h-3" /> Sign in</a>
             <a href="/privacy" className="hover:text-sky-400 transition-colors">Privacy</a>
           </div>
@@ -1114,6 +1117,7 @@ export default function Home() {
         <SkyCTA />
         <Book />
       </main>
+      <StickyCTA />
       <Footer />
     </>
   );

@@ -12,12 +12,13 @@ import {
   ChevronDown, Search, RefreshCw, DollarSign,
   ArrowUpRight, ArrowDownRight, Edit3, Check, Plus, X, StickyNote, BadgeCheck, Wallet,
   BarChart3, Globe, Eye, Users, Link2, MapPin, Target, ClipboardCopy, CalendarDays, CalendarPlus, ArrowRight,
+  Repeat, PhoneCall,
 } from 'lucide-react';
 import Image from 'next/image';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import toast from 'react-hot-toast';
-import type { Booking, BookingStatus } from '@/lib/db';
+import type { Booking, BookingStatus, RecurringJob } from '@/lib/db';
 
 // ─── Types ────────────────────────────────────────────────────────────────
 
@@ -230,7 +231,7 @@ function UpcomingJobs({ data, bookings }: { data: CalData | null; bookings: Book
                 </div>
                 {match && (
                   <Link
-                    href={`/admin/bookings/${match.id}`}
+                    href={`/admin/bookings/${match.id}?from=${encodeURIComponent('/admin/dashboard?tab=overview')}`}
                     title={`Open booking: ${match.name}`}
                     className="flex-shrink-0 inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-sky-400 bg-sky-400/10 hover:bg-sky-400/20 text-xs font-semibold transition-colors cursor-pointer"
                   >
@@ -287,6 +288,16 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'overview' | 'bookings' | 'business' | 'site'>('overview');
 
+  // Restore the tab from ?tab=… so returning from a booking detail (Back button)
+  // lands on the same tab it was opened from, not the default. Runs before data
+  // loads, so the swap happens behind the loading skeletons — no visible flash.
+  useEffect(() => {
+    const t = new URLSearchParams(window.location.search).get('tab');
+    if (t === 'bookings' || t === 'business' || t === 'site' || t === 'overview') {
+      setActiveTab(t);
+    }
+  }, []);
+
   // Stats for the dedicated tabs (lazy-loaded when first opened)
   const [bizStats, setBizStats] = useState<BusinessStats | null>(null);
   const [siteStats, setSiteStats] = useState<SiteStats | null>(null);
@@ -295,6 +306,17 @@ export default function Dashboard() {
 
   // Upcoming jobs from the read-only Google Calendar feed
   const [jobs, setJobs] = useState<CalData | null>(null);
+
+  // Recurring plans (for the overview "due soon" card)
+  const [recurring, setRecurring] = useState<RecurringJob[]>([]);
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch('/api/admin/recurring');
+        if (res.ok) setRecurring(await res.json());
+      } catch { /* card just stays hidden */ }
+    })();
+  }, []);
 
   // Filters
   const [search, setSearch] = useState('');
@@ -365,8 +387,9 @@ export default function Dashboard() {
     router.push('/admin');
   };
 
-  // Tap a booking (card or row) to see its full read-only detail page.
-  const openBooking = (id: string) => router.push(`/admin/bookings/${id}`);
+  // Tap a booking (card or row) to see its full read-only detail page. Pass the
+  // current tab as ?from=… so the detail page's Back button returns here exactly.
+  const openBooking = (id: string) => router.push(`/admin/bookings/${id}?from=${encodeURIComponent(`/admin/dashboard?tab=${activeTab}`)}`);
 
   // Quick inline status change. "Quoted" opens the manage modal to capture the amount.
   const onInlineStatus = (b: Booking, val: BookingStatus) => {
@@ -478,6 +501,9 @@ export default function Dashboard() {
           <button onClick={() => setActiveTab('site')} className={`admin-sidebar-link w-full ${activeTab === 'site' ? 'active' : ''}`}>
             <Globe className="w-4 h-4" /> Site Stats
           </button>
+          <Link href="/admin/recurring" className="admin-sidebar-link w-full">
+            <Repeat className="w-4 h-4" /> Recurring Plans
+          </Link>
         </nav>
 
         <div className="border-t border-white/5 pt-4 space-y-2">
@@ -550,6 +576,80 @@ export default function Dashboard() {
                     })}
                   </div>
                 )}
+
+                {/* Action needed: fresh leads to call + money owed — the two lists that make you money */}
+                {!loading && (() => {
+                  const leads = bookings.filter(b => b.status === 'pending').sort((a, b) => a.createdAt.localeCompare(b.createdAt)).slice(0, 5);
+                  const owed = bookings.filter(b => b.status === 'completed' && !b.paid && typeof b.quoteAmount === 'number' && (b.quoteAmount ?? 0) > 0).slice(0, 5);
+                  const dueSoonCount = recurring.filter(j => j.active && j.nextDate <= new Date(Date.now() + 14 * 86400000).toISOString().slice(0, 10)).length;
+                  const ageDays = (iso: string) => Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
+                  if (leads.length === 0 && owed.length === 0 && recurring.length === 0) return null;
+                  return (
+                    <div className="grid lg:grid-cols-2 gap-4">
+                      {leads.length > 0 && (
+                        <div className="glass rounded-2xl border border-amber-400/20 p-5">
+                          <h3 className="font-display font-semibold text-white text-sm mb-3 flex items-center gap-2">
+                            <PhoneCall className="w-4 h-4 text-amber-400" /> Leads to call back
+                            <span className="ml-auto text-amber-400 text-xs font-bold">{leads.length}</span>
+                          </h3>
+                          <ul className="divide-y divide-white/5">
+                            {leads.map(b => (
+                              <li key={b.id} className="flex items-center gap-3 py-2">
+                                <button onClick={() => openBooking(b.id)} className="min-w-0 flex-1 text-left cursor-pointer">
+                                  <div className="text-white text-sm font-medium truncate">{b.name}</div>
+                                  <div className="text-slate-500 text-xs truncate">{serviceText(b.service)}{b.suburb ? ` · ${b.suburb}` : ''}</div>
+                                </button>
+                                <span className={`flex-shrink-0 text-xs ${ageDays(b.createdAt) >= 2 ? 'text-amber-400 font-semibold' : 'text-slate-500'}`}>
+                                  {ageDays(b.createdAt) === 0 ? 'today' : `${ageDays(b.createdAt)}d`}
+                                </span>
+                                {b.phone && (
+                                  <a href={`tel:${b.phone}`} aria-label={`Call ${b.name}`} className="flex-shrink-0 w-9 h-9 rounded-lg bg-sky-400/10 text-sky-400 hover:bg-sky-400/20 flex items-center justify-center cursor-pointer">
+                                    <PhoneCall className="w-4 h-4" />
+                                  </a>
+                                )}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      <div className="space-y-4">
+                        {owed.length > 0 && (
+                          <div className="glass rounded-2xl border border-red-400/20 p-5">
+                            <h3 className="font-display font-semibold text-white text-sm mb-3 flex items-center gap-2">
+                              <Wallet className="w-4 h-4 text-red-400" /> Done but not paid
+                              <span className="ml-auto text-red-300 text-xs font-bold">{money(owed.reduce((s, b) => s + (b.quoteAmount ?? 0), 0))}</span>
+                            </h3>
+                            <ul className="divide-y divide-white/5">
+                              {owed.map(b => (
+                                <li key={b.id}>
+                                  <button onClick={() => openBooking(b.id)} className="w-full flex items-center gap-3 py-2 text-left cursor-pointer">
+                                    <div className="min-w-0 flex-1">
+                                      <div className="text-white text-sm font-medium truncate">{b.name}</div>
+                                      <div className="text-slate-500 text-xs">{b.completedAt ? `Done ${new Date(b.completedAt).toLocaleDateString('en-AU', { day: 'numeric', month: 'short' })}` : 'Completed'}</div>
+                                    </div>
+                                    <span className="flex-shrink-0 text-red-300 text-sm font-semibold">{money(b.quoteAmount)}</span>
+                                  </button>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        <Link href="/admin/recurring" className="glass rounded-2xl border border-white/8 p-5 flex items-center gap-3 hover:border-sky-400/30 transition-colors cursor-pointer">
+                          <span className="w-10 h-10 rounded-xl bg-sky-400/10 flex items-center justify-center flex-shrink-0">
+                            <Repeat className="w-5 h-5 text-sky-400" />
+                          </span>
+                          <span className="min-w-0 flex-1">
+                            <span className="block text-white text-sm font-semibold">Recurring plans</span>
+                            <span className="block text-slate-500 text-xs mt-0.5">
+                              {recurring.filter(j => j.active).length} active{dueSoonCount > 0 ? ` · ${dueSoonCount} due within 2 weeks` : ''}
+                            </span>
+                          </span>
+                          <ArrowRight className="w-4 h-4 text-slate-500 flex-shrink-0" />
+                        </Link>
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 <UpcomingJobs data={jobs} bookings={bookings} />
 

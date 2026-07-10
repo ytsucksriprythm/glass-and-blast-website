@@ -51,26 +51,10 @@ const config: Config = {
         sans: ['Geist', 'system-ui', 'sans-serif'],
         display: ['Archivo', 'system-ui', 'sans-serif'],
       },
-      animation: {
-        'float': 'float 6s ease-in-out infinite',
-        'shimmer': 'shimmer 2s linear infinite',
-        'spin-slow': 'spin 8s linear infinite',
-        'pulse-slow': 'pulse 4s ease-in-out infinite',
-        'counter': 'counter 2s ease-out forwards',
-      },
-      keyframes: {
-        float: {
-          '0%, 100%': { transform: 'translateY(0px)' },
-          '50%': { transform: 'translateY(-20px)' },
-        },
-        shimmer: {
-          '0%': { backgroundPosition: '-200% 0' },
-          '100%': { backgroundPosition: '200% 0' },
-        },
-      },
-      backgroundImage: {
-        'gradient-radial': 'radial-gradient(var(--tw-gradient-stops))',
-        'glass-shine': 'linear-gradient(105deg, transparent 40%, rgba(255,255,255,0.15) 50%, transparent 60%)',
+      boxShadow: {
+        // Layered, low-opacity shadows — soft depth without the default Tailwind look
+        card: '0 1px 2px rgba(15,23,42,0.04), 0 8px 24px -8px rgba(15,23,42,0.10)',
+        'card-lg': '0 2px 4px rgba(15,23,42,0.05), 0 24px 48px -16px rgba(15,23,42,0.18)',
       },
     },
   },
