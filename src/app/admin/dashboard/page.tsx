@@ -12,7 +12,7 @@ import {
   ChevronDown, Search, RefreshCw, DollarSign,
   ArrowUpRight, ArrowDownRight, Edit3, Check, Plus, X, StickyNote, BadgeCheck, Wallet,
   BarChart3, Globe, Eye, Users, Link2, MapPin, Target, ClipboardCopy, CalendarDays, CalendarPlus, ArrowRight,
-  Repeat, PhoneCall,
+  Repeat, PhoneCall, FileText,
 } from 'lucide-react';
 import Image from 'next/image';
 import Link from 'next/link';
@@ -256,24 +256,35 @@ function BottomNav({ active, onChange, pending }: { active: TabKey; onChange: (t
   const tabs = [
     { t: 'overview', label: 'Home', icon: LayoutDashboard },
     { t: 'bookings', label: 'Bookings', icon: Calendar },
-    { t: 'business', label: 'Business', icon: BarChart3 },
+    { t: 'business', label: 'Stats', icon: BarChart3 },
     { t: 'site', label: 'Site', icon: Globe },
   ] as const;
+  // Recurring plans + invoices are separate routes; keep them reachable on mobile.
+  const links = [
+    { href: '/admin/recurring', label: 'Plans', icon: Repeat },
+    { href: '/admin/invoices', label: 'Invoices', icon: FileText },
+  ];
   return (
     <nav className="lg:hidden fixed bottom-0 inset-x-0 z-40 bg-navy-800/95 backdrop-blur border-t border-white/10 safe-bottom">
-      <div className="grid grid-cols-4">
+      <div className="grid grid-cols-6">
         {tabs.map(({ t, label, icon: Icon }) => {
           const on = active === t;
           return (
-            <button key={t} onClick={() => onChange(t)} className={`relative flex flex-col items-center gap-1 py-2.5 text-[11px] font-medium cursor-pointer transition-colors ${on ? 'text-sky-400' : 'text-slate-500'}`}>
-              <Icon className="w-[22px] h-[22px]" />
+            <button key={t} onClick={() => onChange(t)} className={`relative flex flex-col items-center gap-1 py-2.5 text-[10px] font-medium cursor-pointer transition-colors ${on ? 'text-sky-400' : 'text-slate-500'}`}>
+              <Icon className="w-[21px] h-[21px]" />
               {label}
               {t === 'bookings' && pending > 0 && (
-                <span className="absolute top-1 right-[22%] min-w-[16px] h-4 px-1 bg-amber-400 text-navy-900 text-[10px] font-bold rounded-full flex items-center justify-center">{pending}</span>
+                <span className="absolute top-1 right-[14%] min-w-[15px] h-4 px-1 bg-amber-400 text-navy-900 text-[10px] font-bold rounded-full flex items-center justify-center">{pending}</span>
               )}
             </button>
           );
         })}
+        {links.map(({ href, label, icon: Icon }) => (
+          <Link key={href} href={href} className="flex flex-col items-center gap-1 py-2.5 text-[10px] font-medium text-slate-500 hover:text-sky-400 active:text-sky-400 cursor-pointer transition-colors">
+            <Icon className="w-[21px] h-[21px]" />
+            {label}
+          </Link>
+        ))}
       </div>
     </nav>
   );
@@ -505,6 +516,9 @@ export default function Dashboard() {
           <Link href="/admin/recurring" className="admin-sidebar-link w-full">
             <Repeat className="w-4 h-4" /> Recurring Plans
           </Link>
+          <Link href="/admin/invoices" className="admin-sidebar-link w-full">
+            <FileText className="w-4 h-4" /> Invoices
+          </Link>
         </nav>
 
         <div className="border-t border-white/5 pt-4 space-y-2">
@@ -644,6 +658,16 @@ export default function Dashboard() {
                             <span className="block text-slate-500 text-xs mt-0.5">
                               {recurring.filter(j => j.active).length} active{dueSoonCount > 0 ? ` · ${dueSoonCount} due within 2 weeks` : ''}
                             </span>
+                          </span>
+                          <ArrowRight className="w-4 h-4 text-slate-500 flex-shrink-0" />
+                        </Link>
+                        <Link href="/admin/invoices" className="glass rounded-2xl border border-white/8 p-5 flex items-center gap-3 hover:border-sky-400/30 transition-colors cursor-pointer">
+                          <span className="w-10 h-10 rounded-xl bg-sky-400/10 flex items-center justify-center flex-shrink-0">
+                            <FileText className="w-5 h-5 text-sky-400" />
+                          </span>
+                          <span className="min-w-0 flex-1">
+                            <span className="block text-white text-sm font-semibold">Invoices</span>
+                            <span className="block text-slate-500 text-xs mt-0.5">Create &amp; send an invoice</span>
                           </span>
                           <ArrowRight className="w-4 h-4 text-slate-500 flex-shrink-0" />
                         </Link>

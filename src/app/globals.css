@@ -145,3 +145,12 @@ html { -webkit-text-size-adjust: 100%; }
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ── Invoice print / save-as-PDF ─────────────────────────────────────────────
+   Strip the page chrome so only the invoice sheet prints, edge to edge. */
+@media print {
+  .no-print { display: none !important; }
+  .invoice-page { background: #ffffff !important; padding: 0 !important; }
+  .invoice-page .rounded-xl { box-shadow: none !important; }
+  .invoice-sheet { box-shadow: none !important; max-width: 100% !important; }
+}

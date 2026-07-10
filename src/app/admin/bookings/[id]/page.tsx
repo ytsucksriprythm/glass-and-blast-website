@@ -7,7 +7,7 @@ import toast from 'react-hot-toast';
 import {
   ArrowLeft, Phone, Mail, MapPin, CalendarDays, DollarSign, StickyNote,
   CalendarPlus, User, Wallet, Clock, Edit3, Check, X, CalendarCheck,
-  Camera, Trash2, Repeat,
+  Camera, Trash2, Repeat, FileText,
 } from 'lucide-react';
 import type { Booking, BookingStatus, BookingPhoto, PhotoType } from '@/lib/db';
 
@@ -389,8 +389,15 @@ export default function BookingView() {
             <PhotoGallery bookingId={b.id} />
 
             <Link
-              href={`/admin/recurring?prefill=${b.id}`}
+              href={`/admin/invoices/new?fromBooking=${b.id}`}
               className="mt-4 w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-lg border border-white/10 bg-white/[0.03] text-slate-300 hover:text-white hover:border-sky-400/40 text-sm font-semibold transition-colors cursor-pointer"
+            >
+              <FileText className="w-4 h-4 text-sky-400" /> Create an invoice from this booking
+            </Link>
+
+            <Link
+              href={`/admin/recurring?prefill=${b.id}`}
+              className="mt-3 w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-lg border border-white/10 bg-white/[0.03] text-slate-300 hover:text-white hover:border-sky-400/40 text-sm font-semibold transition-colors cursor-pointer"
             >
               <Repeat className="w-4 h-4 text-sky-400" /> Put this customer on a recurring plan
             </Link>

@@ -1,11 +1,18 @@
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import { neon } from '@neondatabase/serverless';
+import {
+  type Invoice, type InvoiceInput, type InvoiceLineItem, type InvoiceStatus,
+  type PaymentProfile, INVOICE_PREFIX, INVOICE_START_SEQ, SEED_PAYMENT_PROFILES, computeTotals,
+} from './invoice';
 
 const DB_PATH = path.join(process.cwd(), 'data', 'bookings.json');
 const PV_PATH = path.join(process.cwd(), 'data', 'pageviews.json');
 const PHOTO_PATH = path.join(process.cwd(), 'data', 'photos.json');
 const RECURRING_PATH = path.join(process.cwd(), 'data', 'recurring.json');
+const INVOICE_PATH = path.join(process.cwd(), 'data', 'invoices.json');
+const PAYMENT_PROFILE_PATH = path.join(process.cwd(), 'data', 'payment-profiles.json');
 
 export type BookingStatus = 'pending' | 'quoted' | 'confirmed' | 'completed' | 'cancelled';
 export type ServiceType = 'window-washing' | 'pressure-washing' | 'both' | 'flyscreen-repair' | 'solar-panel-cleaning' | 'other';
@@ -224,6 +231,77 @@ async function ensureSchema(): Promise<void> {
           updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
         )
       `;
+      // Invoices + an atomic per-prefix number counter
+      await sql`
+        CREATE TABLE IF NOT EXISTS invoices (
+          id                 TEXT PRIMARY KEY,
+          number             TEXT NOT NULL,
+          seq                INTEGER NOT NULL,
+          is_tax_invoice     BOOLEAN NOT NULL DEFAULT false,
+          status             TEXT NOT NULL DEFAULT 'draft',
+          from_name          TEXT NOT NULL DEFAULT '',
+          from_trading_as    TEXT NOT NULL DEFAULT '',
+          from_abn           TEXT NOT NULL DEFAULT '',
+          from_address       TEXT NOT NULL DEFAULT '',
+          from_email         TEXT NOT NULL DEFAULT '',
+          from_phone         TEXT NOT NULL DEFAULT '',
+          bill_to_name       TEXT NOT NULL DEFAULT '',
+          bill_to_lines      TEXT NOT NULL DEFAULT '',
+          client_show        BOOLEAN NOT NULL DEFAULT false,
+          client_name        TEXT NOT NULL DEFAULT '',
+          client_trn         TEXT NOT NULL DEFAULT '',
+          client_file_no     TEXT NOT NULL DEFAULT '',
+          client_claim_ref   TEXT NOT NULL DEFAULT '',
+          invoice_date       TEXT NOT NULL DEFAULT '',
+          service_date       TEXT NOT NULL DEFAULT '',
+          due_date           TEXT NOT NULL DEFAULT '',
+          items              TEXT NOT NULL DEFAULT '[]',
+          subtotal           NUMERIC NOT NULL DEFAULT 0,
+          total              NUMERIC NOT NULL DEFAULT 0,
+          notes              TEXT NOT NULL DEFAULT '',
+          pay_account_name   TEXT NOT NULL DEFAULT '',
+          pay_bsb            TEXT NOT NULL DEFAULT '',
+          pay_account_number TEXT NOT NULL DEFAULT '',
+          token              TEXT NOT NULL,
+          booking_id         TEXT,
+          created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+          updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+          sent_at            TIMESTAMPTZ,
+          paid_at            TIMESTAMPTZ,
+          view_count         INTEGER NOT NULL DEFAULT 0,
+          first_viewed_at    TIMESTAMPTZ,
+          last_viewed_at     TIMESTAMPTZ
+        )
+      `;
+      // Backfill view-tracking columns on pre-existing invoice tables
+      await sql`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS view_count INTEGER NOT NULL DEFAULT 0`;
+      await sql`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS first_viewed_at TIMESTAMPTZ`;
+      await sql`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS last_viewed_at TIMESTAMPTZ`;
+      await sql`CREATE UNIQUE INDEX IF NOT EXISTS invoices_token_idx ON invoices (token)`;
+      await sql`CREATE UNIQUE INDEX IF NOT EXISTS invoices_number_idx ON invoices (number)`;
+      await sql`CREATE TABLE IF NOT EXISTS invoice_counter (id TEXT PRIMARY KEY, last_seq INTEGER NOT NULL)`;
+      // Seed so the first generated invoice is GB{INVOICE_START_SEQ}.
+      await sql`INSERT INTO invoice_counter (id, last_seq) VALUES (${INVOICE_PREFIX}, ${INVOICE_START_SEQ - 1}) ON CONFLICT (id) DO NOTHING`;
+      // Selectable payment profiles for invoices
+      await sql`
+        CREATE TABLE IF NOT EXISTS payment_profiles (
+          id             TEXT PRIMARY KEY,
+          name           TEXT NOT NULL,
+          account_name   TEXT NOT NULL DEFAULT '',
+          bsb            TEXT NOT NULL DEFAULT '',
+          account_number TEXT NOT NULL DEFAULT '',
+          sort           INTEGER NOT NULL DEFAULT 0,
+          builtin        BOOLEAN NOT NULL DEFAULT false,
+          created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+      `;
+      for (const p of SEED_PAYMENT_PROFILES) {
+        await sql`
+          INSERT INTO payment_profiles (id, name, account_name, bsb, account_number, sort, builtin)
+          VALUES (${p.id}, ${p.name}, ${p.accountName}, ${p.bsb}, ${p.accountNumber}, ${p.sort}, ${p.builtin})
+          ON CONFLICT (id) DO NOTHING
+        `;
+      }
     })();
   }
   return schemaReady;
@@ -870,4 +948,379 @@ export async function runRecurringDue(): Promise<{ job: RecurringJob; booking: B
     created.push({ job: advanced ?? job, booking });
   }
   return created;
+}
+
+// ─── Invoices ────────────────────────────────────────────────────────────────
+
+function readInvoices(): Invoice[] {
+  try {
+    if (!fs.existsSync(INVOICE_PATH)) return [];
+    return JSON.parse(fs.readFileSync(INVOICE_PATH, 'utf-8'));
+  } catch { return []; }
+}
+function writeInvoices(rows: Invoice[]): void {
+  const dir = path.dirname(INVOICE_PATH);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(INVOICE_PATH, JSON.stringify(rows, null, 2));
+}
+
+function parseItems(raw: any): InvoiceLineItem[] {
+  if (Array.isArray(raw)) return raw;
+  try {
+    const arr = JSON.parse(raw ?? '[]');
+    return Array.isArray(arr) ? arr : [];
+  } catch { return []; }
+}
+
+function rowToInvoice(r: any): Invoice {
+  const items = parseItems(r.items);
+  return {
+    id: r.id,
+    number: r.number,
+    seq: Number(r.seq),
+    isTaxInvoice: r.is_tax_invoice === true || r.is_tax_invoice === 1,
+    status: r.status as InvoiceStatus,
+    fromName: r.from_name ?? '',
+    fromTradingAs: r.from_trading_as ?? '',
+    fromAbn: r.from_abn ?? '',
+    fromAddress: r.from_address ?? '',
+    fromEmail: r.from_email ?? '',
+    fromPhone: r.from_phone ?? '',
+    billToName: r.bill_to_name ?? '',
+    billToLines: r.bill_to_lines ?? '',
+    client: {
+      show: r.client_show === true || r.client_show === 1,
+      clientName: r.client_name ?? '',
+      trn: r.client_trn ?? '',
+      fileNo: r.client_file_no ?? '',
+      claimRef: r.client_claim_ref ?? '',
+    },
+    invoiceDate: r.invoice_date ?? '',
+    serviceDate: r.service_date ?? '',
+    dueDate: r.due_date ?? '',
+    items,
+    subtotal: r.subtotal == null ? 0 : Number(r.subtotal),
+    total: r.total == null ? 0 : Number(r.total),
+    notes: r.notes ?? '',
+    payAccountName: r.pay_account_name ?? '',
+    payBsb: r.pay_bsb ?? '',
+    payAccountNumber: r.pay_account_number ?? '',
+    token: r.token,
+    bookingId: r.booking_id ?? null,
+    createdAt: typeof r.created_at === 'string' ? r.created_at : new Date(r.created_at).toISOString(),
+    updatedAt: typeof r.updated_at === 'string' ? r.updated_at : new Date(r.updated_at).toISOString(),
+    sentAt: r.sent_at == null ? null : (typeof r.sent_at === 'string' ? r.sent_at : new Date(r.sent_at).toISOString()),
+    paidAt: r.paid_at == null ? null : (typeof r.paid_at === 'string' ? r.paid_at : new Date(r.paid_at).toISOString()),
+    viewCount: r.view_count == null ? 0 : Number(r.view_count),
+    firstViewedAt: r.first_viewed_at == null ? null : (typeof r.first_viewed_at === 'string' ? r.first_viewed_at : new Date(r.first_viewed_at).toISOString()),
+    lastViewedAt: r.last_viewed_at == null ? null : (typeof r.last_viewed_at === 'string' ? r.last_viewed_at : new Date(r.last_viewed_at).toISOString()),
+  };
+}
+
+// Atomically reserve the next invoice sequence number.
+async function nextInvoiceSeq(): Promise<number> {
+  if (sql) {
+    const rows = await sql`UPDATE invoice_counter SET last_seq = last_seq + 1 WHERE id = ${INVOICE_PREFIX} RETURNING last_seq`;
+    const arr = rows as any[];
+    return arr.length ? Number(arr[0].last_seq) : INVOICE_START_SEQ;
+  }
+  const rows = readInvoices();
+  const maxSeq = rows.reduce((m, i) => Math.max(m, i.seq), INVOICE_START_SEQ - 1);
+  return maxSeq + 1;
+}
+
+export async function getInvoices(): Promise<Invoice[]> {
+  if (sql) {
+    return withTimeout((async () => {
+      await ensureSchema();
+      const rows = await sql`SELECT * FROM invoices ORDER BY seq DESC`;
+      return (rows as any[]).map(rowToInvoice);
+    })());
+  }
+  return readInvoices().sort((a, b) => b.seq - a.seq);
+}
+
+export async function getInvoiceById(id: string): Promise<Invoice | null> {
+  if (sql) {
+    await ensureSchema();
+    const rows = await sql`SELECT * FROM invoices WHERE id = ${id} LIMIT 1`;
+    const arr = rows as any[];
+    return arr.length ? rowToInvoice(arr[0]) : null;
+  }
+  return readInvoices().find(i => i.id === id) ?? null;
+}
+
+export async function getInvoiceByToken(token: string): Promise<Invoice | null> {
+  if (sql) {
+    await ensureSchema();
+    const rows = await sql`SELECT * FROM invoices WHERE token = ${token} LIMIT 1`;
+    const arr = rows as any[];
+    return arr.length ? rowToInvoice(arr[0]) : null;
+  }
+  return readInvoices().find(i => i.token === token) ?? null;
+}
+
+export async function createInvoice(input: InvoiceInput): Promise<Invoice> {
+  const now = new Date().toISOString();
+  const items = (input.items ?? []).map(it => ({
+    description: it.description ?? '',
+    detail: it.detail ?? '',
+    serviceAddress: it.serviceAddress ?? '',
+    date: it.date ?? '',
+    amount: Number(it.amount) || 0,
+  }));
+  const { subtotal, total } = computeTotals(items);
+
+  if (sql) {
+    await ensureSchema();
+    const seq = await nextInvoiceSeq();
+    const invoice: Invoice = {
+      id: `INV-${Date.now()}`,
+      number: `${INVOICE_PREFIX}${seq}`,
+      seq,
+      isTaxInvoice: !!input.isTaxInvoice,
+      status: input.status ?? 'draft',
+      fromName: input.fromName, fromTradingAs: input.fromTradingAs, fromAbn: input.fromAbn,
+      fromAddress: input.fromAddress, fromEmail: input.fromEmail, fromPhone: input.fromPhone,
+      billToName: input.billToName ?? '', billToLines: input.billToLines ?? '',
+      client: input.client ?? { show: false, clientName: '', trn: '', fileNo: '', claimRef: '' },
+      invoiceDate: input.invoiceDate ?? '', serviceDate: input.serviceDate ?? '', dueDate: input.dueDate ?? '',
+      items, subtotal, total,
+      notes: input.notes ?? '',
+      payAccountName: input.payAccountName ?? '', payBsb: input.payBsb ?? '', payAccountNumber: input.payAccountNumber ?? '',
+      token: `inv_${crypto.randomBytes(12).toString('hex')}`,
+      bookingId: input.bookingId ?? null,
+      createdAt: now, updatedAt: now, sentAt: null, paidAt: null,
+      viewCount: 0, firstViewedAt: null, lastViewedAt: null,
+    };
+    await sql`
+      INSERT INTO invoices (
+        id, number, seq, is_tax_invoice, status,
+        from_name, from_trading_as, from_abn, from_address, from_email, from_phone,
+        bill_to_name, bill_to_lines,
+        client_show, client_name, client_trn, client_file_no, client_claim_ref,
+        invoice_date, service_date, due_date,
+        items, subtotal, total, notes,
+        pay_account_name, pay_bsb, pay_account_number,
+        token, booking_id
+      ) VALUES (
+        ${invoice.id}, ${invoice.number}, ${invoice.seq}, ${invoice.isTaxInvoice}, ${invoice.status},
+        ${invoice.fromName}, ${invoice.fromTradingAs}, ${invoice.fromAbn}, ${invoice.fromAddress}, ${invoice.fromEmail}, ${invoice.fromPhone},
+        ${invoice.billToName}, ${invoice.billToLines},
+        ${invoice.client.show}, ${invoice.client.clientName}, ${invoice.client.trn}, ${invoice.client.fileNo}, ${invoice.client.claimRef},
+        ${invoice.invoiceDate}, ${invoice.serviceDate}, ${invoice.dueDate},
+        ${JSON.stringify(invoice.items)}, ${invoice.subtotal}, ${invoice.total}, ${invoice.notes},
+        ${invoice.payAccountName}, ${invoice.payBsb}, ${invoice.payAccountNumber},
+        ${invoice.token}, ${invoice.bookingId}
+      )
+    `;
+    return invoice;
+  }
+
+  const rows = readInvoices();
+  const seq = await nextInvoiceSeq();
+  const invoice: Invoice = {
+    id: `INV-${Date.now()}`,
+    number: `${INVOICE_PREFIX}${seq}`,
+    seq,
+    isTaxInvoice: !!input.isTaxInvoice,
+    status: input.status ?? 'draft',
+    fromName: input.fromName, fromTradingAs: input.fromTradingAs, fromAbn: input.fromAbn,
+    fromAddress: input.fromAddress, fromEmail: input.fromEmail, fromPhone: input.fromPhone,
+    billToName: input.billToName ?? '', billToLines: input.billToLines ?? '',
+    client: input.client ?? { show: false, clientName: '', trn: '', fileNo: '', claimRef: '' },
+    invoiceDate: input.invoiceDate ?? '', serviceDate: input.serviceDate ?? '', dueDate: input.dueDate ?? '',
+    items, subtotal, total,
+    notes: input.notes ?? '',
+    payAccountName: input.payAccountName ?? '', payBsb: input.payBsb ?? '', payAccountNumber: input.payAccountNumber ?? '',
+    token: `inv_${crypto.randomBytes(12).toString('hex')}`,
+    bookingId: input.bookingId ?? null,
+    createdAt: now, updatedAt: now, sentAt: null, paidAt: null,
+    viewCount: 0, firstViewedAt: null, lastViewedAt: null,
+  };
+  rows.push(invoice);
+  writeInvoices(rows);
+  return invoice;
+}
+
+// Stamp sentAt / paidAt the first time an invoice reaches that status, unless
+// the caller passed an explicit value.
+function withInvoiceStamps(cur: Invoice, updates: Partial<Invoice>): Partial<Invoice> {
+  const out = { ...updates };
+  if (!('sentAt' in updates) && updates.status === 'sent' && cur.status !== 'sent' && !cur.sentAt) {
+    out.sentAt = new Date().toISOString();
+  }
+  if (!('paidAt' in updates) && updates.status === 'paid' && cur.status !== 'paid' && !cur.paidAt) {
+    out.paidAt = new Date().toISOString();
+  }
+  return out;
+}
+
+export async function updateInvoice(id: string, rawUpdates: Partial<Invoice>): Promise<Invoice | null> {
+  if (sql) {
+    await ensureSchema();
+    const cur = await getInvoiceById(id);
+    if (!cur) return null;
+    const updates = withInvoiceStamps(cur, rawUpdates);
+    const m = { ...cur, ...updates };
+    // Never let the caller rewrite identity/number/seq/token.
+    m.id = cur.id; m.number = cur.number; m.seq = cur.seq; m.token = cur.token;
+    const totals = computeTotals(m.items);
+    m.subtotal = totals.subtotal; m.total = totals.total;
+    const rows = await sql`
+      UPDATE invoices SET
+        is_tax_invoice = ${m.isTaxInvoice},
+        status = ${m.status},
+        from_name = ${m.fromName}, from_trading_as = ${m.fromTradingAs}, from_abn = ${m.fromAbn},
+        from_address = ${m.fromAddress}, from_email = ${m.fromEmail}, from_phone = ${m.fromPhone},
+        bill_to_name = ${m.billToName}, bill_to_lines = ${m.billToLines},
+        client_show = ${m.client.show}, client_name = ${m.client.clientName}, client_trn = ${m.client.trn},
+        client_file_no = ${m.client.fileNo}, client_claim_ref = ${m.client.claimRef},
+        invoice_date = ${m.invoiceDate}, service_date = ${m.serviceDate}, due_date = ${m.dueDate},
+        items = ${JSON.stringify(m.items)}, subtotal = ${m.subtotal}, total = ${m.total}, notes = ${m.notes},
+        pay_account_name = ${m.payAccountName}, pay_bsb = ${m.payBsb}, pay_account_number = ${m.payAccountNumber},
+        booking_id = ${m.bookingId},
+        sent_at = ${m.sentAt ?? null}, paid_at = ${m.paidAt ?? null},
+        updated_at = now()
+      WHERE id = ${id}
+      RETURNING *
+    `;
+    const arr = rows as any[];
+    return arr.length ? rowToInvoice(arr[0]) : null;
+  }
+
+  const rows = readInvoices();
+  const idx = rows.findIndex(i => i.id === id);
+  if (idx === -1) return null;
+  const updates = withInvoiceStamps(rows[idx], rawUpdates);
+  const m = { ...rows[idx], ...updates };
+  m.id = rows[idx].id; m.number = rows[idx].number; m.seq = rows[idx].seq; m.token = rows[idx].token;
+  const totals = computeTotals(m.items);
+  m.subtotal = totals.subtotal; m.total = totals.total;
+  m.updatedAt = new Date().toISOString();
+  rows[idx] = m;
+  writeInvoices(rows);
+  return rows[idx];
+}
+
+export async function deleteInvoice(id: string): Promise<boolean> {
+  if (sql) {
+    await ensureSchema();
+    const rows = await sql`DELETE FROM invoices WHERE id = ${id} RETURNING id`;
+    return (rows as any[]).length > 0;
+  }
+  const rows = readInvoices();
+  const filtered = rows.filter(i => i.id !== id);
+  if (filtered.length === rows.length) return false;
+  writeInvoices(filtered);
+  return true;
+}
+
+// Record a customer view of the public invoice link. Stamps the first view and
+// bumps the counter. Callers must exclude logged-in admins before calling this.
+export async function recordInvoiceView(token: string): Promise<Invoice | null> {
+  const now = new Date().toISOString();
+  if (sql) {
+    await ensureSchema();
+    const rows = await sql`
+      UPDATE invoices SET
+        view_count = view_count + 1,
+        first_viewed_at = COALESCE(first_viewed_at, ${now}),
+        last_viewed_at = ${now}
+      WHERE token = ${token}
+      RETURNING *
+    `;
+    const arr = rows as any[];
+    return arr.length ? rowToInvoice(arr[0]) : null;
+  }
+  const rows = readInvoices();
+  const idx = rows.findIndex(i => i.token === token);
+  if (idx === -1) return null;
+  rows[idx].viewCount = (rows[idx].viewCount ?? 0) + 1;
+  rows[idx].firstViewedAt = rows[idx].firstViewedAt ?? now;
+  rows[idx].lastViewedAt = now;
+  writeInvoices(rows);
+  return rows[idx];
+}
+
+// ─── Payment profiles ────────────────────────────────────────────────────────
+
+function readPaymentProfiles(): PaymentProfile[] {
+  try {
+    if (!fs.existsSync(PAYMENT_PROFILE_PATH)) {
+      const dir = path.dirname(PAYMENT_PROFILE_PATH);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(PAYMENT_PROFILE_PATH, JSON.stringify(SEED_PAYMENT_PROFILES, null, 2));
+      return [...SEED_PAYMENT_PROFILES];
+    }
+    return JSON.parse(fs.readFileSync(PAYMENT_PROFILE_PATH, 'utf-8'));
+  } catch { return [...SEED_PAYMENT_PROFILES]; }
+}
+function writePaymentProfiles(rows: PaymentProfile[]): void {
+  const dir = path.dirname(PAYMENT_PROFILE_PATH);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(PAYMENT_PROFILE_PATH, JSON.stringify(rows, null, 2));
+}
+
+function rowToProfile(r: any): PaymentProfile {
+  return {
+    id: r.id,
+    name: r.name,
+    accountName: r.account_name ?? '',
+    bsb: r.bsb ?? '',
+    accountNumber: r.account_number ?? '',
+    sort: Number(r.sort ?? 0),
+    builtin: r.builtin === true || r.builtin === 1,
+  };
+}
+
+export async function getPaymentProfiles(): Promise<PaymentProfile[]> {
+  if (sql) {
+    return withTimeout((async () => {
+      await ensureSchema();
+      const rows = await sql`SELECT * FROM payment_profiles ORDER BY sort ASC, created_at ASC`;
+      return (rows as any[]).map(rowToProfile);
+    })());
+  }
+  return readPaymentProfiles().sort((a, b) => a.sort - b.sort);
+}
+
+export async function addPaymentProfile(data: { name: string; accountName: string; bsb: string; accountNumber: string }): Promise<PaymentProfile> {
+  if (sql) {
+    await ensureSchema();
+    const maxRows = await sql`SELECT COALESCE(MAX(sort), 0) + 1 AS next FROM payment_profiles`;
+    const sort = Number((maxRows as any[])[0]?.next ?? 1);
+    const profile: PaymentProfile = {
+      id: `PP-${Date.now()}`, name: data.name, accountName: data.accountName,
+      bsb: data.bsb, accountNumber: data.accountNumber, sort, builtin: false,
+    };
+    await sql`
+      INSERT INTO payment_profiles (id, name, account_name, bsb, account_number, sort, builtin)
+      VALUES (${profile.id}, ${profile.name}, ${profile.accountName}, ${profile.bsb}, ${profile.accountNumber}, ${profile.sort}, false)
+    `;
+    return profile;
+  }
+  const rows = readPaymentProfiles();
+  const sort = rows.reduce((m, p) => Math.max(m, p.sort), 0) + 1;
+  const profile: PaymentProfile = {
+    id: `PP-${Date.now()}`, name: data.name, accountName: data.accountName,
+    bsb: data.bsb, accountNumber: data.accountNumber, sort, builtin: false,
+  };
+  rows.push(profile);
+  writePaymentProfiles(rows);
+  return profile;
+}
+
+// Built-in profiles can't be deleted.
+export async function deletePaymentProfile(id: string): Promise<boolean> {
+  if (sql) {
+    await ensureSchema();
+    const rows = await sql`DELETE FROM payment_profiles WHERE id = ${id} AND builtin = false RETURNING id`;
+    return (rows as any[]).length > 0;
+  }
+  const rows = readPaymentProfiles();
+  const target = rows.find(p => p.id === id);
+  if (!target || target.builtin) return false;
+  writePaymentProfiles(rows.filter(p => p.id !== id));
+  return true;
 }

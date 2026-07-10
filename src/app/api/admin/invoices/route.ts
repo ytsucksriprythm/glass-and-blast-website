@@ -1,0 +1,62 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { getInvoices, createInvoice } from '@/lib/db';
+import { isAdminAuthenticated } from '@/lib/auth';
+import { BUSINESS_DEFAULTS, PAYMENT_DEFAULTS, type InvoiceInput } from '@/lib/invoice';
+
+export const dynamic = 'force-dynamic';
+
+export async function GET() {
+  if (!await isAdminAuthenticated()) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  const invoices = await getInvoices();
+  return NextResponse.json(invoices);
+}
+
+export async function POST(req: NextRequest) {
+  if (!await isAdminAuthenticated()) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  try {
+    const b = await req.json();
+    const items = Array.isArray(b.items) ? b.items : [];
+    if (items.length === 0) {
+      return NextResponse.json({ error: 'Add at least one line item' }, { status: 400 });
+    }
+    const input: InvoiceInput = {
+      isTaxInvoice: !!b.isTaxInvoice,
+      status: b.status === 'sent' || b.status === 'paid' ? b.status : 'draft',
+      fromName: b.fromName ?? BUSINESS_DEFAULTS.fromName,
+      fromTradingAs: b.fromTradingAs ?? BUSINESS_DEFAULTS.fromTradingAs,
+      fromAbn: b.fromAbn ?? BUSINESS_DEFAULTS.fromAbn,
+      fromAddress: b.fromAddress ?? BUSINESS_DEFAULTS.fromAddress,
+      fromEmail: b.fromEmail ?? BUSINESS_DEFAULTS.fromEmail,
+      fromPhone: b.fromPhone ?? BUSINESS_DEFAULTS.fromPhone,
+      billToName: b.billToName ?? '',
+      billToLines: b.billToLines ?? '',
+      client: {
+        show: !!(b.client?.show),
+        clientName: b.client?.clientName ?? '',
+        trn: b.client?.trn ?? '',
+        fileNo: b.client?.fileNo ?? '',
+        claimRef: b.client?.claimRef ?? '',
+      },
+      invoiceDate: b.invoiceDate ?? '',
+      serviceDate: b.serviceDate ?? '',
+      dueDate: b.dueDate ?? '',
+      items: items.map((it: any) => ({
+        description: it.description ?? '',
+        detail: it.detail ?? '',
+        serviceAddress: it.serviceAddress ?? '',
+        date: it.date ?? '',
+        amount: Number(it.amount) || 0,
+      })),
+      notes: b.notes ?? '',
+      payAccountName: b.payAccountName ?? PAYMENT_DEFAULTS.payAccountName,
+      payBsb: b.payBsb ?? PAYMENT_DEFAULTS.payBsb,
+      payAccountNumber: b.payAccountNumber ?? PAYMENT_DEFAULTS.payAccountNumber,
+      bookingId: b.bookingId ?? null,
+    };
+    const invoice = await createInvoice(input);
+    return NextResponse.json(invoice, { status: 201 });
+  } catch (err) {
+    console.error('Invoice create error:', err);
+    return NextResponse.json({ error: 'Failed to create invoice' }, { status: 500 });
+  }
+}
