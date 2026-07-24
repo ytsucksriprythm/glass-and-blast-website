@@ -8,8 +8,9 @@ import {
 } from 'lucide-react';
 import {
   type Invoice, type InvoiceStatus, type InvoiceLineItem, type PaymentProfile, type PaymentMethod,
-  BUSINESS_DEFAULTS, PAYMENT_DEFAULTS, PAYMENT_METHOD_LABEL, SQUARE_SURCHARGE_PERCENT, SQUARE_CARD_PAYMENTS_ENABLED, addDays, cardTotal, computeTotals, money, longDate, addressesMatch,
+  BUSINESS_DEFAULTS, PAYMENT_DEFAULTS, PAYMENT_METHOD_LABEL, SQUARE_SURCHARGE_PERCENT_FALLBACK, addDays, cardTotal, computeTotals, money, longDate, addressesMatch,
 } from '@/lib/invoice';
+import type { AppSettings } from '@/lib/settings';
 import type { Booking } from '@/lib/db';
 import InvoicePreview, { type InvoicePreviewData } from '@/components/InvoicePreview';
 
@@ -153,6 +154,37 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
   const [bookings, setBookings] = useState<Booking[] | null>(null);
   const [pickerSearch, setPickerSearch] = useState('');
 
+  // Business-wide settings (/admin/settings) — gates the Square section below,
+  // and (for a brand-new invoice only) seeds the form's defaults so a changed
+  // business name/ABN/notes/terms actually shows up on new invoices.
+  const [settings, setSettings] = useState<AppSettings | null>(null);
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch('/api/admin/settings');
+        if (!res.ok) return;
+        const s: AppSettings = await res.json();
+        setSettings(s);
+        if (initial) return; // only seed defaults for a brand-new invoice
+        setF(prev => ({
+          ...prev,
+          fromName: s.businessName || prev.fromName,
+          fromTradingAs: s.tradingAs || prev.fromTradingAs,
+          fromAbn: s.abn || prev.fromAbn,
+          fromAddress: s.address || prev.fromAddress,
+          fromEmail: s.email || prev.fromEmail,
+          fromPhone: s.phone || prev.fromPhone,
+          payAccountName: s.payAccountName || prev.payAccountName,
+          payBsb: s.payBsb || prev.payBsb,
+          payAccountNumber: s.payAccountNumber || prev.payAccountNumber,
+          notes: s.defaultInvoiceNotes || prev.notes,
+          dueDate: typeof s.defaultPaymentTermsDays === 'number' ? addDays(prev.invoiceDate, s.defaultPaymentTermsDays) : prev.dueDate,
+        }));
+      } catch { /* keep the static fallback defaults already in the form */ }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => {
     (async () => {
       try {
@@ -274,7 +306,8 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
     payAccountName: f.payAccountName, payBsb: f.payBsb, payAccountNumber: f.payAccountNumber,
     paid: inv?.status === 'paid',
     paymentMethod: inv?.paymentMethod ?? null,
-    cardPayable: SQUARE_CARD_PAYMENTS_ENABLED && !!inv?.squarePaymentLinkUrl,
+    cardPayable: !!settings?.squareCardPaymentsEnabled && !!inv?.squarePaymentLinkUrl,
+    surchargePercent: settings?.squareSurchargePercent ?? SQUARE_SURCHARGE_PERCENT_FALLBACK,
   };
 
   const payload = () => ({
@@ -414,7 +447,7 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
           )}
 
           {/* Square card payment (online checkout link) */}
-          {SQUARE_CARD_PAYMENTS_ENABLED && inv.status !== 'paid' && inv.status !== 'cancelled' && (
+          {!!settings?.squareCardPaymentsEnabled && inv.status !== 'paid' && inv.status !== 'cancelled' && (
             <div className="mt-4 pt-4 border-t border-white/10">
               {inv.squarePaidAt && (
                 <div className="mb-3 rounded-lg border border-amber-400/25 bg-amber-400/10 p-3 flex flex-wrap items-center justify-between gap-2">
@@ -437,8 +470,8 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
                     </button>
                   </div>
                   <p className="mt-2 text-slate-500 text-xs">
-                    Card total incl. {SQUARE_SURCHARGE_PERCENT}% surcharge: <span className="text-slate-300 font-semibold">{money(cardTotal(total))}</span>.
-                    {inv.squareLinkAmount != null && Math.abs(inv.squareLinkAmount - cardTotal(total)) > 0.01 && (
+                    Card total incl. {settings?.squareSurchargePercent ?? SQUARE_SURCHARGE_PERCENT_FALLBACK}% surcharge: <span className="text-slate-300 font-semibold">{money(cardTotal(total, settings?.squareSurchargePercent))}</span>.
+                    {inv.squareLinkAmount != null && Math.abs(inv.squareLinkAmount - cardTotal(total, settings?.squareSurchargePercent)) > 0.01 && (
                       <span className="text-amber-400"> Invoice total changed since this link was made — hit Regenerate.</span>
                     )}
                   </p>

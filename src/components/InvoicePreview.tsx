@@ -1,4 +1,4 @@
-import { type Invoice, type PaymentMethod, PAYMENT_METHOD_LABEL, SQUARE_SURCHARGE_PERCENT, cardTotal, money, longDate, shortDate, computeTotals, GST_NOTE } from '@/lib/invoice';
+import { type Invoice, type PaymentMethod, PAYMENT_METHOD_LABEL, SQUARE_SURCHARGE_PERCENT_FALLBACK, cardTotal, money, longDate, shortDate, computeTotals, GST_NOTE } from '@/lib/invoice';
 
 // The display fields the preview needs. The live editor passes a synthesized
 // object (number may be a placeholder) before the invoice is saved. `paid` /
@@ -13,6 +13,7 @@ export type InvoicePreviewData = Omit<
   paid?: boolean;
   paymentMethod?: PaymentMethod | null;
   cardPayable?: boolean;  // a live Square payment link exists for this invoice
+  surchargePercent?: number;
 };
 
 function Field({ label, value }: { label: string; value: React.ReactNode }) {
@@ -171,8 +172,8 @@ export default function InvoicePreview({ invoice }: { invoice: InvoicePreviewDat
             </p>
             {invoice.cardPayable && (
               <p className="mt-2 text-sm text-sky-900">
-                Prefer to pay by card? Use the &quot;Pay by card&quot; button on this page (a {SQUARE_SURCHARGE_PERCENT}% card
-                surcharge applies, total <span className="font-bold">{money(cardTotal(total))}</span>).
+                Prefer to pay by card? Use the &quot;Pay by card&quot; button on this page (a {invoice.surchargePercent ?? SQUARE_SURCHARGE_PERCENT_FALLBACK}% card
+                surcharge applies, total <span className="font-bold">{money(cardTotal(total, invoice.surchargePercent))}</span>).
               </p>
             )}
           </div>

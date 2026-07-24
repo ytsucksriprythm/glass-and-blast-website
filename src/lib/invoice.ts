@@ -155,25 +155,15 @@ export const INVOICE_START_SEQ = 1044;
 // place so the compliance note is consistent everywhere it renders.
 export const GST_NOTE = 'No GST has been charged. Supplier is not registered for GST.';
 
-// Master on/off switch for the whole Square card-payment feature. Off by
-// default (and whenever the env var isn't exactly 'true') so the feature can
-// sit fully built but invisible — no customer-facing button, no admin button,
-// no lazy link creation, no webhook processing — until you're ready to flip
-// it on. Nothing is deleted; set NEXT_PUBLIC_SQUARE_CARD_PAYMENTS_ENABLED=true
-// in .env.local (and Vercel) to bring it back.
-export const SQUARE_CARD_PAYMENTS_ENABLED = process.env.NEXT_PUBLIC_SQUARE_CARD_PAYMENTS_ENABLED === 'true';
-
-// Card surcharge passed on to the customer when paying via the Square link —
-// covers Square's own transaction fee. NEXT_PUBLIC_ so both the server (when
-// creating the Square payment link) and the client preview/public page (when
-// just *displaying* the card total) compute the identical figure. Check this
-// against your actual contracted Square rate (Square dashboard → Fees) and
-// adjust the env var — don't assume 1.9% is exactly right for your account.
-export const SQUARE_SURCHARGE_PERCENT = Number(process.env.NEXT_PUBLIC_SQUARE_SURCHARGE_PERCENT || '1.9');
+// Square card-payment on/off + surcharge % now live in Settings
+// (src/lib/settings.ts -> squareCardPaymentsEnabled / squareSurchargePercent),
+// editable at /admin/settings without a redeploy. This constant is only a
+// last-resort fallback for code paths that render before settings load.
+export const SQUARE_SURCHARGE_PERCENT_FALLBACK = Number(process.env.NEXT_PUBLIC_SQUARE_SURCHARGE_PERCENT || '1.9');
 
 // Invoice total plus the card surcharge, rounded to cents.
-export function cardTotal(total: number): number {
-  return Math.round(total * (1 + SQUARE_SURCHARGE_PERCENT / 100) * 100) / 100;
+export function cardTotal(total: number, surchargePercent: number = SQUARE_SURCHARGE_PERCENT_FALLBACK): number {
+  return Math.round(total * (1 + surchargePercent / 100) * 100) / 100;
 }
 
 // ─── Pure helpers ─────────────────────────────────────────────────────────────

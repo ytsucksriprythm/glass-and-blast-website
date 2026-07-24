@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getInvoiceBySquareOrderId, updateInvoice } from '@/lib/db';
+import { getInvoiceBySquareOrderId, updateInvoice, getSettings } from '@/lib/db';
 import { verifySquareSignature, squareWebhookConfigured } from '@/lib/square';
-import { SQUARE_CARD_PAYMENTS_ENABLED } from '@/lib/invoice';
-import { notify } from '@/lib/notify';
+import { notifySquarePaid } from '@/lib/notify';
 
 export const dynamic = 'force-dynamic';
 
@@ -12,9 +11,11 @@ export const dynamic = 'force-dynamic';
 // `paymentMethod` flip stays a manual admin action once the money is actually
 // seen in the account.
 export async function POST(req: NextRequest) {
+  const settings = await getSettings();
   // 200 (not an error status) so Square doesn't treat this as a delivery
-  // failure and hammer retries while the feature is deliberately off.
-  if (!SQUARE_CARD_PAYMENTS_ENABLED) return NextResponse.json({ received: true, disabled: true });
+  // failure and hammer retries while the feature is deliberately off (see
+  // Settings -> Payments -> "Card payments enabled").
+  if (!settings.squareCardPaymentsEnabled) return NextResponse.json({ received: true, disabled: true });
   if (!squareWebhookConfigured()) return NextResponse.json({ error: 'Not configured' }, { status: 501 });
 
   const rawBody = await req.text();
@@ -37,11 +38,7 @@ export async function POST(req: NextRequest) {
         const invoice = await getInvoiceBySquareOrderId(orderId);
         if (invoice && !invoice.squarePaidAt) {
           await updateInvoice(invoice.id, { squarePaidAt: new Date().toISOString(), squarePaymentId: payment.id ?? null });
-          await notify(
-            `Square: ${invoice.number} paid by card`,
-            `Card payment completed via Square. Verify it's in the account, then mark ${invoice.number} paid.`,
-            { tags: 'credit_card', priority: 'high' },
-          );
+          await notifySquarePaid(invoice.number);
         }
       }
     }

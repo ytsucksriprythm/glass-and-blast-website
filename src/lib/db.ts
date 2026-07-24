@@ -6,6 +6,7 @@ import {
   type Invoice, type InvoiceInput, type InvoiceLineItem, type InvoiceStatus,
   type PaymentProfile, INVOICE_PREFIX, INVOICE_START_SEQ, SEED_PAYMENT_PROFILES, computeTotals,
 } from './invoice';
+import { type AppSettings, DEFAULT_SETTINGS } from './settings';
 
 const DB_PATH = path.join(process.cwd(), 'data', 'bookings.json');
 const PV_PATH = path.join(process.cwd(), 'data', 'pageviews.json');
@@ -15,6 +16,7 @@ const INVOICE_PATH = path.join(process.cwd(), 'data', 'invoices.json');
 const PAYMENT_PROFILE_PATH = path.join(process.cwd(), 'data', 'payment-profiles.json');
 const GUEST_PATH = path.join(process.cwd(), 'data', 'guests.json');
 const GROUP_PATH = path.join(process.cwd(), 'data', 'booking-groups.json');
+const SETTINGS_PATH = path.join(process.cwd(), 'data', 'settings.json');
 
 export type BookingStatus = 'pending' | 'quoted' | 'confirmed' | 'completed' | 'cancelled';
 export type ServiceType = 'window-washing' | 'pressure-washing' | 'both' | 'flyscreen-repair' | 'solar-panel-cleaning' | 'other';
@@ -402,6 +404,15 @@ async function ensureSchema(): Promise<void> {
           ON CONFLICT (id) DO NOTHING
         `;
       }
+      // Single-row app settings, stored as one JSON blob so adding new fields
+      // later never needs a migration — see src/lib/settings.ts.
+      await sql`
+        CREATE TABLE IF NOT EXISTS app_settings (
+          id         TEXT PRIMARY KEY,
+          data       TEXT NOT NULL,
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+      `;
     })();
   }
   return schemaReady;
@@ -1124,9 +1135,11 @@ export function advanceDate(dateStr: string, frequency: RecurringFrequency): str
 // manual "generate next visit" action. The booking carries recurringId so the
 // customer's visit history stays linked to the plan.
 async function createBookingFromPlan(job: RecurringJob): Promise<{ job: RecurringJob; booking: Booking }> {
-  // Default recurring visits to a 9am slot on the due date; editable on the
-  // calendar afterwards. This is what "generates the future calendar entry".
-  const scheduledAt = new Date(`${job.nextDate}T09:00:00`).toISOString();
+  // Default recurring visits to the configured start time (Settings ->
+  // Scheduling) on the due date; editable on the calendar afterwards. This is
+  // what "generates the future calendar entry".
+  const settings = await getSettings();
+  const scheduledAt = new Date(`${job.nextDate}T${settings.defaultJobStartTime}:00`).toISOString();
   const booking = await addBooking({
     name: job.name,
     phone: job.phone,
@@ -1630,6 +1643,58 @@ export async function addPaymentProfile(data: { name: string; accountName: strin
   rows.push(profile);
   writePaymentProfiles(rows);
   return profile;
+}
+
+// ─── App settings (singleton) ───────────────────────────────────────────────
+// Merging over DEFAULT_SETTINGS means a field added to AppSettings later just
+// works — old stored rows/files simply don't have the new key yet, and the
+// default fills the gap, no migration needed.
+
+function readSettingsFile(): AppSettings {
+  try {
+    if (!fs.existsSync(SETTINGS_PATH)) {
+      const dir = path.dirname(SETTINGS_PATH);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(SETTINGS_PATH, JSON.stringify(DEFAULT_SETTINGS, null, 2));
+      return { ...DEFAULT_SETTINGS };
+    }
+    const stored = JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf-8'));
+    return { ...DEFAULT_SETTINGS, ...stored };
+  } catch { return { ...DEFAULT_SETTINGS }; }
+}
+function writeSettingsFile(s: AppSettings): void {
+  const dir = path.dirname(SETTINGS_PATH);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(SETTINGS_PATH, JSON.stringify(s, null, 2));
+}
+
+export async function getSettings(): Promise<AppSettings> {
+  if (sql) {
+    return withTimeout((async () => {
+      await ensureSchema();
+      const rows = await sql`SELECT data FROM app_settings WHERE id = 'global' LIMIT 1`;
+      const arr = rows as any[];
+      if (!arr.length) return { ...DEFAULT_SETTINGS };
+      try { return { ...DEFAULT_SETTINGS, ...JSON.parse(arr[0].data) }; }
+      catch { return { ...DEFAULT_SETTINGS }; }
+    })());
+  }
+  return readSettingsFile();
+}
+
+export async function updateSettings(partial: Partial<AppSettings>): Promise<AppSettings> {
+  const cur = await getSettings();
+  const updated: AppSettings = { ...cur, ...partial };
+  if (sql) {
+    await ensureSchema();
+    await sql`
+      INSERT INTO app_settings (id, data, updated_at) VALUES ('global', ${JSON.stringify(updated)}, now())
+      ON CONFLICT (id) DO UPDATE SET data = ${JSON.stringify(updated)}, updated_at = now()
+    `;
+    return updated;
+  }
+  writeSettingsFile(updated);
+  return updated;
 }
 
 // ─── Guests (subcontractor logins) ──────────────────────────────────────────

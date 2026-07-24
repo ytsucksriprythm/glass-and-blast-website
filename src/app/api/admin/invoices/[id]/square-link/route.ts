@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getInvoiceById, updateInvoice } from '@/lib/db';
+import { getInvoiceById, updateInvoice, getSettings } from '@/lib/db';
 import { getActiveContext } from '@/lib/auth';
 import { createSquarePaymentLink, squareConfigured } from '@/lib/square';
-import { cardTotal, SQUARE_CARD_PAYMENTS_ENABLED } from '@/lib/invoice';
+import { cardTotal } from '@/lib/invoice';
 
 export const dynamic = 'force-dynamic';
 
@@ -11,7 +11,8 @@ export const dynamic = 'force-dynamic';
 // link with one for the new amount — Square doesn't support editing an
 // existing payment link's price.
 export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  if (!SQUARE_CARD_PAYMENTS_ENABLED) return NextResponse.json({ error: 'Card payments are turned off for now' }, { status: 403 });
+  const settings = await getSettings();
+  if (!settings.squareCardPaymentsEnabled) return NextResponse.json({ error: 'Card payments are turned off for now' }, { status: 403 });
   const ctx = await getActiveContext();
   if (!ctx) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   const { id } = await params;
@@ -25,7 +26,7 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
     return NextResponse.json({ error: 'Square is not configured (missing SQUARE_ACCESS_TOKEN / SQUARE_LOCATION_ID)' }, { status: 400 });
   }
 
-  const amount = cardTotal(invoice.total);
+  const amount = cardTotal(invoice.total, settings.squareSurchargePercent);
   const origin = process.env.NEXT_PUBLIC_URL || new URL(_req.url).origin;
   const link = await createSquarePaymentLink(invoice, amount, `${origin}/invoice/${invoice.token}`);
   if (!link) return NextResponse.json({ error: 'Square declined to create the payment link' }, { status: 502 });

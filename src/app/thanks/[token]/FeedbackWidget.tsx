@@ -3,10 +3,14 @@
 import { useState } from 'react';
 import { Star } from 'lucide-react';
 
-// Owner's Google review link — 4-5 star ratings go straight here.
-const REVIEW_URL = 'https://g.page/r/CTZqwIjUWFvcEBM/review';
-
-export default function FeedbackWidget({ token, alreadyRated }: { token: string; alreadyRated: number | null }) {
+export default function FeedbackWidget({
+  token, alreadyRated, reviewUrl, starThreshold,
+}: {
+  token: string;
+  alreadyRated: number | null;
+  reviewUrl: string;     // Settings -> Reviews -> Google review link
+  starThreshold: number; // Settings -> Reviews -> ratings at/above this go straight to Google
+}) {
   const [stars, setStars] = useState(0);
   const [hover, setHover] = useState(0);
   const [text, setText] = useState('');
@@ -22,13 +26,14 @@ export default function FeedbackWidget({ token, alreadyRated }: { token: string;
     } catch { /* best-effort — don't block the customer */ }
   };
 
-  // Choosing a rating: 4-5 → record then redirect to Google; 1-3 → ask for text.
+  // Choosing a rating: at/above the threshold → record then redirect to
+  // Google; below → ask for text instead.
   const choose = async (rating: number) => {
     setStars(rating);
-    if (rating >= 4) {
+    if (rating >= starThreshold) {
       setBusy(true);
       await send(rating, '');
-      window.location.href = REVIEW_URL;
+      window.location.href = reviewUrl;
       return;
     }
     setPhase('text');

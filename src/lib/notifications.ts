@@ -1,5 +1,5 @@
 import nodemailer from 'nodemailer';
-import type { Booking } from './db';
+import { type Booking, getSettings } from './db';
 
 const SERVICE_LABELS: Record<string, string> = {
   'window-washing': 'Window Washing',
@@ -132,6 +132,9 @@ function bookingEmailHtml(booking: Booking): string {
 }
 
 export async function sendBookingNotifications(booking: Booking): Promise<void> {
+  const settings = await getSettings();
+  if (!settings.notificationsEnabled || !settings.notifyNewBooking) return;
+
   // Recipient addresses come from env only — no personal emails baked into source.
   const emailOwners = [
     process.env.OWNER1_EMAIL,

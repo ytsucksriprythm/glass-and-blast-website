@@ -1,6 +1,6 @@
 import { notFound } from 'next/navigation';
 import type { Metadata } from 'next';
-import { getBookingByToken, getPhotos, getInvoicesForBooking } from '@/lib/db';
+import { getBookingByToken, getPhotos, getInvoicesForBooking, getSettings } from '@/lib/db';
 import FeedbackWidget from './FeedbackWidget';
 
 export const dynamic = 'force-dynamic';
@@ -17,9 +17,10 @@ export default async function ThanksPage({ params }: { params: Promise<{ token: 
   const booking = await getBookingByToken(token);
   if (!booking) return notFound();
 
-  const [photos, invoices] = await Promise.all([
+  const [photos, invoices, settings] = await Promise.all([
     getPhotos(booking.id),
     getInvoicesForBooking(booking.id),
+    getSettings(),
   ]);
   const invoice = invoices[0] ?? null;
   const before = photos.filter(p => p.type === 'before');
@@ -62,7 +63,12 @@ export default async function ThanksPage({ params }: { params: Promise<{ token: 
 
         {/* Feedback */}
         <div className="mt-6 rounded-2xl bg-white border border-slate-200 shadow-sm p-6 sm:p-8">
-          <FeedbackWidget token={token} alreadyRated={booking.feedbackStars ?? null} />
+          <FeedbackWidget
+            token={token}
+            alreadyRated={booking.feedbackStars ?? null}
+            reviewUrl={settings.googleReviewUrl}
+            starThreshold={settings.reviewStarThreshold}
+          />
         </div>
 
         {/* Photos */}

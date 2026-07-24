@@ -1,9 +1,10 @@
 import { notFound } from 'next/navigation';
 import type { Metadata } from 'next';
 import { CreditCard } from 'lucide-react';
-import { getInvoiceByToken, updateInvoice } from '@/lib/db';
-import { cardTotal, money, SQUARE_CARD_PAYMENTS_ENABLED } from '@/lib/invoice';
+import { getInvoiceByToken, updateInvoice, getSettings } from '@/lib/db';
+import { cardTotal, money } from '@/lib/invoice';
 import { createSquarePaymentLink, squareConfigured } from '@/lib/square';
+import type { AppSettings } from '@/lib/settings';
 import InvoicePreview from '@/components/InvoicePreview';
 import PrintButton from '@/components/PrintButton';
 import InvoiceViewBeacon from '@/components/InvoiceViewBeacon';
@@ -14,10 +15,10 @@ import type { Invoice } from '@/lib/invoice';
 // link the first time an unpaid invoice is viewed publicly. Best-effort: if
 // Square is unreachable or unconfigured, the invoice still renders fine with
 // just the bank-transfer option.
-async function ensureSquareLink(invoice: Invoice): Promise<Invoice> {
-  if (!SQUARE_CARD_PAYMENTS_ENABLED) return invoice;
+async function ensureSquareLink(invoice: Invoice, settings: AppSettings): Promise<Invoice> {
+  if (!settings.squareCardPaymentsEnabled) return invoice;
   if (invoice.status === 'paid' || invoice.status === 'cancelled' || !squareConfigured()) return invoice;
-  const amount = cardTotal(invoice.total);
+  const amount = cardTotal(invoice.total, settings.squareSurchargePercent);
   if (invoice.squarePaymentLinkUrl && invoice.squareLinkAmount != null && Math.abs(invoice.squareLinkAmount - amount) < 0.01) {
     return invoice;
   }
@@ -52,9 +53,10 @@ export default async function PublicInvoicePage({ params }: { params: Promise<{ 
   const { token } = await params;
   let invoice = await getInvoiceByToken(token);
   if (!invoice) notFound();
-  invoice = await ensureSquareLink(invoice);
+  const settings = await getSettings();
+  invoice = await ensureSquareLink(invoice, settings);
 
-  const canPayByCard = SQUARE_CARD_PAYMENTS_ENABLED && invoice.status !== 'paid' && invoice.status !== 'cancelled' && !!invoice.squarePaymentLinkUrl;
+  const canPayByCard = settings.squareCardPaymentsEnabled && invoice.status !== 'paid' && invoice.status !== 'cancelled' && !!invoice.squarePaymentLinkUrl;
 
   return (
     <main className="invoice-page min-h-[100svh] bg-slate-100 py-6 sm:py-12 px-3 sm:px-6">
@@ -76,11 +78,11 @@ export default async function PublicInvoicePage({ params }: { params: Promise<{ 
             rel="noopener noreferrer"
             className="no-print mb-4 flex items-center justify-center gap-2 w-full py-3 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-sm font-semibold transition-colors"
           >
-            <CreditCard className="w-4 h-4" /> Pay by card — {money(cardTotal(invoice.total))} (incl. card surcharge)
+            <CreditCard className="w-4 h-4" /> Pay by card — {money(cardTotal(invoice.total, settings.squareSurchargePercent))} (incl. card surcharge)
           </a>
         )}
         <div className="rounded-xl shadow-lg ring-1 ring-slate-200 overflow-hidden">
-          <InvoicePreview invoice={{ ...invoice, paid: invoice.status === 'paid', paymentMethod: invoice.paymentMethod, cardPayable: canPayByCard }} />
+          <InvoicePreview invoice={{ ...invoice, paid: invoice.status === 'paid', paymentMethod: invoice.paymentMethod, cardPayable: canPayByCard, surchargePercent: settings.squareSurchargePercent }} />
         </div>
         <p className="no-print mt-6 text-center text-slate-400 text-xs">
           Questions about this invoice? Call {invoice.fromPhone} or email {invoice.fromEmail}.

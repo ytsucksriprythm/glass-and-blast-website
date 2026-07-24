@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getInvoices, createInvoice } from '@/lib/db';
+import { getInvoices, createInvoice, getSettings } from '@/lib/db';
 import { getActiveContext } from '@/lib/auth';
 import { BUSINESS_DEFAULTS, PAYMENT_DEFAULTS, type InvoiceInput } from '@/lib/invoice';
 
@@ -22,15 +22,16 @@ export async function POST(req: NextRequest) {
     if (items.length === 0) {
       return NextResponse.json({ error: 'Add at least one line item' }, { status: 400 });
     }
+    const settings = await getSettings();
     const input: InvoiceInput = {
       isTaxInvoice: !!b.isTaxInvoice,
       status: b.status === 'sent' || b.status === 'paid' ? b.status : 'draft',
-      fromName: b.fromName ?? BUSINESS_DEFAULTS.fromName,
-      fromTradingAs: b.fromTradingAs ?? BUSINESS_DEFAULTS.fromTradingAs,
-      fromAbn: b.fromAbn ?? BUSINESS_DEFAULTS.fromAbn,
-      fromAddress: b.fromAddress ?? BUSINESS_DEFAULTS.fromAddress,
-      fromEmail: b.fromEmail ?? BUSINESS_DEFAULTS.fromEmail,
-      fromPhone: b.fromPhone ?? BUSINESS_DEFAULTS.fromPhone,
+      fromName: b.fromName || settings.businessName || BUSINESS_DEFAULTS.fromName,
+      fromTradingAs: b.fromTradingAs || settings.tradingAs || BUSINESS_DEFAULTS.fromTradingAs,
+      fromAbn: b.fromAbn || settings.abn || BUSINESS_DEFAULTS.fromAbn,
+      fromAddress: b.fromAddress || settings.address || BUSINESS_DEFAULTS.fromAddress,
+      fromEmail: b.fromEmail || settings.email || BUSINESS_DEFAULTS.fromEmail,
+      fromPhone: b.fromPhone || settings.phone || BUSINESS_DEFAULTS.fromPhone,
       billToName: b.billToName ?? '',
       billToLines: b.billToLines ?? '',
       client: {
@@ -50,10 +51,10 @@ export async function POST(req: NextRequest) {
         date: it.date ?? '',
         amount: Number(it.amount) || 0,
       })),
-      notes: b.notes ?? '',
-      payAccountName: b.payAccountName ?? PAYMENT_DEFAULTS.payAccountName,
-      payBsb: b.payBsb ?? PAYMENT_DEFAULTS.payBsb,
-      payAccountNumber: b.payAccountNumber ?? PAYMENT_DEFAULTS.payAccountNumber,
+      notes: b.notes || settings.defaultInvoiceNotes,
+      payAccountName: b.payAccountName || settings.payAccountName || PAYMENT_DEFAULTS.payAccountName,
+      payBsb: b.payBsb || settings.payBsb || PAYMENT_DEFAULTS.payBsb,
+      payAccountNumber: b.payAccountNumber || settings.payAccountNumber || PAYMENT_DEFAULTS.payAccountNumber,
       bookingId: b.bookingId ?? null,
       bookingIds: Array.isArray(b.bookingIds) ? b.bookingIds.filter((x: unknown) => typeof x === 'string' && x) : [],
       // An invoice a guest creates belongs to them; admin invoices are unowned.

@@ -6,12 +6,12 @@ import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import {
   LayoutDashboard, Calendar as CalendarIcon, CalendarClock, FileText, Repeat,
-  BarChart3, Globe, Users, LogOut, Menu, X,
+  BarChart3, Globe, Users, Settings as SettingsIcon, LogOut, Menu, X,
 } from 'lucide-react';
 
 // Single source of truth for admin nav order: Overview, Bookings, Calendar,
-// Invoices, Recurring Plans, Business Stats, Site Stats, Guest Logins.
-export type AdminNavKey = 'overview' | 'bookings' | 'calendar' | 'invoices' | 'recurring' | 'business' | 'site' | 'guests';
+// Invoices, Recurring Plans, Business Stats, Site Stats, Guest Logins, Settings.
+export type AdminNavKey = 'overview' | 'bookings' | 'calendar' | 'invoices' | 'recurring' | 'business' | 'site' | 'guests' | 'settings';
 
 export type AdminNavItem = {
   key: AdminNavKey;
@@ -44,6 +44,7 @@ export function adminNavItems(opts: {
     { key: 'business', label: 'Business Stats', icon: BarChart3, ...tabItem('business') },
     { key: 'site', label: 'Site Stats', icon: Globe, ...tabItem('site') },
     { key: 'guests', label: 'Guest Logins', icon: Users, href: '/admin/guests' },
+    { key: 'settings', label: 'Settings', icon: SettingsIcon, href: '/admin/settings' },
   ];
 }
 
