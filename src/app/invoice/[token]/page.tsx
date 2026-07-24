@@ -2,7 +2,7 @@ import { notFound } from 'next/navigation';
 import type { Metadata } from 'next';
 import { CreditCard } from 'lucide-react';
 import { getInvoiceByToken, updateInvoice } from '@/lib/db';
-import { cardTotal, money } from '@/lib/invoice';
+import { cardTotal, money, SQUARE_CARD_PAYMENTS_ENABLED } from '@/lib/invoice';
 import { createSquarePaymentLink, squareConfigured } from '@/lib/square';
 import InvoicePreview from '@/components/InvoicePreview';
 import PrintButton from '@/components/PrintButton';
@@ -15,6 +15,7 @@ import type { Invoice } from '@/lib/invoice';
 // Square is unreachable or unconfigured, the invoice still renders fine with
 // just the bank-transfer option.
 async function ensureSquareLink(invoice: Invoice): Promise<Invoice> {
+  if (!SQUARE_CARD_PAYMENTS_ENABLED) return invoice;
   if (invoice.status === 'paid' || invoice.status === 'cancelled' || !squareConfigured()) return invoice;
   const amount = cardTotal(invoice.total);
   if (invoice.squarePaymentLinkUrl && invoice.squareLinkAmount != null && Math.abs(invoice.squareLinkAmount - amount) < 0.01) {
@@ -53,7 +54,7 @@ export default async function PublicInvoicePage({ params }: { params: Promise<{ 
   if (!invoice) notFound();
   invoice = await ensureSquareLink(invoice);
 
-  const canPayByCard = invoice.status !== 'paid' && invoice.status !== 'cancelled' && !!invoice.squarePaymentLinkUrl;
+  const canPayByCard = SQUARE_CARD_PAYMENTS_ENABLED && invoice.status !== 'paid' && invoice.status !== 'cancelled' && !!invoice.squarePaymentLinkUrl;
 
   return (
     <main className="invoice-page min-h-[100svh] bg-slate-100 py-6 sm:py-12 px-3 sm:px-6">

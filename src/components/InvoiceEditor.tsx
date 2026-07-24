@@ -8,7 +8,7 @@ import {
 } from 'lucide-react';
 import {
   type Invoice, type InvoiceStatus, type InvoiceLineItem, type PaymentProfile, type PaymentMethod,
-  BUSINESS_DEFAULTS, PAYMENT_DEFAULTS, PAYMENT_METHOD_LABEL, SQUARE_SURCHARGE_PERCENT, addDays, cardTotal, computeTotals, money, longDate, addressesMatch,
+  BUSINESS_DEFAULTS, PAYMENT_DEFAULTS, PAYMENT_METHOD_LABEL, SQUARE_SURCHARGE_PERCENT, SQUARE_CARD_PAYMENTS_ENABLED, addDays, cardTotal, computeTotals, money, longDate, addressesMatch,
 } from '@/lib/invoice';
 import type { Booking } from '@/lib/db';
 import InvoicePreview, { type InvoicePreviewData } from '@/components/InvoicePreview';
@@ -274,7 +274,7 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
     payAccountName: f.payAccountName, payBsb: f.payBsb, payAccountNumber: f.payAccountNumber,
     paid: inv?.status === 'paid',
     paymentMethod: inv?.paymentMethod ?? null,
-    cardPayable: !!inv?.squarePaymentLinkUrl,
+    cardPayable: SQUARE_CARD_PAYMENTS_ENABLED && !!inv?.squarePaymentLinkUrl,
   };
 
   const payload = () => ({
@@ -414,7 +414,7 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
           )}
 
           {/* Square card payment (online checkout link) */}
-          {inv.status !== 'paid' && inv.status !== 'cancelled' && (
+          {SQUARE_CARD_PAYMENTS_ENABLED && inv.status !== 'paid' && inv.status !== 'cancelled' && (
             <div className="mt-4 pt-4 border-t border-white/10">
               {inv.squarePaidAt && (
                 <div className="mb-3 rounded-lg border border-amber-400/25 bg-amber-400/10 p-3 flex flex-wrap items-center justify-between gap-2">

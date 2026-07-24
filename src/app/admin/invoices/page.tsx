@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import toast from 'react-hot-toast';
 import { ArrowLeft, Plus, FileText, Send, BadgeCheck, Share, Undo2, Eye, Banknote } from 'lucide-react';
-import { type Invoice, type InvoiceStatus, type PaymentMethod, PAYMENT_METHOD_LABEL, money, longDate } from '@/lib/invoice';
+import { type Invoice, type InvoiceStatus, type PaymentMethod, PAYMENT_METHOD_LABEL, SQUARE_CARD_PAYMENTS_ENABLED, money, longDate } from '@/lib/invoice';
 import { AdminSidebar, AdminMobileNav, AdminMoreSheet, useMoreSheet, adminNavItems } from '@/components/admin/AdminNav';
 
 const STATUS_LABEL: Record<InvoiceStatus, string> = { draft: 'Draft', sent: 'Sent', paid: 'Paid', cancelled: 'Cancelled' };
@@ -154,7 +154,7 @@ export default function InvoicesPage() {
                             <Banknote className="w-3 h-3" /> {PAYMENT_METHOD_LABEL[inv.paymentMethod]}
                           </span>
                         )}
-                        {inv.status !== 'paid' && inv.squarePaidAt && (
+                        {SQUARE_CARD_PAYMENTS_ENABLED && inv.status !== 'paid' && inv.squarePaidAt && (
                           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold border border-amber-400/25 bg-amber-400/10 text-amber-300" title="Square confirms this was paid by card — verify the money's in the account, then confirm">
                             <Banknote className="w-3 h-3" /> Square says paid
                           </span>
@@ -209,7 +209,7 @@ export default function InvoicesPage() {
                         <Undo2 className="w-3.5 h-3.5" /> Unmark paid
                       </button>
                     )}
-                    {inv.status !== 'paid' && inv.squarePaidAt && (
+                    {SQUARE_CARD_PAYMENTS_ENABLED && inv.status !== 'paid' && inv.squarePaidAt && (
                       <button disabled={busyId === inv.id} onClick={() => setStatus(inv, 'paid', 'card')} className={`${iconBtn} border-emerald-400/30 bg-emerald-400/10 text-emerald-300 hover:bg-emerald-400/15`}>
                         <BadgeCheck className="w-3.5 h-3.5" /> Confirm Square paid
                       </button>

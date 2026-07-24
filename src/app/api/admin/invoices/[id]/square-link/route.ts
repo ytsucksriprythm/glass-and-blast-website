@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getInvoiceById, updateInvoice } from '@/lib/db';
 import { getActiveContext } from '@/lib/auth';
 import { createSquarePaymentLink, squareConfigured } from '@/lib/square';
-import { cardTotal } from '@/lib/invoice';
+import { cardTotal, SQUARE_CARD_PAYMENTS_ENABLED } from '@/lib/invoice';
 
 export const dynamic = 'force-dynamic';
 
@@ -11,6 +11,7 @@ export const dynamic = 'force-dynamic';
 // link with one for the new amount — Square doesn't support editing an
 // existing payment link's price.
 export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  if (!SQUARE_CARD_PAYMENTS_ENABLED) return NextResponse.json({ error: 'Card payments are turned off for now' }, { status: 403 });
   const ctx = await getActiveContext();
   if (!ctx) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   const { id } = await params;

@@ -155,6 +155,14 @@ export const INVOICE_START_SEQ = 1044;
 // place so the compliance note is consistent everywhere it renders.
 export const GST_NOTE = 'No GST has been charged. Supplier is not registered for GST.';
 
+// Master on/off switch for the whole Square card-payment feature. Off by
+// default (and whenever the env var isn't exactly 'true') so the feature can
+// sit fully built but invisible — no customer-facing button, no admin button,
+// no lazy link creation, no webhook processing — until you're ready to flip
+// it on. Nothing is deleted; set NEXT_PUBLIC_SQUARE_CARD_PAYMENTS_ENABLED=true
+// in .env.local (and Vercel) to bring it back.
+export const SQUARE_CARD_PAYMENTS_ENABLED = process.env.NEXT_PUBLIC_SQUARE_CARD_PAYMENTS_ENABLED === 'true';
+
 // Card surcharge passed on to the customer when paying via the Square link —
 // covers Square's own transaction fee. NEXT_PUBLIC_ so both the server (when
 // creating the Square payment link) and the client preview/public page (when
