@@ -1,9 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { addBooking } from '@/lib/db';
+import { addBooking, getSettings, logActivity } from '@/lib/db';
 import { sendBookingNotifications } from '@/lib/notifications';
 
 export async function POST(req: NextRequest) {
   try {
+    if (!(await getSettings()).acceptingNewBookings) {
+      return NextResponse.json({ error: 'Not currently accepting new bookings' }, { status: 503 });
+    }
     const body = await req.json();
     const { name, email, phone, service, propertyType, address, suburb, preferredDate, preferredTime, notes } = body;
 
@@ -23,6 +26,7 @@ export async function POST(req: NextRequest) {
 
     // Send notifications async (don't fail booking if email fails)
     sendBookingNotifications(booking).catch(console.error);
+    logActivity('booking.created', `${booking.name} booked ${service} (${booking.suburb || 'no suburb'})`, { bookingId: booking.id }, 'customer').catch(() => {});
 
     return NextResponse.json({ success: true, booking }, { status: 201 });
   } catch (err) {

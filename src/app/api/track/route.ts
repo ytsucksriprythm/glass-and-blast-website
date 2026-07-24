@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createHash } from 'crypto';
-import { addPageView } from '@/lib/db';
+import { addPageView, getSettings } from '@/lib/db';
 
 // Public endpoint: records one page view. Designed to never throw back at the
 // page — a tracking failure must not affect the visitor.
@@ -14,6 +14,7 @@ export async function POST(req: NextRequest) {
     if (path.startsWith('/admin') || path.startsWith('/api')) {
       return NextResponse.json({ ok: true });
     }
+    if (!(await getSettings()).siteTrackingEnabled) return NextResponse.json({ ok: true, skipped: 'disabled' });
 
     const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown';
     const ua = req.headers.get('user-agent') || '';

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isAdminAuthenticated } from '@/lib/auth';
-import { deleteBookingGroup, deleteBookingGroupWithBookings } from '@/lib/db';
+import { deleteBookingGroup, deleteBookingGroupWithBookings, logActivity } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
 
@@ -14,9 +14,11 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
   if (withBookings) {
     const { ok, deletedBookings } = await deleteBookingGroupWithBookings(id);
     if (!ok) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+    await logActivity('group.deleted', `Group deleted with ${deletedBookings} booking(s)`, { groupId: id, deletedBookings }, 'admin');
     return NextResponse.json({ success: true, deletedBookings });
   }
   const ok = await deleteBookingGroup(id);
   if (!ok) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+  await logActivity('group.deleted', `Group deleted (bookings kept)`, { groupId: id }, 'admin');
   return NextResponse.json({ success: true });
 }

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getSettings, updateSettings } from '@/lib/db';
+import { getSettings, updateSettings, logActivity } from '@/lib/db';
 import { getActiveContext } from '@/lib/auth';
 import type { AppSettings } from '@/lib/settings';
 
@@ -26,13 +26,16 @@ export async function PATCH(req: NextRequest) {
   const copyNum = (k: keyof AppSettings) => { if (typeof b[k] === 'number' && Number.isFinite(b[k])) (updates as any)[k] = b[k]; };
   const copyBool = (k: keyof AppSettings) => { if (typeof b[k] === 'boolean') (updates as any)[k] = b[k]; };
 
-  (['businessName', 'tradingAs', 'abn', 'address', 'email', 'phone',
-    'payAccountName', 'payBsb', 'payAccountNumber',
-    'defaultInvoiceNotes', 'gstNoteText', 'googleReviewUrl', 'defaultJobStartTime'] as (keyof AppSettings)[]).forEach(copyStr);
-  (['defaultPaymentTermsDays', 'squareSurchargePercent', 'reviewStarThreshold'] as (keyof AppSettings)[]).forEach(copyNum);
+  (['googleReviewUrl', 'defaultJobStartTime'] as (keyof AppSettings)[]).forEach(copyStr);
+  (['squareSurchargePercent', 'reviewStarThreshold'] as (keyof AppSettings)[]).forEach(copyNum);
   (['squareCardPaymentsEnabled', 'notificationsEnabled', 'notifyStatusChange', 'notifyJobAssigned',
-    'notifyCustomerMarkedPaid', 'notifySquarePaid', 'notifyNewBooking'] as (keyof AppSettings)[]).forEach(copyBool);
+    'notifyCustomerMarkedPaid', 'notifySquarePaid', 'notifyNewBooking', 'customerFeedbackEnabled',
+    'recurringAutoBookEnabled', 'acceptingNewBookings', 'siteTrackingEnabled'] as (keyof AppSettings)[]).forEach(copyBool);
 
+  const changedKeys = Object.keys(updates);
   const updated = await updateSettings(updates);
+  if (changedKeys.length) {
+    await logActivity('settings.updated', `Settings changed: ${changedKeys.join(', ')}`, { changed: changedKeys }, 'admin');
+  }
   return NextResponse.json(updated);
 }

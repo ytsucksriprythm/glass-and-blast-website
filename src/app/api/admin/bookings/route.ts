@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getBookings, getBookingsForGuest, getStats, addBooking } from '@/lib/db';
+import { getBookings, getBookingsForGuest, getStats, addBooking, logActivity } from '@/lib/db';
 import { getActiveContext } from '@/lib/auth';
 
 // Add a booking. Admin adds unassigned jobs; a guest's own bookings are
@@ -39,6 +39,7 @@ export async function POST(req: NextRequest) {
       // "How did we get this job?" — manual-add attribution for source analytics.
       leadSource: typeof b.leadSource === 'string' && b.leadSource ? b.leadSource : null,
     });
+    logActivity('booking.created', `${booking.name} added manually (${booking.service || 'no service'})`, { bookingId: booking.id }, ctx.role === 'admin' ? 'admin' : `guest:${ctx.guestId}`).catch(() => {});
     return NextResponse.json({ success: true, booking }, { status: 201 });
   } catch {
     return NextResponse.json({ error: 'Failed to create booking' }, { status: 500 });

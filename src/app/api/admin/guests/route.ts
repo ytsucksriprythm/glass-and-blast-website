@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isAdminAuthenticated, getActiveContext, hashPassword } from '@/lib/auth';
-import { getGuests, addGuest } from '@/lib/db';
+import { getGuests, addGuest, logActivity } from '@/lib/db';
 import type { Guest } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
@@ -28,6 +28,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Password must be at least 4 characters' }, { status: 400 });
     }
     const guest = await addGuest({ name: name.trim(), passwordHash: hashPassword(password) });
+    await logActivity('guest.created', `Guest login "${guest.name}" created`, { guestId: guest.id }, 'admin');
     return NextResponse.json(publicGuest(guest), { status: 201 });
   } catch (err) {
     console.error('Guest create error:', err);

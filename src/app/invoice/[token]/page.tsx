@@ -1,6 +1,5 @@
 import { notFound } from 'next/navigation';
 import type { Metadata } from 'next';
-import { CreditCard } from 'lucide-react';
 import { getInvoiceByToken, updateInvoice, getSettings } from '@/lib/db';
 import { cardTotal, money } from '@/lib/invoice';
 import { createSquarePaymentLink, squareConfigured } from '@/lib/square';
@@ -9,6 +8,7 @@ import InvoicePreview from '@/components/InvoicePreview';
 import PrintButton from '@/components/PrintButton';
 import InvoiceViewBeacon from '@/components/InvoiceViewBeacon';
 import MarkPaidButton from '@/components/MarkPaidButton';
+import PayByCardButton from '@/components/PayByCardButton';
 import type { Invoice } from '@/lib/invoice';
 
 // Lazily create (or refresh, if the total has drifted) the Square payment
@@ -72,14 +72,11 @@ export default async function PublicInvoicePage({ params }: { params: Promise<{ 
           </div>
         </div>
         {canPayByCard && (
-          <a
+          <PayByCardButton
+            token={invoice.token}
             href={invoice.squarePaymentLinkUrl!}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="no-print mb-4 flex items-center justify-center gap-2 w-full py-3 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-sm font-semibold transition-colors"
-          >
-            <CreditCard className="w-4 h-4" /> Pay by card — {money(cardTotal(invoice.total, settings.squareSurchargePercent))} (incl. card surcharge)
-          </a>
+            label={`Pay by card — ${money(cardTotal(invoice.total, settings.squareSurchargePercent))} (incl. card surcharge)`}
+          />
         )}
         <div className="rounded-xl shadow-lg ring-1 ring-slate-200 overflow-hidden">
           <InvoicePreview invoice={{ ...invoice, paid: invoice.status === 'paid', paymentMethod: invoice.paymentMethod, cardPayable: canPayByCard, surchargePercent: settings.squareSurchargePercent }} />

@@ -62,14 +62,16 @@ export default async function ThanksPage({ params }: { params: Promise<{ token: 
         </div>
 
         {/* Feedback */}
-        <div className="mt-6 rounded-2xl bg-white border border-slate-200 shadow-sm p-6 sm:p-8">
-          <FeedbackWidget
-            token={token}
-            alreadyRated={booking.feedbackStars ?? null}
-            reviewUrl={settings.googleReviewUrl}
-            starThreshold={settings.reviewStarThreshold}
-          />
-        </div>
+        {settings.customerFeedbackEnabled && (
+          <div className="mt-6 rounded-2xl bg-white border border-slate-200 shadow-sm p-6 sm:p-8">
+            <FeedbackWidget
+              token={token}
+              alreadyRated={booking.feedbackStars ?? null}
+              reviewUrl={settings.googleReviewUrl}
+              starThreshold={settings.reviewStarThreshold}
+            />
+          </div>
+        )}
 
         {/* Photos */}
         {hasPhotos && (

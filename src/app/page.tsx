@@ -785,10 +785,18 @@ function Book() {
   const [loading, setLoading] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [showExtras, setShowExtras] = useState(false);
+  const [acceptingBookings, setAcceptingBookings] = useState(true);
   const [form, setForm] = useState({
     name: '', email: '', phone: '', service: '', propertyType: '',
     address: '', suburb: '', preferredDate: '', preferredTime: '', notes: '',
   });
+
+  useEffect(() => {
+    fetch('/api/settings/public')
+      .then(res => res.ok ? res.json() : null)
+      .then(data => { if (data && typeof data.acceptingNewBookings === 'boolean') setAcceptingBookings(data.acceptingNewBookings); })
+      .catch(() => {}); // keep the form visible by default if this fails
+  }, []);
 
   const set = (k: string, v: string) => setForm(f => ({ ...f, [k]: v }));
   const toggleService = (v: string) => setForm(f => {
@@ -861,7 +869,18 @@ function Book() {
 
         {/* Right: the form */}
         <div className="light-form rounded-xl border border-slate-200 bg-white shadow-card p-6 sm:p-8">
-          {submitted ? (
+          {!acceptingBookings ? (
+            <div className="text-center py-8">
+              <div className="w-16 h-16 rounded-full bg-slate-100 flex items-center justify-center mx-auto mb-5">
+                <Clock className="w-8 h-8 text-slate-500" />
+              </div>
+              <h3 className="font-display text-2xl font-bold text-slate-900">Not currently taking new bookings</h3>
+              <p className="text-slate-600 mt-3">We&apos;re fully booked right now. Give us a call and we&apos;ll let you know when we&apos;re free.</p>
+              <a href={PHONE_HREF} className="inline-flex items-center gap-2 mt-6 px-6 py-3 border border-slate-200 text-sky-600 font-semibold rounded-full cursor-pointer">
+                <Phone className="w-4 h-4" /> Call {PHONE_DISPLAY}
+              </a>
+            </div>
+          ) : submitted ? (
             <div className="text-center py-8">
               <div className="w-16 h-16 rounded-full bg-sky-100 flex items-center justify-center mx-auto mb-5">
                 <CheckCircle className="w-8 h-8 text-sky-600" />

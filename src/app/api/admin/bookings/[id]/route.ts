@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { updateBooking, deleteBooking, getBookingById, getGuestById } from '@/lib/db';
+import { updateBooking, deleteBooking, getBookingById, getGuestById, logActivity } from '@/lib/db';
 import { getActiveContext } from '@/lib/auth';
 import { notifyStatusChange, notifyJobAssigned } from '@/lib/notify';
 import type { Booking } from '@/lib/db';
@@ -52,6 +52,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   // Push notifications (best-effort, never block the response).
   if (booking.status !== before.status) {
     void notifyStatusChange(booking, before.status, booking.status, actor);
+    void logActivity('booking.status_changed', `${booking.name}: ${before.status} -> ${booking.status}`, { bookingId: id, from: before.status, to: booking.status }, ctx.role === 'admin' ? 'admin' : `guest:${ctx.guestId}`);
   }
   if (booking.assignedGuestId && booking.assignedGuestId !== before.assignedGuestId) {
     const guest = await getGuestById(booking.assignedGuestId);
@@ -66,7 +67,9 @@ export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ 
   // Guests can never delete jobs.
   if (ctx?.role !== 'admin') return NextResponse.json({ error: 'Access denied' }, { status: 403 });
   const { id } = await params;
+  const existing = await getBookingById(id);
   const ok = await deleteBooking(id);
   if (!ok) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+  await logActivity('booking.deleted', `${existing?.name ?? id} deleted`, { bookingId: id }, 'admin');
   return NextResponse.json({ success: true });
 }

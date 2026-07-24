@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isAdminAuthenticated, getActiveContext, hashPassword } from '@/lib/auth';
-import { updateGuest, deleteGuest } from '@/lib/db';
+import { updateGuest, deleteGuest, getGuestById, logActivity } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
 
@@ -31,7 +31,9 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
 export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   if (!await requireMasterAdmin()) return NextResponse.json({ error: 'Access denied' }, { status: 403 });
   const { id } = await params;
+  const existing = await getGuestById(id);
   const ok = await deleteGuest(id);
   if (!ok) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+  await logActivity('guest.deleted', `Guest login "${existing?.name ?? id}" deleted`, { guestId: id }, 'admin');
   return NextResponse.json({ success: true });
 }

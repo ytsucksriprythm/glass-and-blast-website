@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { markCustomerPaidByInvoiceToken } from '@/lib/db';
+import { markCustomerPaidByInvoiceToken, logActivity } from '@/lib/db';
 import { notifyCustomerMarkedPaid } from '@/lib/notify';
 
 export const dynamic = 'force-dynamic';
@@ -12,8 +12,9 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ to
   const result = await markCustomerPaidByInvoiceToken(token);
   if (!result) return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
-  const { booking, invoiceNumber } = result;
+  const { booking, invoiceNumber, invoiceId } = result;
   await notifyCustomerMarkedPaid(booking, invoiceNumber);
+  await logActivity('invoice.customer_marked_paid', `${booking.name} tapped "I've paid" on ${invoiceNumber}`, { invoiceNumber }, 'customer', invoiceId);
 
   return NextResponse.json({
     success: true,

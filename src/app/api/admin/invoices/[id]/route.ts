@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getInvoiceById, updateInvoice, deleteInvoice } from '@/lib/db';
+import { getInvoiceById, updateInvoice, deleteInvoice, logActivity } from '@/lib/db';
 import { getActiveContext, type ActiveContext } from '@/lib/auth';
 import type { Invoice } from '@/lib/invoice';
+
+const actorLabel = (ctx: NonNullable<ActiveContext>) => ctx.role === 'admin' ? 'admin' : `guest:${ctx.guestId}`;
 
 export const dynamic = 'force-dynamic';
 
@@ -64,6 +66,10 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
 
   const invoice = await updateInvoice(id, updates);
   if (!invoice) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+  if (updates.status && updates.status !== existing.status) {
+    const methodNote = updates.status === 'paid' && invoice.paymentMethod ? ` (${invoice.paymentMethod})` : '';
+    await logActivity('invoice.status_changed', `${invoice.number} ${existing.status} -> ${updates.status}${methodNote}`, { from: existing.status, to: updates.status, paymentMethod: invoice.paymentMethod }, actorLabel(ctx), invoice.id);
+  }
   return NextResponse.json(invoice);
 }
 
@@ -78,5 +84,6 @@ export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ 
 
   const ok = await deleteInvoice(id);
   if (!ok) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+  await logActivity('invoice.deleted', `Invoice ${existing.number} deleted`, { invoiceId: id, total: existing.total }, actorLabel(ctx));
   return NextResponse.json({ success: true });
 }

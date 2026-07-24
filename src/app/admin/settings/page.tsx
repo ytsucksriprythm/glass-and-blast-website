@@ -4,10 +4,11 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import toast from 'react-hot-toast';
 import {
-  ArrowLeft, Settings as SettingsIcon, Save, ShieldAlert, Building2, Banknote,
-  CreditCard, Bell, Star, CalendarClock,
+  ArrowLeft, Settings as SettingsIcon, Save, ShieldAlert, CreditCard, Bell, Star,
+  CalendarClock, Globe, ScrollText, RefreshCw,
 } from 'lucide-react';
 import type { AppSettings } from '@/lib/settings';
+import { ACTIVITY_TYPE_LABEL, type ActivityEntry } from '@/lib/activity';
 import { AdminSidebar, AdminMobileNav, AdminMoreSheet, useMoreSheet, adminNavItems } from '@/components/admin/AdminNav';
 
 function Section({ title, icon: Icon, children }: { title: string; icon: React.ComponentType<{ className?: string }>; children: React.ReactNode }) {
@@ -61,6 +62,66 @@ function Toggle({ label, sub, checked, onChange, disabled }: {
         className="mt-0.5 flex-shrink-0 appearance-none w-9 h-5 rounded-full border border-white/20 bg-white/10 checked:bg-sky-500 checked:border-sky-500 cursor-pointer disabled:cursor-not-allowed relative transition-colors before:content-[''] before:absolute before:top-[1px] before:left-[1px] before:w-[16px] before:h-[16px] before:rounded-full before:bg-slate-300 checked:before:bg-white before:transition-transform checked:before:translate-x-4"
       />
     </label>
+  );
+}
+
+function timeAgo(iso: string): string {
+  const ms = Date.now() - new Date(iso).getTime();
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return 'just now';
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  if (d < 30) return `${d}d ago`;
+  return new Date(iso).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+const ACTOR_STYLE = (actor: string) => {
+  if (actor === 'admin') return 'bg-sky-400/15 text-sky-300 border-sky-400/25';
+  if (actor === 'customer') return 'bg-emerald-400/15 text-emerald-300 border-emerald-400/25';
+  if (actor.startsWith('guest:')) return 'bg-violet-400/15 text-violet-300 border-violet-400/25';
+  return 'bg-slate-400/15 text-slate-300 border-slate-400/25';
+};
+
+function ActivityLog() {
+  const [entries, setEntries] = useState<ActivityEntry[] | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch('/api/admin/activity?limit=200');
+      if (res.ok) setEntries(await res.json());
+    } finally { setLoading(false); }
+  };
+  useEffect(() => { load(); }, []);
+
+  return (
+    <Section title="Activity log" icon={ScrollText}>
+      <p className="text-slate-500 text-xs -mt-1 mb-1">Everything that happens on the site and in the CRM — bookings, invoices, settings changes, guest logins, Square payments.</p>
+      <button onClick={load} disabled={loading} className="inline-flex items-center gap-1.5 text-xs text-sky-400 hover:text-sky-300 cursor-pointer disabled:opacity-50">
+        <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} /> Refresh
+      </button>
+      <div className="mt-2 max-h-[28rem] overflow-y-auto rounded-lg border border-white/5 divide-y divide-white/5">
+        {loading && !entries ? (
+          <div className="p-4 text-center text-slate-600 text-xs">Loading…</div>
+        ) : !entries || entries.length === 0 ? (
+          <div className="p-4 text-center text-slate-600 text-xs">Nothing logged yet.</div>
+        ) : entries.map(e => (
+          <div key={e.id} className="p-3 flex items-start gap-2.5">
+            <span className={`flex-shrink-0 mt-0.5 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold border ${ACTOR_STYLE(e.actor)}`}>
+              {e.actor.startsWith('guest:') ? 'guest' : e.actor}
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="text-slate-200 text-xs">{e.summary}</div>
+              <div className="text-slate-600 text-[11px] mt-0.5">{ACTIVITY_TYPE_LABEL[e.type] ?? e.type} · {timeAgo(e.createdAt)}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </Section>
   );
 }
 
@@ -129,7 +190,7 @@ export default function SettingsPage() {
               <SettingsIcon className="w-6 h-6 text-sky-400" /> Settings
             </h1>
             <p className="text-slate-500 text-xs mt-1">
-              Business-wide config — changes apply immediately, no redeploy needed.
+              Toggles apply immediately, no redeploy needed.
             </p>
           </div>
 
@@ -145,41 +206,10 @@ export default function SettingsPage() {
             </div>
           ) : s && (
             <div className="space-y-4">
-              <Section title="Business info" icon={Building2}>
-                <p className="text-slate-500 text-xs -mt-1 mb-2">Pre-fills new invoices. Already-created invoices keep their own saved copy.</p>
-                <Field label="Business name" value={s.businessName} onChange={v => set('businessName', v)} />
-                <Field label="Trading as" value={s.tradingAs} onChange={v => set('tradingAs', v)} />
-                <Field label="ABN" value={s.abn} onChange={v => set('abn', v)} />
-                <Field label="Address" value={s.address} onChange={v => set('address', v)} />
-                <div className="grid grid-cols-2 gap-3">
-                  <Field label="Email" value={s.email} onChange={v => set('email', v)} type="email" />
-                  <Field label="Phone" value={s.phone} onChange={v => set('phone', v)} />
-                </div>
-              </Section>
-
-              <Section title="Payment defaults" icon={Banknote}>
-                <p className="text-slate-500 text-xs -mt-1 mb-2">Pre-fills new invoices — the payment profile picker can still override per-invoice.</p>
-                <Field label="Account name" value={s.payAccountName} onChange={v => set('payAccountName', v)} />
-                <div className="grid grid-cols-2 gap-3">
-                  <Field label="BSB" value={s.payBsb} onChange={v => set('payBsb', v)} />
-                  <Field label="Account number" value={s.payAccountNumber} onChange={v => set('payAccountNumber', v)} />
-                </div>
-                <Field label="Default payment terms (days)" type="number" value={s.defaultPaymentTermsDays} onChange={v => set('defaultPaymentTermsDays', Number(v) || 0)} />
-                <div>
-                  <L>Default invoice footer note</L>
-                  <textarea className="form-input text-sm w-full" rows={2} value={s.defaultInvoiceNotes} onChange={e => set('defaultInvoiceNotes', e.target.value)} />
-                </div>
-                <div>
-                  <L>GST disclaimer wording</L>
-                  <textarea className="form-input text-sm w-full" rows={2} value={s.gstNoteText} onChange={e => set('gstNoteText', e.target.value)} />
-                  <p className="text-slate-600 text-xs mt-1">Wording only — this does not calculate or add GST to totals. Consult your accountant if your GST-registration status changes.</p>
-                </div>
-              </Section>
-
               <Section title="Card payments (Square)" icon={CreditCard}>
                 <Toggle
                   label="Card payments enabled"
-                  sub="Shows the customer-facing Pay-by-card button and admin link generation. Also needs SQUARE_ACCESS_TOKEN / SQUARE_LOCATION_ID set in env — this toggle alone can't turn it on without those."
+                  sub="Turns on the customer-facing Pay-by-card button, admin link generation, and the webhook all at once. Also needs SQUARE_ACCESS_TOKEN / SQUARE_LOCATION_ID set in env — this toggle alone can't turn it on without those."
                   checked={s.squareCardPaymentsEnabled}
                   onChange={v => set('squareCardPaymentsEnabled', v)}
                 />
@@ -199,6 +229,7 @@ export default function SettingsPage() {
               </Section>
 
               <Section title="Reviews & feedback" icon={Star}>
+                <Toggle label="Customer feedback widget enabled" sub="Shows the star-rating prompt on the thank-you page at all." checked={s.customerFeedbackEnabled} onChange={v => set('customerFeedbackEnabled', v)} />
                 <Field label="Google review link" value={s.googleReviewUrl} onChange={v => set('googleReviewUrl', v)} placeholder="https://g.page/r/.../review" />
                 <div>
                   <L>Star rating that goes straight to Google</L>
@@ -211,8 +242,16 @@ export default function SettingsPage() {
 
               <Section title="Scheduling" icon={CalendarClock}>
                 <Field label="Default job start time" type="time" value={s.defaultJobStartTime} onChange={v => set('defaultJobStartTime', v)} />
-                <p className="text-slate-600 text-xs">Used when a recurring plan auto-books its next visit onto the calendar. Manually scheduling a job on the calendar is unaffected.</p>
+                <p className="text-slate-600 text-xs -mt-1">Used when a recurring plan auto-books its next visit. Manually scheduling a job on the calendar is unaffected.</p>
+                <Toggle label="Recurring auto-book enabled" sub="Pauses the daily cron that turns due recurring plans into bookings, without deleting the plans. The manual &quot;generate next visit&quot; button still works." checked={s.recurringAutoBookEnabled} onChange={v => set('recurringAutoBookEnabled', v)} />
               </Section>
+
+              <Section title="Public site" icon={Globe}>
+                <Toggle label="Accepting new bookings" sub="Off shows a 'not currently taking new bookings' message instead of the booking form." checked={s.acceptingNewBookings} onChange={v => set('acceptingNewBookings', v)} />
+                <Toggle label="Site visit tracking enabled" sub="Anonymous page-view tracking shown in Site Stats." checked={s.siteTrackingEnabled} onChange={v => set('siteTrackingEnabled', v)} />
+              </Section>
+
+              <ActivityLog />
             </div>
           )}
         </main>

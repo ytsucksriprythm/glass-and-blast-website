@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isAdminAuthenticated } from '@/lib/auth';
-import { getBookingGroups, createBookingGroup } from '@/lib/db';
+import { getBookingGroups, createBookingGroup, logActivity } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
 
@@ -17,5 +17,6 @@ export async function POST(req: NextRequest) {
   const bookingIds: string[] = Array.isArray(b.bookingIds) ? b.bookingIds.filter((x: unknown) => typeof x === 'string') : [];
   if (!title) return NextResponse.json({ error: 'Group needs a title' }, { status: 400 });
   const group = await createBookingGroup(title, bookingIds);
+  await logActivity('group.created', `Group "${group.title}" created (${bookingIds.length} job${bookingIds.length !== 1 ? 's' : ''})`, { groupId: group.id }, 'admin');
   return NextResponse.json(group, { status: 201 });
 }

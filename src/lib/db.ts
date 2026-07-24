@@ -7,6 +7,7 @@ import {
   type PaymentProfile, INVOICE_PREFIX, INVOICE_START_SEQ, SEED_PAYMENT_PROFILES, computeTotals,
 } from './invoice';
 import { type AppSettings, DEFAULT_SETTINGS } from './settings';
+import { type ActivityEntry, type InvoiceViewSession } from './activity';
 
 const DB_PATH = path.join(process.cwd(), 'data', 'bookings.json');
 const PV_PATH = path.join(process.cwd(), 'data', 'pageviews.json');
@@ -17,6 +18,9 @@ const PAYMENT_PROFILE_PATH = path.join(process.cwd(), 'data', 'payment-profiles.
 const GUEST_PATH = path.join(process.cwd(), 'data', 'guests.json');
 const GROUP_PATH = path.join(process.cwd(), 'data', 'booking-groups.json');
 const SETTINGS_PATH = path.join(process.cwd(), 'data', 'settings.json');
+const ACTIVITY_PATH = path.join(process.cwd(), 'data', 'activity-log.json');
+const INVOICE_VIEWS_PATH = path.join(process.cwd(), 'data', 'invoice-views.json');
+const ACTIVITY_MAX_ROWS = 2000; // local JSON store only — Neon has no cap
 
 export type BookingStatus = 'pending' | 'quoted' | 'confirmed' | 'completed' | 'cancelled';
 export type ServiceType = 'window-washing' | 'pressure-washing' | 'both' | 'flyscreen-repair' | 'solar-panel-cleaning' | 'other';
@@ -413,6 +417,39 @@ async function ensureSchema(): Promise<void> {
           updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
         )
       `;
+      // Site-wide activity log — bookings/invoices/settings/guests/groups
+      // changing, Square payments confirming, etc. See src/lib/activity.ts.
+      await sql`
+        CREATE TABLE IF NOT EXISTS activity_log (
+          id         TEXT PRIMARY KEY,
+          type       TEXT NOT NULL,
+          summary    TEXT NOT NULL,
+          meta       TEXT,
+          actor      TEXT NOT NULL DEFAULT 'system',
+          invoice_id TEXT,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS activity_log_created_idx ON activity_log (created_at DESC)`;
+      await sql`CREATE INDEX IF NOT EXISTS activity_log_invoice_idx ON activity_log (invoice_id)`;
+      // Per-invoice public-page view sessions — one row per open, closed off
+      // with a duration when the tab is hidden/closed.
+      await sql`
+        CREATE TABLE IF NOT EXISTS invoice_views (
+          id               TEXT PRIMARY KEY,
+          invoice_id       TEXT NOT NULL,
+          ip               TEXT NOT NULL DEFAULT '',
+          device_type      TEXT NOT NULL DEFAULT 'Unknown',
+          browser          TEXT NOT NULL DEFAULT '',
+          city             TEXT,
+          region           TEXT,
+          country          TEXT,
+          started_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+          ended_at         TIMESTAMPTZ,
+          duration_seconds INTEGER
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS invoice_views_invoice_idx ON invoice_views (invoice_id)`;
     })();
   }
   return schemaReady;
@@ -552,7 +589,7 @@ export async function ensureBookingToken(id: string): Promise<string | null> {
 // actually seen in the account. Returns the linked booking (with a public
 // token minted if it didn't have one yet) so the caller can redirect to the
 // thank-you page, plus the invoice number for the admin notification.
-export async function markCustomerPaidByInvoiceToken(invoiceToken: string): Promise<{ booking: Booking; invoiceNumber: string } | null> {
+export async function markCustomerPaidByInvoiceToken(invoiceToken: string): Promise<{ booking: Booking; invoiceNumber: string; invoiceId: string } | null> {
   const invoice = await getInvoiceByToken(invoiceToken);
   if (!invoice) return null;
   const bookingId = invoice.bookingIds[0] ?? invoice.bookingId ?? null;
@@ -560,7 +597,7 @@ export async function markCustomerPaidByInvoiceToken(invoiceToken: string): Prom
   const updated = await updateBooking(bookingId, { customerMarkedPaidAt: new Date().toISOString() });
   if (!updated) return null;
   const token = updated.publicToken ?? (await ensureBookingToken(bookingId));
-  return { booking: { ...updated, publicToken: token }, invoiceNumber: invoice.number };
+  return { booking: { ...updated, publicToken: token }, invoiceNumber: invoice.number, invoiceId: invoice.id };
 }
 
 // Customer submits feedback from the thank-you page. Stars 1-5; text kept for 1-3.
@@ -1167,6 +1204,9 @@ async function createBookingFromPlan(job: RecurringJob): Promise<{ job: Recurrin
 }
 
 export async function runRecurringDue(): Promise<{ job: RecurringJob; booking: Booking }[]> {
+  // Settings -> Scheduling -> "Recurring auto-book enabled" pauses just the
+  // unattended daily cron; the manual "generate next visit" button still works.
+  if (!(await getSettings()).recurringAutoBookEnabled) return [];
   const today = new Date().toISOString().slice(0, 10);
   const jobs = await getRecurringJobs();
   const due = jobs.filter(j => j.active && j.nextDate <= today);
@@ -1646,9 +1686,19 @@ export async function addPaymentProfile(data: { name: string; accountName: strin
 }
 
 // ─── App settings (singleton) ───────────────────────────────────────────────
-// Merging over DEFAULT_SETTINGS means a field added to AppSettings later just
-// works — old stored rows/files simply don't have the new key yet, and the
-// default fills the gap, no migration needed.
+// Projects the stored blob through only the keys AppSettings currently
+// defines: a field added later just fills in from DEFAULT_SETTINGS (no
+// migration needed), and a field removed from the type stops appearing even
+// if an old stored row/file still has it lying around.
+function projectSettings(stored: Record<string, unknown> | null | undefined): AppSettings {
+  const out = { ...DEFAULT_SETTINGS };
+  if (stored) {
+    for (const key of Object.keys(DEFAULT_SETTINGS) as (keyof AppSettings)[]) {
+      if (key in stored) (out as any)[key] = stored[key];
+    }
+  }
+  return out;
+}
 
 function readSettingsFile(): AppSettings {
   try {
@@ -1659,7 +1709,7 @@ function readSettingsFile(): AppSettings {
       return { ...DEFAULT_SETTINGS };
     }
     const stored = JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf-8'));
-    return { ...DEFAULT_SETTINGS, ...stored };
+    return projectSettings(stored);
   } catch { return { ...DEFAULT_SETTINGS }; }
 }
 function writeSettingsFile(s: AppSettings): void {
@@ -1675,7 +1725,7 @@ export async function getSettings(): Promise<AppSettings> {
       const rows = await sql`SELECT data FROM app_settings WHERE id = 'global' LIMIT 1`;
       const arr = rows as any[];
       if (!arr.length) return { ...DEFAULT_SETTINGS };
-      try { return { ...DEFAULT_SETTINGS, ...JSON.parse(arr[0].data) }; }
+      try { return projectSettings(JSON.parse(arr[0].data)); }
       catch { return { ...DEFAULT_SETTINGS }; }
     })());
   }
@@ -1695,6 +1745,159 @@ export async function updateSettings(partial: Partial<AppSettings>): Promise<App
   }
   writeSettingsFile(updated);
   return updated;
+}
+
+// ─── Activity log (site-wide events) ────────────────────────────────────────
+
+function readActivityLog(): ActivityEntry[] {
+  try {
+    if (!fs.existsSync(ACTIVITY_PATH)) return [];
+    return JSON.parse(fs.readFileSync(ACTIVITY_PATH, 'utf-8'));
+  } catch { return []; }
+}
+function writeActivityLog(rows: ActivityEntry[]): void {
+  const dir = path.dirname(ACTIVITY_PATH);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(ACTIVITY_PATH, JSON.stringify(rows, null, 2));
+}
+
+// Best-effort — never throws, never blocks the caller's response on failure.
+// `actor` is a free-form label: 'admin' | 'guest:<id>' | 'customer' | 'system'.
+export async function logActivity(
+  type: string,
+  summary: string,
+  meta: Record<string, unknown> | null = null,
+  actor: string = 'system',
+  invoiceId: string | null = null,
+): Promise<void> {
+  const entry: ActivityEntry = {
+    id: `ACT-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    type, summary, meta, actor, invoiceId,
+    createdAt: new Date().toISOString(),
+  };
+  try {
+    if (sql) {
+      await ensureSchema();
+      await sql`
+        INSERT INTO activity_log (id, type, summary, meta, actor, invoice_id)
+        VALUES (${entry.id}, ${entry.type}, ${entry.summary}, ${JSON.stringify(entry.meta)}, ${entry.actor}, ${entry.invoiceId})
+      `;
+      return;
+    }
+    const rows = readActivityLog();
+    rows.unshift(entry);
+    writeActivityLog(rows.slice(0, ACTIVITY_MAX_ROWS));
+  } catch (err) {
+    console.error('logActivity failed:', err);
+  }
+}
+
+function rowToActivity(r: any): ActivityEntry {
+  let meta: Record<string, unknown> | null = null;
+  try { meta = r.meta ? JSON.parse(r.meta) : null; } catch { meta = null; }
+  return {
+    id: r.id, type: r.type, summary: r.summary, meta, actor: r.actor,
+    invoiceId: r.invoice_id ?? null,
+    createdAt: typeof r.created_at === 'string' ? r.created_at : new Date(r.created_at).toISOString(),
+  };
+}
+
+export async function getActivityLog(limit = 200, invoiceId?: string): Promise<ActivityEntry[]> {
+  if (sql) {
+    return withTimeout((async () => {
+      await ensureSchema();
+      const rows = invoiceId
+        ? await sql`SELECT * FROM activity_log WHERE invoice_id = ${invoiceId} ORDER BY created_at DESC LIMIT ${limit}`
+        : await sql`SELECT * FROM activity_log ORDER BY created_at DESC LIMIT ${limit}`;
+      return (rows as any[]).map(rowToActivity);
+    })());
+  }
+  const rows = readActivityLog();
+  const filtered = invoiceId ? rows.filter(r => r.invoiceId === invoiceId) : rows;
+  return filtered.slice(0, limit);
+}
+
+// ─── Invoice view sessions (per-open detail log) ────────────────────────────
+
+function readInvoiceViews(): InvoiceViewSession[] {
+  try {
+    if (!fs.existsSync(INVOICE_VIEWS_PATH)) return [];
+    return JSON.parse(fs.readFileSync(INVOICE_VIEWS_PATH, 'utf-8'));
+  } catch { return []; }
+}
+function writeInvoiceViews(rows: InvoiceViewSession[]): void {
+  const dir = path.dirname(INVOICE_VIEWS_PATH);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(INVOICE_VIEWS_PATH, JSON.stringify(rows, null, 2));
+}
+
+export async function createInvoiceViewSession(invoiceId: string, info: {
+  ip: string; deviceType: string; browser: string; city: string | null; region: string | null; country: string | null;
+}): Promise<string> {
+  const id = `IVW-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  const now = new Date().toISOString();
+  try {
+    if (sql) {
+      await ensureSchema();
+      await sql`
+        INSERT INTO invoice_views (id, invoice_id, ip, device_type, browser, city, region, country, started_at)
+        VALUES (${id}, ${invoiceId}, ${info.ip}, ${info.deviceType}, ${info.browser}, ${info.city}, ${info.region}, ${info.country}, ${now})
+      `;
+      return id;
+    }
+    const rows = readInvoiceViews();
+    rows.unshift({
+      id, invoiceId, ip: info.ip, deviceType: info.deviceType, browser: info.browser,
+      city: info.city, region: info.region, country: info.country,
+      startedAt: now, endedAt: null, durationSeconds: null,
+    });
+    writeInvoiceViews(rows.slice(0, ACTIVITY_MAX_ROWS));
+    return id;
+  } catch (err) {
+    console.error('createInvoiceViewSession failed:', err);
+    return id; // still return an id — ending a session that failed to write is harmless
+  }
+}
+
+export async function endInvoiceViewSession(id: string): Promise<void> {
+  try {
+    if (sql) {
+      await ensureSchema();
+      await sql`
+        UPDATE invoice_views SET ended_at = now(),
+          duration_seconds = GREATEST(0, EXTRACT(EPOCH FROM (now() - started_at))::int)
+        WHERE id = ${id} AND ended_at IS NULL
+      `;
+      return;
+    }
+    const rows = readInvoiceViews();
+    const idx = rows.findIndex(r => r.id === id);
+    if (idx === -1 || rows[idx].endedAt) return;
+    const endedAt = new Date();
+    const startedAt = new Date(rows[idx].startedAt);
+    rows[idx].endedAt = endedAt.toISOString();
+    rows[idx].durationSeconds = Math.max(0, Math.round((endedAt.getTime() - startedAt.getTime()) / 1000));
+    writeInvoiceViews(rows);
+  } catch (err) {
+    console.error('endInvoiceViewSession failed:', err);
+  }
+}
+
+export async function getInvoiceViewSessions(invoiceId: string): Promise<InvoiceViewSession[]> {
+  if (sql) {
+    return withTimeout((async () => {
+      await ensureSchema();
+      const rows = await sql`SELECT * FROM invoice_views WHERE invoice_id = ${invoiceId} ORDER BY started_at DESC`;
+      return (rows as any[]).map(r => ({
+        id: r.id, invoiceId: r.invoice_id, ip: r.ip, deviceType: r.device_type, browser: r.browser,
+        city: r.city ?? null, region: r.region ?? null, country: r.country ?? null,
+        startedAt: typeof r.started_at === 'string' ? r.started_at : new Date(r.started_at).toISOString(),
+        endedAt: r.ended_at == null ? null : (typeof r.ended_at === 'string' ? r.ended_at : new Date(r.ended_at).toISOString()),
+        durationSeconds: r.duration_seconds == null ? null : Number(r.duration_seconds),
+      }));
+    })());
+  }
+  return readInvoiceViews().filter(r => r.invoiceId === invoiceId).sort((a, b) => b.startedAt.localeCompare(a.startedAt));
 }
 
 // ─── Guests (subcontractor logins) ──────────────────────────────────────────

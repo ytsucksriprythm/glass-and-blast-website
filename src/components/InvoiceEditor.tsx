@@ -154,35 +154,15 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
   const [bookings, setBookings] = useState<Booking[] | null>(null);
   const [pickerSearch, setPickerSearch] = useState('');
 
-  // Business-wide settings (/admin/settings) — gates the Square section below,
-  // and (for a brand-new invoice only) seeds the form's defaults so a changed
-  // business name/ABN/notes/terms actually shows up on new invoices.
+  // Business-wide settings (/admin/settings) — gates the Square section below.
   const [settings, setSettings] = useState<AppSettings | null>(null);
   useEffect(() => {
     (async () => {
       try {
         const res = await fetch('/api/admin/settings');
-        if (!res.ok) return;
-        const s: AppSettings = await res.json();
-        setSettings(s);
-        if (initial) return; // only seed defaults for a brand-new invoice
-        setF(prev => ({
-          ...prev,
-          fromName: s.businessName || prev.fromName,
-          fromTradingAs: s.tradingAs || prev.fromTradingAs,
-          fromAbn: s.abn || prev.fromAbn,
-          fromAddress: s.address || prev.fromAddress,
-          fromEmail: s.email || prev.fromEmail,
-          fromPhone: s.phone || prev.fromPhone,
-          payAccountName: s.payAccountName || prev.payAccountName,
-          payBsb: s.payBsb || prev.payBsb,
-          payAccountNumber: s.payAccountNumber || prev.payAccountNumber,
-          notes: s.defaultInvoiceNotes || prev.notes,
-          dueDate: typeof s.defaultPaymentTermsDays === 'number' ? addDays(prev.invoiceDate, s.defaultPaymentTermsDays) : prev.dueDate,
-        }));
-      } catch { /* keep the static fallback defaults already in the form */ }
+        if (res.ok) setSettings(await res.json());
+      } catch { /* Square section just stays hidden */ }
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
