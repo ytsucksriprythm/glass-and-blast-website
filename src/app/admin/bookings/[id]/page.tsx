@@ -6,12 +6,32 @@ import Link from 'next/link';
 import toast from 'react-hot-toast';
 import {
   ArrowLeft, Phone, Mail, MapPin, CalendarDays, DollarSign, StickyNote,
-  CalendarPlus, User, Wallet, Clock, Edit3, Check, X, CalendarCheck,
-  Camera, Trash2, Repeat, FileText, Send,
+  User, Wallet, Clock, Edit3, Check, X, CalendarClock,
+  Camera, Trash2, Repeat, FileText, Send, Link2, ExternalLink, Plus, Copy, Star, AlertTriangle,
 } from 'lucide-react';
 import type { Booking, BookingStatus, BookingPhoto, PhotoType } from '@/lib/db';
+import type { Invoice } from '@/lib/invoice';
+import { AddressLink } from '@/components/AddressLink';
 
 type GuestProfile = { id: string; name: string; active: boolean; createdAt: string };
+
+// "Scheduled: Tuesday 3:00 PM" within 7 days; "Scheduled: 15 August 2026" further out.
+function scheduledLabel(iso: string): string {
+  const d = new Date(iso);
+  const day0 = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const diffDays = (day0(d) - day0(new Date())) / 86400000;
+  if (diffDays >= 0 && diffDays < 7) {
+    return `${d.toLocaleDateString('en-AU', { weekday: 'long' })} ${d.toLocaleTimeString('en-AU', { hour: 'numeric', minute: '2-digit' })}`;
+  }
+  return d.toLocaleDateString('en-AU', { day: 'numeric', month: 'long', year: 'numeric' });
+}
+const toLocalInput = (iso: string | null) => {
+  if (!iso) return '';
+  const d = new Date(iso); const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+};
+const fromLocalInput = (v: string) => (v ? new Date(v).toISOString() : null);
+const INVOICE_STATUS_LABEL: Record<string, string> = { draft: 'Draft', sent: 'Sent', paid: 'Paid', cancelled: 'Cancelled' };
 
 const SERVICE_LABELS: Record<string, string> = {
   'window-washing': 'Window Washing',
@@ -36,40 +56,16 @@ const money = (n?: number | null) => typeof n === 'number' ? `$${n.toLocaleStrin
 
 // Editable form: quoteAmount held as a string for the input; service is a CSV string;
 // paidAt / completedAt held as YYYY-MM-DD strings for the date inputs.
-type EditForm = Omit<Booking, 'quoteAmount' | 'service' | 'completedAt' | 'paidAt'> & { quoteAmount: string; service: string; completedAt: string; paidAt: string };
+type EditForm = Omit<Booking, 'quoteAmount' | 'service' | 'completedAt' | 'paidAt' | 'scheduledAt'> & { quoteAmount: string; service: string; completedAt: string; paidAt: string; scheduledAt: string };
 const toForm = (b: Booking): EditForm => ({
   ...b,
   quoteAmount: b.quoteAmount != null ? String(b.quoteAmount) : '',
   completedAt: b.completedAt ? b.completedAt.slice(0, 10) : '',
   paidAt: b.paidAt ? b.paidAt.slice(0, 10) : '',
+  scheduledAt: toLocalInput(b.scheduledAt ?? null),
 });
 
 const longDate = (iso: string) => new Date(iso).toLocaleDateString('en-AU', { day: 'numeric', month: 'long', year: 'numeric' });
-
-// A matched Google Calendar event (read-only feed).
-type CalEvent = { uid: string; title: string; location: string; dow: string; day: string; mon: string; timeLabel: string; allDay: boolean };
-function eventMatchesBooking(title: string, b: Booking): boolean {
-  const t = title.toLowerCase();
-  return !!(b.name && t.includes(b.name.toLowerCase().trim()))
-    || !!(b.address && b.address.length > 3 && t.includes(b.address.toLowerCase().trim()));
-}
-
-function gcalUrl(b: Booking): string {
-  const place = [b.address, b.suburb].filter(Boolean).join(', ');
-  const title = (place ? `${place} - ${b.name}` : b.name).trim();
-  const details = [
-    b.phone ? `Phone: ${b.phone}` : '',
-    b.email ? `Email: ${b.email}` : '',
-    `Service: ${serviceText(b.service)}`,
-    b.propertyType ? `Type: ${b.propertyType}` : '',
-    (typeof b.quoteAmount === 'number' && b.quoteAmount > 0) ? `Quote: ${money(b.quoteAmount)}` : '',
-    (b.preferredDate || b.preferredTime) ? `Preferred: ${[b.preferredDate, b.preferredTime].filter(Boolean).join(' ')}` : '',
-    b.notes ? `Customer note: ${b.notes}` : '',
-    b.adminNotes ? `Admin note: ${b.adminNotes}` : '',
-  ].filter(Boolean).join('\n');
-  const params = new URLSearchParams({ action: 'TEMPLATE', text: title, details, location: place });
-  return `https://calendar.google.com/calendar/render?${params.toString()}`;
-}
 
 function Row({ icon: Icon, label, children }: { icon: React.FC<{ className?: string }>; label: string; children: React.ReactNode }) {
   return (
@@ -179,10 +175,11 @@ function PhotoGallery({ bookingId }: { bookingId: string }) {
                   {uploading === g.type
                     ? <div className="w-5 h-5 border-2 border-white/20 border-t-sky-400 rounded-full animate-spin" />
                     : <><Camera className="w-5 h-5" /> Add</>}
+                  {/* No `capture` attr: iPhone then offers Photo Library / camera roll
+                      as well as Take Photo, instead of forcing the rear camera. */}
                   <input
                     type="file"
                     accept="image/*"
-                    capture="environment"
                     className="hidden"
                     onChange={e => { upload(g.type, e.target.files?.[0] ?? null); e.target.value = ''; }}
                   />
@@ -206,13 +203,38 @@ export default function BookingView() {
   const [edit, setEdit] = useState(false);
   const [form, setForm] = useState<EditForm | null>(null);
   const [saving, setSaving] = useState(false);
-  const [calEvents, setCalEvents] = useState<CalEvent[]>([]);
   const [from, setFrom] = useState<string | null>(null);
 
   // Guest assignment ("Send to")
   const [guests, setGuests] = useState<GuestProfile[]>([]);
   const [showSend, setShowSend] = useState(false);
   const [sending, setSending] = useState(false);
+
+  // Linked invoices (linkage lives on the invoice; the booking derives them)
+  const [invoices, setInvoices] = useState<Invoice[]>([]);
+  const [showLink, setShowLink] = useState(false);
+
+  // Customer thank-you link
+  const [custToken, setCustToken] = useState<string>('');
+  useEffect(() => { if (b?.publicToken) setCustToken(b.publicToken); }, [b?.publicToken]);
+  const custLink = custToken ? `${typeof window !== 'undefined' ? window.location.origin : ''}/thanks/${custToken}` : '';
+  const genCustLink = async () => {
+    if (!b) return;
+    try {
+      const res = await fetch(`/api/admin/bookings/${b.id}/token`, { method: 'POST' });
+      if (res.ok) { setCustToken((await res.json()).token); }
+    } catch { toast.error('Could not create link'); }
+  };
+  const copyCustLink = async () => {
+    try { await navigator.clipboard.writeText(custLink); toast.success('Customer link copied'); }
+    catch { toast.error('Copy failed'); }
+  };
+  const loadInvoices = async () => {
+    try {
+      const res = await fetch('/api/admin/invoices');
+      if (res.ok) setInvoices(await res.json());
+    } catch { /* no invoices — fine */ }
+  };
 
   // Remember the page we were opened from (passed as ?from=…) so Back returns
   // there exactly — including the dashboard tab — instead of relying on browser
@@ -240,17 +262,8 @@ export default function BookingView() {
     })();
   }, [id, router]);
 
-  // Pull the read-only Google Calendar feed so we can show the scheduled slot if matched.
-  useEffect(() => {
-    (async () => {
-      try {
-        const res = await fetch('/api/admin/calendar');
-        if (!res.ok) return;
-        const data = await res.json();
-        if (Array.isArray(data?.events)) setCalEvents(data.events);
-      } catch { /* no calendar — fine */ }
-    })();
-  }, []);
+  // Invoices, to show which are linked to this booking.
+  useEffect(() => { loadInvoices(); }, []);
 
   // Guest logins, for the "Send to" selector.
   useEffect(() => {
@@ -280,7 +293,26 @@ export default function BookingView() {
     finally { setSending(false); }
   };
 
-  const calMatch = b ? calEvents.find(e => eventMatchesBooking(e.title, b)) : undefined;
+  const linkedInvoices = b ? invoices.filter(inv => inv.bookingIds.includes(b.id)) : [];
+  const unlinkedInvoices = b ? invoices.filter(inv => !inv.bookingIds.includes(b.id)) : [];
+
+  // Add/remove this booking from an invoice's linked set (edits the invoice —
+  // the single source of truth for linkage).
+  const toggleInvoiceLink = async (inv: Invoice, link: boolean) => {
+    if (!b) return;
+    const bookingIds = link
+      ? Array.from(new Set([...inv.bookingIds, b.id]))
+      : inv.bookingIds.filter(x => x !== b.id);
+    try {
+      const res = await fetch(`/api/admin/invoices/${inv.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ bookingIds }),
+      });
+      if (!res.ok) throw new Error();
+      await loadInvoices();
+      setShowLink(false);
+      toast.success(link ? `Linked invoice ${inv.number}` : `Unlinked ${inv.number}`);
+    } catch { toast.error('Could not update link'); }
+  };
 
   const set = (k: keyof EditForm, v: string | boolean) => setForm(f => f ? { ...f, [k]: v } : f);
   const toggleService = (v: string) => setForm(f => {
@@ -304,6 +336,22 @@ export default function BookingView() {
         status: form.status, paid: form.paid, notes: form.notes, adminNotes: form.adminNotes,
         quoteAmount: form.quoteAmount.trim() === '' ? null : Number(form.quoteAmount.replace(/[^0-9.]/g, '')),
       };
+      // Scheduling. An explicit datetime in the form wins. If the booking is being
+      // confirmed but has no calendar slot, prompt to add one (default: preferred
+      // date at 9am, else tomorrow) — this is the "Add this booking to the calendar?"
+      // step. Two-way sync is automatic: this writes the booking, which the
+      // calendar reads directly.
+      let scheduledAtISO = form.scheduledAt ? fromLocalInput(form.scheduledAt) : (b?.scheduledAt ?? null);
+      if (form.status === 'confirmed' && !scheduledAtISO) {
+        if (window.confirm('Add this booking to the calendar?')) {
+          const base = /^\d{4}-\d{2}-\d{2}$/.test(form.preferredDate)
+            ? form.preferredDate
+            : new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+          scheduledAtISO = new Date(`${base}T09:00:00`).toISOString();
+          toast.success('Added to calendar — adjust the time on the calendar');
+        }
+      }
+      patch.scheduledAt = scheduledAtISO;
       // Completion date: send an explicit value when set or when clearing an existing
       // one. Leaving it out lets the server auto-stamp the day it flips to completed.
       if (form.completedAt.trim() !== '') patch.completedAt = new Date(`${form.completedAt}T00:00:00`).toISOString();
@@ -378,9 +426,11 @@ export default function BookingView() {
             </div>
 
             <div className="mb-5 grid grid-cols-2 gap-3">
-              <a href={gcalUrl(b)} target="_blank" rel="noopener noreferrer" className="inline-flex items-center justify-center gap-2 px-4 py-3 rounded-lg border border-sky-400/30 bg-sky-400/10 text-sky-300 hover:bg-sky-400/15 text-sm font-semibold transition-colors cursor-pointer">
-                <CalendarPlus className="w-4 h-4" /> Calendar
-              </a>
+              {/* Opens the calendar in scheduling mode: pick a day and the slot is
+                  filled in from this booking, on this same record. */}
+              <button onClick={() => router.push(`/admin/calendar?schedule=${b.id}`)} className="inline-flex items-center justify-center gap-2 px-4 py-3 rounded-lg border border-sky-400/30 bg-sky-400/10 text-sky-300 hover:bg-sky-400/15 text-sm font-semibold transition-colors cursor-pointer">
+                <CalendarClock className="w-4 h-4" /> {b.scheduledAt ? 'Reschedule' : 'Add to calendar'}
+              </button>
               <button onClick={() => setShowSend(true)} className="inline-flex items-center justify-center gap-2 px-4 py-3 rounded-lg border border-sky-400/30 bg-sky-400/10 text-sky-300 hover:bg-sky-400/15 text-sm font-semibold transition-colors cursor-pointer touch-manipulation">
                 <Send className="w-4 h-4" /> Send to
               </button>
@@ -390,13 +440,15 @@ export default function BookingView() {
               {b.phone && <Row icon={Phone} label="Phone"><a href={`tel:${b.phone}`} className="text-sky-400">{b.phone}</a></Row>}
               {b.email && <Row icon={Mail} label="Email"><a href={`mailto:${b.email}`} className="text-sky-400 break-all">{b.email}</a></Row>}
               <Row icon={User} label="Service">{serviceText(b.service)} · <span className="capitalize">{b.propertyType}</span></Row>
-              {(b.address || b.suburb) && <Row icon={MapPin} label="Address">{[b.address, b.suburb].filter(Boolean).join(', ')}</Row>}
+              {(b.address || b.suburb) && <Row icon={MapPin} label="Address"><AddressLink address={[b.address, b.suburb].filter(Boolean).join(', ')} /></Row>}
               {(b.preferredDate || b.preferredTime) && <Row icon={CalendarDays} label="Preferred time">{[b.preferredDate, b.preferredTime].filter(Boolean).join(' ')}</Row>}
-              {calMatch && (
-                <Row icon={CalendarCheck} label="Scheduled (Google Calendar)">
-                  <span className="text-sky-300">{calMatch.dow} {calMatch.day} {calMatch.mon}{calMatch.allDay ? '' : ` · ${calMatch.timeLabel}`}</span>
-                </Row>
-              )}
+              <Row icon={CalendarClock} label="Calendar">
+                {b.scheduledAt
+                  ? <span className="text-sky-300">Scheduled: {scheduledLabel(b.scheduledAt)}</span>
+                  : b.status === 'confirmed'
+                    ? <span className="text-amber-300">Not in calendar</span>
+                    : <span className="text-slate-500">Not scheduled</span>}
+              </Row>
               <Row icon={Send} label="Assigned to">
                 {b.assignedGuestId ? (
                   <span className="text-sky-300">
@@ -412,6 +464,15 @@ export default function BookingView() {
                 <span className={b.paid ? 'text-emerald-400' : 'text-red-300'}>{b.paid ? 'Paid' : 'Not paid'}</span>
                 {b.paid && <span className="text-slate-500"> · {b.paidAt ? longDate(b.paidAt) : 'date not set'}</span>}
               </Row>
+              {!b.paid && b.customerMarkedPaidAt && (
+                <div className="flex items-start gap-2.5 rounded-lg border border-amber-400/30 bg-amber-400/10 px-3 py-2.5">
+                  <AlertTriangle className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
+                  <div className="text-amber-200 text-sm">
+                    <span className="font-semibold">Customer says they&apos;ve paid</span> — {longDate(b.customerMarkedPaidAt)}.
+                    <span className="text-amber-300/80"> Not marked paid here yet — check the bank first.</span>
+                  </div>
+                </div>
+              )}
               {b.status === 'completed' && (
                 <Row icon={Check} label="Completed on">
                   {b.completedAt ? longDate(b.completedAt) : 'Date not set'}
@@ -437,6 +498,59 @@ export default function BookingView() {
             )}
 
             <PhotoGallery bookingId={b.id} />
+
+            {/* Linked invoices — payment status flows from invoice → booking */}
+            <div className="mt-4 rounded-lg border border-white/10 bg-navy-800 p-4">
+              <div className="flex items-center justify-between mb-3">
+                <div className="text-slate-500 text-xs flex items-center gap-1.5"><Link2 className="w-3.5 h-3.5" /> Linked invoices</div>
+                <button onClick={() => { setShowLink(true); loadInvoices(); }} className="inline-flex items-center gap-1 text-sky-400 hover:text-sky-300 text-xs font-semibold cursor-pointer">
+                  <Plus className="w-3.5 h-3.5" /> Link invoice
+                </button>
+              </div>
+              {linkedInvoices.length === 0 ? (
+                <div className="text-slate-500 text-sm">No invoices linked. When a linked invoice is marked paid, this job is marked paid too.</div>
+              ) : (
+                <div className="space-y-2">
+                  {linkedInvoices.map(inv => (
+                    <div key={inv.id} className="flex items-center gap-2 rounded-lg border border-white/10 px-3 py-2">
+                      <div className="min-w-0 flex-1">
+                        <div className="text-white text-sm font-medium">{inv.number} · {money(inv.total)}</div>
+                        <div className="text-slate-500 text-xs">
+                          {INVOICE_STATUS_LABEL[inv.status] ?? inv.status}
+                          {inv.firstViewedAt ? ' · Read' : ''}
+                          {inv.status === 'paid' ? ' · Paid' : ''}
+                        </div>
+                      </div>
+                      <Link href={`/admin/invoices/${inv.id}?from=/admin/bookings/${b.id}`} title="View invoice" className="p-2 rounded-lg border border-white/10 text-sky-300 hover:border-sky-400/40 cursor-pointer"><ExternalLink className="w-4 h-4" /></Link>
+                      <button onClick={() => toggleInvoiceLink(inv, false)} title="Unlink" className="p-2 rounded-lg border border-white/10 text-red-400 hover:border-red-400/40 cursor-pointer"><X className="w-4 h-4" /></button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Customer thank-you link + feedback */}
+            <div className="mt-4 rounded-lg border border-white/10 bg-navy-800 p-4">
+              <div className="text-slate-500 text-xs flex items-center gap-1.5 mb-3"><Star className="w-3.5 h-3.5" /> Customer link (thank-you, invoice, photos, feedback)</div>
+              {custLink ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  <input readOnly value={custLink} onFocus={e => e.currentTarget.select()} className="form-input flex-1 min-w-[12rem] text-xs" />
+                  <button onClick={copyCustLink} className="inline-flex items-center gap-1.5 px-3 py-2.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-white text-sm font-semibold cursor-pointer"><Copy className="w-4 h-4" /> Copy</button>
+                  <a href={custLink} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 px-3 py-2.5 rounded-lg border border-white/15 text-slate-200 hover:text-white text-sm font-semibold cursor-pointer"><ExternalLink className="w-4 h-4" /></a>
+                </div>
+              ) : (
+                <button onClick={genCustLink} className="inline-flex items-center gap-1.5 px-3 py-2.5 rounded-lg border border-sky-400/30 bg-sky-400/10 text-sky-300 text-sm font-semibold cursor-pointer"><Link2 className="w-4 h-4" /> Create customer link</button>
+              )}
+              {typeof b.feedbackStars === 'number' && (
+                <div className="mt-3 pt-3 border-t border-white/5">
+                  <div className="flex items-center gap-1">
+                    {[1, 2, 3, 4, 5].map(n => <Star key={n} className={`w-4 h-4 ${n <= b.feedbackStars! ? 'fill-amber-400 text-amber-400' : 'text-slate-600'}`} />)}
+                    <span className="text-slate-400 text-xs ml-1">{b.feedbackAt ? longDate(b.feedbackAt) : ''}</span>
+                  </div>
+                  {b.feedbackText && <div className="text-slate-300 text-sm mt-1.5 whitespace-pre-wrap">{b.feedbackText}</div>}
+                </div>
+              )}
+            </div>
 
             <Link
               href={`/admin/invoices/new?fromBooking=${b.id}`}
@@ -499,6 +613,14 @@ export default function BookingView() {
               </div>
               <div><FieldLabel>Preferred date</FieldLabel><input className="form-input" type="date" value={form.preferredDate} onChange={e => set('preferredDate', e.target.value)} /></div>
               <div><FieldLabel>Preferred time</FieldLabel><input className="form-input" placeholder="e.g. Morning" value={form.preferredTime} onChange={e => set('preferredTime', e.target.value)} /></div>
+              <div className="sm:col-span-2">
+                <FieldLabel>Scheduled slot (calendar)</FieldLabel>
+                <div className="flex items-center gap-2">
+                  <input className="form-input" type="datetime-local" value={form.scheduledAt} onChange={e => set('scheduledAt', e.target.value)} />
+                  {form.scheduledAt && <button type="button" onClick={() => set('scheduledAt', '')} className="px-3 py-2.5 rounded-lg border border-white/10 text-slate-400 hover:text-white text-sm cursor-pointer">Clear</button>}
+                </div>
+                <p className="text-slate-500 text-xs mt-1">Sets the internal calendar slot. Clear to remove from the calendar.</p>
+              </div>
               <div>
                 <FieldLabel>Quote (AUD)</FieldLabel>
                 <div className="relative">
@@ -581,6 +703,37 @@ export default function BookingView() {
                 <button onClick={() => assignTo(null)} disabled={sending} className="w-full mt-1 p-3 rounded-lg text-left text-sm font-medium text-red-400 hover:bg-red-400/10 cursor-pointer disabled:opacity-50">
                   Unassign this job
                 </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Link an existing invoice ──────────────────────────────── */}
+      {showLink && b && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 sm:p-4" onClick={() => setShowLink(false)}>
+          <div className="bg-navy-800 border border-white/10 rounded-t-2xl sm:rounded-2xl w-full sm:max-w-sm max-h-[80svh] flex flex-col" onClick={e => e.stopPropagation()}>
+            <div className="p-4 border-b border-white/10 flex items-center justify-between">
+              <h3 className="text-white font-semibold flex items-center gap-2"><Link2 className="w-4 h-4 text-sky-400" /> Link an invoice</h3>
+              <button onClick={() => setShowLink(false)} className="text-slate-400 hover:text-white cursor-pointer"><X className="w-5 h-5" /></button>
+            </div>
+            <div className="overflow-y-auto p-2" style={{ paddingBottom: 'calc(0.5rem + env(safe-area-inset-bottom))' }}>
+              {unlinkedInvoices.length === 0 ? (
+                <div className="p-6 text-center text-slate-500 text-sm">
+                  No other invoices to link.
+                  <Link href={`/admin/invoices/new?fromBooking=${b.id}`} className="block mt-2 text-sky-400 hover:text-sky-300">Create one from this booking</Link>
+                </div>
+              ) : (
+                unlinkedInvoices.map(inv => (
+                  <button key={inv.id} onClick={() => toggleInvoiceLink(inv, true)} className="w-full flex items-center gap-3 p-3 rounded-lg text-left cursor-pointer hover:bg-white/5 text-white">
+                    <FileText className="w-4 h-4 text-sky-400 flex-shrink-0" />
+                    <span className="flex-1 min-w-0">
+                      <span className="block text-sm font-medium">{inv.number} · {money(inv.total)}</span>
+                      <span className="block text-slate-500 text-xs truncate">{inv.billToName || 'No bill-to'} · {INVOICE_STATUS_LABEL[inv.status] ?? inv.status}</span>
+                    </span>
+                    <Plus className="w-4 h-4 flex-shrink-0 text-sky-400" />
+                  </button>
+                ))
               )}
             </div>
           </div>

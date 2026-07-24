@@ -7,18 +7,20 @@ import {
   PieChart, Pie, Cell, CartesianGrid, LineChart, Line,
 } from 'recharts';
 import {
-  LayoutDashboard, Calendar, LogOut, TrendingUp,
+  Calendar, LogOut, TrendingUp,
   Clock, CheckCircle, XCircle, Trash2, ChevronUp,
   ChevronDown, Search, RefreshCw, DollarSign,
   ArrowUpRight, ArrowDownRight, Edit3, Check, Plus, X, StickyNote, BadgeCheck, Wallet,
-  BarChart3, Globe, Eye, Users, Link2, MapPin, Target, ClipboardCopy, CalendarDays, CalendarPlus, ArrowRight,
-  Repeat, PhoneCall, FileText, Send,
+  Globe, Eye, Users, Link2, MapPin, Target, ClipboardCopy, CalendarDays, CalendarClock, ArrowRight,
+  Repeat, PhoneCall, FileText, Send, CheckSquare, Square, Layers, AlertTriangle,
 } from 'lucide-react';
 import Image from 'next/image';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import toast from 'react-hot-toast';
-import type { Booking, BookingStatus, RecurringJob } from '@/lib/db';
+import type { Booking, BookingStatus, RecurringJob, BookingGroup } from '@/lib/db';
+import { AdminSidebar, AdminMobileNav, AdminMoreSheet, useMoreSheet, adminNavItems } from '@/components/admin/AdminNav';
+import { AddressLink } from '@/components/AddressLink';
 
 // ─── Types ────────────────────────────────────────────────────────────────
 
@@ -50,8 +52,6 @@ interface SiteStats {
   topReferrers: { source: string; views: number }[];
 }
 
-type CalJob = { uid: string; title: string; location: string; dow: string; day: string; mon: string; timeLabel: string; allDay: boolean };
-type CalData = { configured: boolean; events: CalJob[] };
 
 // ─── Constants ───────────────────────────────────────────────────────────
 
@@ -86,32 +86,38 @@ const serviceText = (service: string) =>
     .map(s => SERVICE_LABELS[s] ?? s)
     .join(' + ') || '—';
 
-// Google Calendar "new event" link, pre-filled with the job details.
-// Deliberately omits `dates`, so the date and time are left blank for you to set.
-function gcalUrl(b: Booking): string {
-  // Title format the owners asked for: "address - name", e.g. "10 House St, Aranda - John Smith".
-  const place = [b.address, b.suburb].filter(Boolean).join(', ');
-  const title = (place ? `${place} - ${b.name}` : b.name).trim();
-  const location = place;
-  const details = [
-    b.phone ? `Phone: ${b.phone}` : '',
-    b.email ? `Email: ${b.email}` : '',
-    `Service: ${serviceText(b.service)}`,
-    b.propertyType ? `Type: ${b.propertyType}` : '',
-    typeof b.quoteAmount === 'number' && b.quoteAmount > 0 ? `Quote: ${money(b.quoteAmount)}` : '',
-    (b.preferredDate || b.preferredTime) ? `Preferred: ${[b.preferredDate, b.preferredTime].filter(Boolean).join(' ')}` : '',
-    b.notes ? `Customer note: ${b.notes}` : '',
-    b.adminNotes ? `Admin note: ${b.adminNotes}` : '',
-  ].filter(Boolean).join('\n');
-  const params = new URLSearchParams({ action: 'TEMPLATE', text: title, details, location });
-  return `https://calendar.google.com/calendar/render?${params.toString()}`;
+// Internal calendar slot label. "Tuesday 3:00 PM" within a week, else "15 Aug 2026".
+function scheduledLabel(iso: string): string {
+  const d = new Date(iso);
+  const day0 = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const diffDays = (day0(d) - day0(new Date())) / 86400000;
+  if (diffDays >= 0 && diffDays < 7) {
+    return `${d.toLocaleDateString('en-AU', { weekday: 'long' })} ${d.toLocaleTimeString('en-AU', { hour: 'numeric', minute: '2-digit' })}`;
+  }
+  return d.toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' });
 }
+const toLocalInput = (iso: string | null) => {
+  if (!iso) return '';
+  const d = new Date(iso); const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+};
+const fromLocalInput = (v: string) => (v ? new Date(v).toISOString() : null);
 
 const emptyForm = {
   name: '', phone: '', email: '', service: 'window-washing', propertyType: 'residential',
   suburb: '', address: '', preferredDate: '', preferredTime: '', status: 'pending',
-  quoteAmount: '', notes: '', adminNotes: '',
+  quoteAmount: '', notes: '', adminNotes: '', leadSource: '',
 };
+
+// "How did we get this job?" — manual-add attribution.
+const LEAD_SOURCE_OPTIONS: { v: string; l: string }[] = [
+  { v: 'called-us', l: 'Called us' },
+  { v: 'we-called', l: 'We called them' },
+  { v: 'door-to-door', l: 'Door to door' },
+  { v: 'in-person', l: 'In person' },
+  { v: 'real-estate', l: 'Real estate agent' },
+  { v: 'other', l: 'Other' },
+];
 
 // Selectable service options (multi-select). 'both' is legacy, not offered for new bookings.
 const SERVICE_OPTIONS: { v: string; l: string }[] = [
@@ -183,67 +189,53 @@ function SourceRow({ label, value, total, color }: { label: string; value: numbe
   );
 }
 
-// ─── Upcoming jobs (read-only Google Calendar feed) ──────────────────────
+// ─── Upcoming jobs (internal calendar — bookings with a scheduled slot) ──────
 
-// Match a calendar event to a booking. Events are titled "address - name", so the
-// booking's name (and/or address) appears in the title.
-function matchBooking(title: string, bookings: Booking[]): Booking | undefined {
-  const t = title.toLowerCase();
-  return bookings.find(b => b.name && t.includes(b.name.toLowerCase().trim()))
-    || bookings.find(b => b.address && b.address.length > 3 && t.includes(b.address.toLowerCase().trim()));
-}
-
-function UpcomingJobs({ data, bookings }: { data: CalData | null; bookings: Booking[] }) {
+function UpcomingJobs({ bookings }: { bookings: Booking[] }) {
+  const now = Date.now();
+  const upcoming = bookings
+    .filter(b => b.scheduledAt && new Date(b.scheduledAt).getTime() >= now && b.status !== 'completed' && b.status !== 'cancelled')
+    .sort((a, b) => (a.scheduledAt ?? '').localeCompare(b.scheduledAt ?? ''))
+    .slice(0, 8);
   return (
     <div className="glass rounded-2xl border border-white/8 p-5 sm:p-6">
       <div className="flex items-center justify-between mb-4">
         <h3 className="font-display font-semibold text-white flex items-center gap-2">
           <CalendarDays className="w-4 h-4 text-sky-400" /> Upcoming jobs
         </h3>
-        <span className="text-slate-600 text-xs">Google Calendar</span>
+        <Link href="/admin/calendar" className="text-sky-400 hover:text-sky-300 text-xs font-semibold inline-flex items-center gap-1">Calendar <ArrowRight className="w-3.5 h-3.5" /></Link>
       </div>
-      {!data ? (
-        <div className="space-y-2">{[0, 1, 2].map(i => <div key={i} className="h-12 bg-white/5 rounded-lg animate-pulse" />)}</div>
-      ) : !data.configured ? (
-        <p className="text-slate-500 text-sm leading-relaxed">
-          Not connected yet. Add your calendar&apos;s secret iCal URL to <code className="text-slate-400 bg-white/5 px-1 py-0.5 rounded">GOOGLE_CALENDAR_ICS_URL</code> and upcoming jobs show up here.
-        </p>
-      ) : (() => {
-        // Hide jobs whose matched booking is already marked completed.
-        const visible = data.events.filter(e => matchBooking(e.title, bookings)?.status !== 'completed');
-        if (visible.length === 0) return <p className="text-slate-500 text-sm">No upcoming jobs on the calendar.</p>;
-        return (
+      {upcoming.length === 0 ? (
+        <p className="text-slate-500 text-sm">No jobs scheduled yet. Confirm a booking to add it to the calendar.</p>
+      ) : (
         <ul className="divide-y divide-white/5">
-          {visible.map(e => {
-            const match = matchBooking(e.title, bookings);
+          {upcoming.map(b => {
+            const d = new Date(b.scheduledAt as string);
             return (
-              <li key={e.uid} className="flex items-center gap-3 py-2.5">
+              <li key={b.id} className="flex items-center gap-3 py-2.5">
                 <div className="flex-shrink-0 w-11 text-center">
-                  <div className="text-sky-400 text-[10px] font-semibold uppercase leading-none">{e.dow}</div>
-                  <div className="text-white font-bold text-lg leading-tight">{e.day}</div>
-                  <div className="text-slate-500 text-[10px] leading-none">{e.mon}</div>
+                  <div className="text-sky-400 text-[10px] font-semibold uppercase leading-none">{d.toLocaleDateString('en-AU', { weekday: 'short' })}</div>
+                  <div className="text-white font-bold text-lg leading-tight">{d.getDate()}</div>
+                  <div className="text-slate-500 text-[10px] leading-none">{d.toLocaleDateString('en-AU', { month: 'short' })}</div>
                 </div>
                 <div className="min-w-0 flex-1">
-                  <div className="text-white text-sm font-medium truncate">{e.title}</div>
+                  <div className="text-white text-sm font-medium truncate">{b.name}</div>
                   <div className="text-slate-500 text-xs truncate">
-                    {e.timeLabel}{e.location ? ` · ${e.location}` : ''}
+                    {d.toLocaleTimeString('en-AU', { hour: 'numeric', minute: '2-digit' })}{(b.address || b.suburb) ? ` · ${[b.address, b.suburb].filter(Boolean).join(', ')}` : ''}
                   </div>
                 </div>
-                {match && (
-                  <Link
-                    href={`/admin/bookings/${match.id}?from=${encodeURIComponent('/admin/dashboard?tab=overview')}`}
-                    title={`Open booking: ${match.name}`}
-                    className="flex-shrink-0 inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-sky-400 bg-sky-400/10 hover:bg-sky-400/20 text-xs font-semibold transition-colors cursor-pointer"
-                  >
-                    Booking <ArrowRight className="w-3.5 h-3.5" />
-                  </Link>
-                )}
+                <Link
+                  href={`/admin/bookings/${b.id}?from=${encodeURIComponent('/admin/dashboard?tab=overview')}`}
+                  title={`Open booking: ${b.name}`}
+                  className="flex-shrink-0 inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-sky-400 bg-sky-400/10 hover:bg-sky-400/20 text-xs font-semibold transition-colors cursor-pointer"
+                >
+                  Booking <ArrowRight className="w-3.5 h-3.5" />
+                </Link>
               </li>
             );
           })}
         </ul>
-        );
-      })()}
+      )}
     </div>
   );
 }
@@ -268,47 +260,23 @@ function AssignBadge({ guestId, name }: { guestId?: string | null; name: string 
   );
 }
 
+// Customer claimed "I've paid" on the invoice, but it's not confirmed here yet —
+// the discontinuity between what the customer said and what's actually reconciled.
+function CustomerPaidClaimBadge({ booking }: { booking: Booking }) {
+  if (booking.paid || !booking.customerMarkedPaidAt) return null;
+  return (
+    <span
+      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-400/15 text-amber-300 border border-amber-400/25"
+      title={`Customer marked as paid ${new Date(booking.customerMarkedPaidAt).toLocaleDateString('en-AU')} — not yet confirmed`}
+    >
+      <AlertTriangle className="w-2.5 h-2.5" /> Customer says paid
+    </span>
+  );
+}
+
 // ─── Bottom tab bar (mobile / installed app) ─────────────────────────────
 
 type TabKey = 'overview' | 'bookings' | 'business' | 'site';
-
-function BottomNav({ active, onChange, pending }: { active: TabKey; onChange: (t: TabKey) => void; pending: number }) {
-  const tabs = [
-    { t: 'overview', label: 'Home', icon: LayoutDashboard },
-    { t: 'bookings', label: 'Bookings', icon: Calendar },
-    { t: 'business', label: 'Stats', icon: BarChart3 },
-    { t: 'site', label: 'Site', icon: Globe },
-  ] as const;
-  // Recurring plans + invoices are separate routes; keep them reachable on mobile.
-  const links = [
-    { href: '/admin/recurring', label: 'Plans', icon: Repeat },
-    { href: '/admin/invoices', label: 'Invoices', icon: FileText },
-  ];
-  return (
-    <nav className="lg:hidden fixed bottom-0 inset-x-0 z-40 bg-navy-800/95 backdrop-blur border-t border-white/10 safe-bottom">
-      <div className="grid grid-cols-6">
-        {tabs.map(({ t, label, icon: Icon }) => {
-          const on = active === t;
-          return (
-            <button key={t} onClick={() => onChange(t)} className={`relative flex flex-col items-center gap-1 py-2.5 text-[10px] font-medium cursor-pointer transition-colors ${on ? 'text-sky-400' : 'text-slate-500'}`}>
-              <Icon className="w-[21px] h-[21px]" />
-              {label}
-              {t === 'bookings' && pending > 0 && (
-                <span className="absolute top-1 right-[14%] min-w-[15px] h-4 px-1 bg-amber-400 text-navy-900 text-[10px] font-bold rounded-full flex items-center justify-center">{pending}</span>
-              )}
-            </button>
-          );
-        })}
-        {links.map(({ href, label, icon: Icon }) => (
-          <Link key={href} href={href} className="flex flex-col items-center gap-1 py-2.5 text-[10px] font-medium text-slate-500 hover:text-sky-400 active:text-sky-400 cursor-pointer transition-colors">
-            <Icon className="w-[21px] h-[21px]" />
-            {label}
-          </Link>
-        ))}
-      </div>
-    </nav>
-  );
-}
 
 // ─── Main Dashboard ─────────────────────────────────────────────────────
 
@@ -318,6 +286,7 @@ export default function Dashboard() {
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'overview' | 'bookings' | 'business' | 'site'>('overview');
+  const moreSheet = useMoreSheet();
 
   // Restore the tab from ?tab=… so returning from a booking detail (Back button)
   // lands on the same tab it was opened from, not the default. Runs before data
@@ -334,9 +303,6 @@ export default function Dashboard() {
   const [siteStats, setSiteStats] = useState<SiteStats | null>(null);
   const [bizLoading, setBizLoading] = useState(false);
   const [siteLoading, setSiteLoading] = useState(false);
-
-  // Upcoming jobs from the read-only Google Calendar feed
-  const [jobs, setJobs] = useState<CalData | null>(null);
 
   // Recurring plans (for the overview "due soon" card)
   const [recurring, setRecurring] = useState<RecurringJob[]>([]);
@@ -383,6 +349,64 @@ export default function Dashboard() {
   const [manage, setManage] = useState<Booking | null>(null);
   const [showAdd, setShowAdd] = useState(false);
 
+  // Bulk select + grouping
+  const [selectMode, setSelectMode] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [groups, setGroups] = useState<BookingGroup[]>([]);
+  const [showGroupModal, setShowGroupModal] = useState(false);
+  const [delGroup, setDelGroup] = useState<BookingGroup | null>(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
+
+  const toggleSel = (id: string) => setSelected(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const clearSel = () => { setSelected(new Set()); setSelectMode(false); };
+
+  const loadGroups = useCallback(async () => {
+    try { const r = await fetch('/api/admin/groups'); if (r.ok) setGroups(await r.json()); } catch { /* ignore */ }
+  }, []);
+  useEffect(() => { loadGroups(); }, [loadGroups]);
+
+  const bulkAction = async (body: Record<string, unknown>, msg: string) => {
+    if (selected.size === 0) return;
+    setBulkBusy(true);
+    try {
+      const res = await fetch('/api/admin/bookings/bulk', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...body, ids: [...selected] }),
+      });
+      if (!res.ok) throw new Error();
+      toast.success(msg);
+      clearSel();
+      await fetchData();
+      await loadGroups();
+    } catch { toast.error('Bulk action failed'); }
+    finally { setBulkBusy(false); }
+  };
+
+  const createGroup = async (title: string) => {
+    setBulkBusy(true);
+    try {
+      const res = await fetch('/api/admin/groups', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title, bookingIds: [...selected] }),
+      });
+      if (!res.ok) throw new Error();
+      toast.success(`Group "${title}" created`);
+      setShowGroupModal(false); clearSel();
+      await Promise.all([fetchData(), loadGroups()]);
+    } catch { toast.error('Could not create group'); }
+    finally { setBulkBusy(false); }
+  };
+
+  const removeGroup = async (g: BookingGroup, withBookings: boolean) => {
+    try {
+      const res = await fetch(`/api/admin/groups/${g.id}${withBookings ? '?withBookings=true' : ''}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error();
+      toast.success(withBookings ? 'Group and its bookings deleted' : 'Group deleted (bookings kept)');
+      setDelGroup(null);
+      await Promise.all([fetchData(), loadGroups()]);
+    } catch { toast.error('Delete failed'); }
+  };
+
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
@@ -398,17 +422,6 @@ export default function Dashboard() {
   }, [statusFilter, serviceFilter, sortField, sortOrder, search, router]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
-
-  // Load upcoming jobs once on mount
-  useEffect(() => {
-    (async () => {
-      try {
-        const res = await fetch('/api/admin/calendar');
-        if (res.status === 401) { router.push('/admin'); return; }
-        setJobs(await res.json());
-      } catch { /* leave as loading skeleton */ }
-    })();
-  }, [router]);
 
   const fetchBusiness = useCallback(async () => {
     setBizLoading(true);
@@ -529,51 +542,11 @@ export default function Dashboard() {
     ? Math.round(((stats.thisMonth - stats.lastMonth) / stats.lastMonth) * 100)
     : undefined;
 
+  const navItems = adminNavItems({ onTab: setActiveTab, pending: stats?.pending ?? 0 });
+
   return (
     <div className="min-h-[100svh] bg-navy-900 flex">
-      {/* Sidebar */}
-      <aside className="w-64 flex-shrink-0 hidden lg:flex flex-col bg-navy-800 border-r border-white/5 p-6">
-        <div className="mb-8">
-          <Image src="/logo.png" alt="Glass & Blast" width={200} height={80} className="object-contain h-16 w-auto" />
-          <div className="text-sky-400 text-[10px] tracking-[0.2em] mt-1">ADMIN PANEL</div>
-        </div>
-
-        <nav className="flex-1 space-y-1">
-          <button onClick={() => setActiveTab('overview')} className={`admin-sidebar-link w-full ${activeTab === 'overview' ? 'active' : ''}`}>
-            <LayoutDashboard className="w-4 h-4" /> Overview
-          </button>
-          <button onClick={() => setActiveTab('bookings')} className={`admin-sidebar-link w-full ${activeTab === 'bookings' ? 'active' : ''}`}>
-            <Calendar className="w-4 h-4" /> Bookings
-            {stats && stats.pending > 0 && (
-              <span className="ml-auto w-5 h-5 bg-amber-400/20 text-amber-400 text-xs rounded-full flex items-center justify-center font-bold">
-                {stats.pending}
-              </span>
-            )}
-          </button>
-          <button onClick={() => setActiveTab('business')} className={`admin-sidebar-link w-full ${activeTab === 'business' ? 'active' : ''}`}>
-            <BarChart3 className="w-4 h-4" /> Business Stats
-          </button>
-          <button onClick={() => setActiveTab('site')} className={`admin-sidebar-link w-full ${activeTab === 'site' ? 'active' : ''}`}>
-            <Globe className="w-4 h-4" /> Site Stats
-          </button>
-          <Link href="/admin/recurring" className="admin-sidebar-link w-full">
-            <Repeat className="w-4 h-4" /> Recurring Plans
-          </Link>
-          <Link href="/admin/invoices" className="admin-sidebar-link w-full">
-            <FileText className="w-4 h-4" /> Invoices
-          </Link>
-          <Link href="/admin/guests" className="admin-sidebar-link w-full">
-            <Users className="w-4 h-4" /> Guest Logins
-          </Link>
-        </nav>
-
-        <div className="border-t border-white/5 pt-4 space-y-2">
-          <a href="/" target="_blank" className="admin-sidebar-link block text-xs">← View website</a>
-          <button onClick={logout} className="admin-sidebar-link w-full text-red-400 hover:text-red-300 hover:bg-red-400/5">
-            <LogOut className="w-4 h-4" /> Sign Out
-          </button>
-        </div>
-      </aside>
+      <AdminSidebar active={activeTab} items={navItems} />
 
       {/* Main */}
       <div className="flex-1 flex flex-col min-w-0">
@@ -750,7 +723,7 @@ export default function Dashboard() {
                   );
                 })()}
 
-                <UpcomingJobs data={jobs} bookings={bookings} />
+                <UpcomingJobs bookings={bookings} />
 
                 {stats && (
                   <div className="grid lg:grid-cols-3 gap-6">
@@ -832,10 +805,67 @@ export default function Dashboard() {
                   </div>
                 </div>
 
-                <div className="text-slate-500 text-sm px-1">
-                  {loading ? 'Loading...' : `${bookings.length} booking${bookings.length !== 1 ? 's' : ''}`}
+                <div className="flex items-center justify-between px-1">
+                  <div className="text-slate-500 text-sm">
+                    {loading ? 'Loading...' : `${bookings.length} booking${bookings.length !== 1 ? 's' : ''}`}
+                  </div>
+                  <button onClick={() => { setSelectMode(m => !m); setSelected(new Set()); }} className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold cursor-pointer transition-colors ${selectMode ? 'bg-sky-500 text-white' : 'glass border border-white/10 text-slate-300 hover:text-white'}`}>
+                    <CheckSquare className="w-4 h-4" /> {selectMode ? 'Done' : 'Select'}
+                  </button>
                 </div>
 
+                {/* Groups */}
+                {!selectMode && groups.length > 0 && (
+                  <div className="space-y-2">
+                    {groups.map(g => (
+                      <div key={g.id} className="glass rounded-xl border border-white/10 p-3 flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <Layers className="w-4 h-4 text-sky-400 flex-shrink-0" />
+                          <div className="min-w-0">
+                            <div className="text-white text-sm font-semibold truncate">{g.title}</div>
+                            <div className="text-slate-500 text-xs">{g.jobCount} job{g.jobCount !== 1 ? 's' : ''} · {money(g.totalValue)}</div>
+                          </div>
+                        </div>
+                        <button onClick={() => setDelGroup(g)} className="p-2 rounded-lg text-slate-500 hover:text-red-400 cursor-pointer flex-shrink-0" title="Delete group"><Trash2 className="w-4 h-4" /></button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Bulk select list + action bar */}
+                {selectMode && (
+                  <div className="space-y-2 pb-24">
+                    <button onClick={() => setSelected(new Set(bookings.map(b => b.id)))} className="text-sky-400 text-xs font-semibold cursor-pointer">Select all ({bookings.length})</button>
+                    {bookings.map(b => {
+                      const on = selected.has(b.id);
+                      return (
+                        <button key={b.id} onClick={() => toggleSel(b.id)} className={`w-full flex items-center gap-3 p-3 rounded-xl border text-left cursor-pointer transition-colors ${on ? 'border-sky-400 bg-sky-400/10' : 'border-white/10 glass hover:border-white/20'}`}>
+                          {on ? <CheckSquare className="w-5 h-5 text-sky-400 flex-shrink-0" /> : <Square className="w-5 h-5 text-slate-500 flex-shrink-0" />}
+                          <div className="min-w-0 flex-1">
+                            <div className="text-white text-sm font-medium truncate">{b.name}</div>
+                            <div className="text-slate-500 text-xs truncate">{serviceText(b.service)} · {STATUS_CONFIG[b.status]?.label ?? b.status}{typeof b.quoteAmount === 'number' && b.quoteAmount > 0 ? ` · ${money(b.quoteAmount)}` : ''}</div>
+                          </div>
+                        </button>
+                      );
+                    })}
+                    {selected.size > 0 && (
+                      <div className="fixed bottom-0 inset-x-0 lg:left-64 z-40 bg-navy-800/95 backdrop-blur border-t border-white/10 p-3 safe-bottom">
+                        <div className="max-w-3xl mx-auto flex items-center gap-2 flex-wrap">
+                          <span className="text-white text-sm font-semibold">{selected.size} selected</span>
+                          <select onChange={e => { if (e.target.value) bulkAction({ action: 'status', status: e.target.value }, 'Status updated'); e.target.value = ''; }} disabled={bulkBusy} className="form-input text-sm py-1.5 w-auto">
+                            <option value="">Change status…</option>
+                            {STATUS_KEYS.map(s => <option key={s} value={s}>{STATUS_CONFIG[s].label}</option>)}
+                          </select>
+                          <button onClick={() => setShowGroupModal(true)} disabled={bulkBusy} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-sky-400/30 bg-sky-400/10 text-sky-300 text-sm font-semibold cursor-pointer"><Layers className="w-4 h-4" /> Group</button>
+                          <button onClick={() => { if (window.confirm(`Delete ${selected.size} booking(s)? This cannot be undone.`)) bulkAction({ action: 'delete' }, 'Bookings deleted'); }} disabled={bulkBusy} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-red-400/30 bg-red-500/10 text-red-300 text-sm font-semibold cursor-pointer"><Trash2 className="w-4 h-4" /> Delete</button>
+                          <button onClick={clearSel} className="ml-auto text-slate-400 text-sm cursor-pointer">Cancel</button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {!selectMode && (<>
                 {/* Mobile cards (phone-first) */}
                 <div className="lg:hidden space-y-3">
                   {loading ? (
@@ -856,6 +886,7 @@ export default function Dashboard() {
                             {b.name}
                             {b.source === 'manual' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-400/15 text-violet-300 border border-violet-400/20">Added</span>}
                             <AssignBadge guestId={b.assignedGuestId} name={guestName(b.assignedGuestId)} />
+                            <CustomerPaidClaimBadge booking={b} />
                           </div>
                           <a href={`tel:${b.phone}`} onClick={e => e.stopPropagation()} className="text-sky-400 text-sm cursor-pointer">{b.phone}</a>
                           <div className="text-slate-500 text-xs mt-0.5">{serviceText(b.service)} · <span className="capitalize">{b.propertyType}</span></div>
@@ -897,9 +928,9 @@ export default function Dashboard() {
                           <button onClick={() => setManage(b)} className="p-2.5 rounded-lg glass border border-white/10 text-sky-400 cursor-pointer" title="Manage / notes / quote">
                             <Edit3 className="w-4 h-4" />
                           </button>
-                          <a href={gcalUrl(b)} target="_blank" rel="noopener noreferrer" className="p-2.5 rounded-lg glass border border-white/10 text-sky-300 cursor-pointer" title="Add to Google Calendar">
-                            <CalendarPlus className="w-4 h-4" />
-                          </a>
+                          <Link href={`/admin/calendar?schedule=${b.id}`} className={`p-2.5 rounded-lg glass border border-white/10 cursor-pointer ${b.scheduledAt ? 'text-emerald-300' : 'text-sky-300'}`} title={b.scheduledAt ? `Scheduled: ${scheduledLabel(b.scheduledAt)}` : 'Add to calendar'}>
+                            <CalendarClock className="w-4 h-4" />
+                          </Link>
                           <button onClick={() => removeBooking(b.id)} className="p-2.5 rounded-lg glass border border-white/10 text-red-400 cursor-pointer" title="Delete">
                             <Trash2 className="w-4 h-4" />
                           </button>
@@ -947,6 +978,7 @@ export default function Dashboard() {
                             {b.name}
                             {b.source === 'manual' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-400/15 text-violet-300 border border-violet-400/20">Added</span>}
                             <AssignBadge guestId={b.assignedGuestId} name={guestName(b.assignedGuestId)} />
+                            <CustomerPaidClaimBadge booking={b} />
                           </div>
                           <div className="text-slate-500 text-xs">{b.phone}</div>
                           <div className="text-slate-600 text-xs truncate">{b.suburb}{b.address ? ` · ${b.address}` : ''}</div>
@@ -994,9 +1026,9 @@ export default function Dashboard() {
                           <button onClick={() => setManage(b)} className="p-1.5 rounded-lg text-slate-500 hover:text-sky-400 hover:bg-sky-400/10 transition-all cursor-pointer" title="Manage / notes / quote">
                             <Edit3 className="w-3.5 h-3.5" />
                           </button>
-                          <a href={gcalUrl(b)} target="_blank" rel="noopener noreferrer" className="p-1.5 rounded-lg text-slate-500 hover:text-sky-300 hover:bg-sky-400/10 transition-all cursor-pointer" title="Add to Google Calendar">
-                            <CalendarPlus className="w-3.5 h-3.5" />
-                          </a>
+                          <Link href={`/admin/calendar?schedule=${b.id}`} className={`p-1.5 rounded-lg hover:bg-sky-400/10 transition-all cursor-pointer ${b.scheduledAt ? 'text-emerald-300' : 'text-slate-500 hover:text-sky-300'}`} title={b.scheduledAt ? `Scheduled: ${scheduledLabel(b.scheduledAt)}` : 'Add to calendar'}>
+                            <CalendarClock className="w-3.5 h-3.5" />
+                          </Link>
                           <button onClick={() => removeBooking(b.id)} className="p-1.5 rounded-lg text-slate-500 hover:text-red-400 hover:bg-red-400/10 transition-all cursor-pointer" title="Delete">
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
@@ -1005,10 +1037,11 @@ export default function Dashboard() {
                     ))
                   )}
                 </div>
+                </>)}
 
-                <p className="text-slate-600 text-xs px-1">
+                {!selectMode && <p className="text-slate-600 text-xs px-1">
                   Change status in the dropdown. Choosing <span className="text-violet-300">Quoted</span> asks for the amount. Click the pencil to add notes or edit a quote.
-                </p>
+                </p>}
               </motion.div>
             )}
 
@@ -1071,6 +1104,23 @@ export default function Dashboard() {
                           ))}
                         </div>
                       )}
+                    </div>
+
+                    {/* How we got the job — from "How did we get this job?" on manual adds */}
+                    <div className="glass rounded-2xl border border-white/8 p-6">
+                      <h3 className="font-display font-semibold text-white mb-4 flex items-center gap-2"><Target className="w-4 h-4 text-sky-400" /> Customer sources</h3>
+                      {(() => {
+                        const data = LEAD_SOURCE_OPTIONS.map(o => ({ label: o.l, value: bookings.filter(b => b.leadSource === o.v).length }));
+                        const total = data.reduce((s, d) => s + d.value, 0);
+                        if (total === 0) return <div className="text-slate-600 text-sm py-6 text-center">No source data yet. Set &ldquo;How did we get this job?&rdquo; when adding a booking.</div>;
+                        return (
+                          <div className="space-y-3">
+                            {data.filter(d => d.value > 0).sort((a, b) => b.value - a.value).map((d, i) => (
+                              <SourceRow key={d.label} label={d.label} value={d.value} total={total} color={PIE_COLORS[i % PIE_COLORS.length]} />
+                            ))}
+                          </div>
+                        );
+                      })()}
                     </div>
                   </>
                 )}
@@ -1153,7 +1203,8 @@ export default function Dashboard() {
         </main>
       </div>
 
-      <BottomNav active={activeTab} onChange={setActiveTab} pending={stats?.pending ?? 0} />
+      <AdminMobileNav active={activeTab} items={navItems} onMore={moreSheet.show} />
+      <AdminMoreSheet open={moreSheet.open} onClose={moreSheet.hide} active={activeTab} items={navItems} />
 
       {/* Manage modal */}
       <AnimatePresence>
@@ -1170,8 +1221,62 @@ export default function Dashboard() {
             onSaved={() => { setShowAdd(false); fetchData(); }}
           />
         )}
+        {showGroupModal && (
+          <GroupModal count={selected.size} busy={bulkBusy} onClose={() => setShowGroupModal(false)} onCreate={createGroup} />
+        )}
+        {delGroup && (
+          <DeleteGroupModal group={delGroup} onClose={() => setDelGroup(null)} onDelete={removeGroup} />
+        )}
       </AnimatePresence>
     </div>
+  );
+}
+
+// ─── Group create + delete modals ────────────────────────────────────────
+
+function GroupModal({ count, busy, onClose, onCreate }: {
+  count: number; busy: boolean; onClose: () => void; onCreate: (title: string) => void;
+}) {
+  const [title, setTitle] = useState('');
+  return (
+    <Overlay onClose={onClose}>
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="font-display text-lg font-bold text-white flex items-center gap-2"><Layers className="w-5 h-5 text-sky-400" /> New group</h3>
+        <button onClick={onClose} className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/5 cursor-pointer"><X className="w-4 h-4" /></button>
+      </div>
+      <p className="text-slate-400 text-sm mb-3">Grouping {count} booking{count !== 1 ? 's' : ''}.</p>
+      <input autoFocus className="form-input" placeholder="Group title (e.g. Aranda street run)" value={title} onChange={e => setTitle(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && title.trim()) onCreate(title.trim()); }} />
+      <div className="flex gap-3 mt-5">
+        <button onClick={onClose} className="px-5 py-2.5 glass border border-white/10 text-slate-400 text-sm rounded-xl hover:text-white cursor-pointer">Cancel</button>
+        <button onClick={() => title.trim() && onCreate(title.trim())} disabled={busy || !title.trim()} className="flex-1 py-2.5 bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-white font-semibold rounded-xl cursor-pointer">Create group</button>
+      </div>
+    </Overlay>
+  );
+}
+
+function DeleteGroupModal({ group, onClose, onDelete }: {
+  group: BookingGroup; onClose: () => void; onDelete: (g: BookingGroup, withBookings: boolean) => void;
+}) {
+  return (
+    <Overlay onClose={onClose}>
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="font-display text-lg font-bold text-white">Delete &ldquo;{group.title}&rdquo;</h3>
+        <button onClick={onClose} className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/5 cursor-pointer"><X className="w-4 h-4" /></button>
+      </div>
+      <div className="space-y-3">
+        <button onClick={() => onDelete(group, false)} className="w-full text-left p-4 rounded-xl border border-white/10 hover:border-sky-400/40 cursor-pointer">
+          <div className="text-white font-semibold text-sm">Delete group only</div>
+          <div className="text-slate-400 text-xs mt-0.5">Removes the group. All {group.jobCount} booking{group.jobCount !== 1 ? 's' : ''} are kept.</div>
+        </button>
+        <button
+          onClick={() => { if (window.confirm(`This permanently deletes the group AND all ${group.jobCount} booking(s) inside it. This cannot be undone. Continue?`)) onDelete(group, true); }}
+          className="w-full text-left p-4 rounded-xl border border-red-400/30 bg-red-500/5 hover:border-red-400/60 cursor-pointer"
+        >
+          <div className="text-red-300 font-semibold text-sm flex items-center gap-1.5"><AlertTriangle className="w-4 h-4" /> Delete group and contents</div>
+          <div className="text-slate-400 text-xs mt-0.5">Permanently deletes the group and all {group.jobCount} booking{group.jobCount !== 1 ? 's' : ''} (worth {money(group.totalValue)}). Cannot be undone.</div>
+        </button>
+      </div>
+    </Overlay>
   );
 }
 
@@ -1184,12 +1289,21 @@ function ManageModal({ booking, onClose, onSave }: {
   const [quote, setQuote] = useState<string>(booking.quoteAmount != null ? String(booking.quoteAmount) : '');
   const [adminNotes, setAdminNotes] = useState(booking.adminNotes ?? '');
   const [paid, setPaid] = useState(booking.paid ?? false);
+  const [scheduledAt, setScheduledAt] = useState(toLocalInput(booking.scheduledAt ?? null));
   const [saving, setSaving] = useState(false);
 
   const submit = async () => {
     setSaving(true);
     const q = quote.trim() === '' ? null : Number(quote.replace(/[^0-9.]/g, ''));
-    await onSave({ status, quoteAmount: q, adminNotes, paid });
+    // Confirming without a slot? Offer to add one (default: preferred date 9am, else tomorrow).
+    let schedISO = fromLocalInput(scheduledAt);
+    if (status === 'confirmed' && !schedISO) {
+      if (window.confirm('Add this booking to the calendar?')) {
+        const base = /^\d{4}-\d{2}-\d{2}$/.test(booking.preferredDate) ? booking.preferredDate : new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+        schedISO = new Date(`${base}T09:00:00`).toISOString();
+      }
+    }
+    await onSave({ status, quoteAmount: q, adminNotes, paid, scheduledAt: schedISO });
     setSaving(false);
   };
 
@@ -1205,20 +1319,20 @@ function ManageModal({ booking, onClose, onSave }: {
         <div className="text-white font-semibold">{booking.name} {booking.source === 'manual' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-400/15 text-violet-300">Added</span>}</div>
         <div className="text-slate-400">{booking.phone}{booking.email ? ` · ${booking.email}` : ''}</div>
         <div className="text-slate-400">{serviceText(booking.service)} · <span className="capitalize">{booking.propertyType}</span></div>
-        {(booking.address || booking.suburb) && <div className="text-slate-500">{booking.address}{booking.address && booking.suburb ? ', ' : ''}{booking.suburb}</div>}
+        {(booking.address || booking.suburb) && <div className="text-slate-500"><AddressLink address={[booking.address, booking.suburb].filter(Boolean).join(', ')} className="text-slate-500" /></div>}
         {(booking.preferredDate || booking.preferredTime) && <div className="text-slate-500">{booking.preferredDate} {booking.preferredTime}</div>}
+        {booking.status === 'completed' && booking.completedAt && <div className="text-emerald-400 text-xs">Completed {new Date(booking.completedAt).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' })}</div>}
         {booking.notes && <div className="text-slate-500 pt-1 border-t border-white/5 mt-1">Customer note: {booking.notes}</div>}
       </div>
 
-      {/* Opens Google Calendar pre-filled. Date and time are left blank on purpose. */}
-      <a
-        href={gcalUrl(booking)}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="mb-5 w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border border-sky-400/30 bg-sky-400/10 text-sky-300 hover:bg-sky-400/15 text-sm font-semibold transition-colors cursor-pointer"
-      >
-        <CalendarPlus className="w-4 h-4" /> Add to Google Calendar
-      </a>
+      <div className="mb-5">
+        <Field label="Scheduled slot (calendar)">
+          <div className="flex items-center gap-2">
+            <input type="datetime-local" className="form-input" value={scheduledAt} onChange={e => setScheduledAt(e.target.value)} />
+            {scheduledAt && <button type="button" onClick={() => setScheduledAt('')} className="px-3 py-2.5 rounded-lg border border-white/10 text-slate-400 hover:text-white text-sm cursor-pointer">Clear</button>}
+          </div>
+        </Field>
+      </div>
 
       <div className="space-y-4">
         <Field label="Status">
@@ -1359,6 +1473,12 @@ function AddModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
             <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500">$</span>
             <input className="form-input pl-8" inputMode="decimal" placeholder="optional" value={f.quoteAmount} onChange={e => set('quoteAmount', e.target.value)} />
           </div>
+        </Field>
+        <Field label="How did we get this job?">
+          <select className="form-input" value={f.leadSource} onChange={e => set('leadSource', e.target.value)}>
+            <option value="">Not sure</option>
+            {LEAD_SOURCE_OPTIONS.map(o => <option key={o.v} value={o.v}>{o.l}</option>)}
+          </select>
         </Field>
         <div className="sm:col-span-2"><Field label="Private notes"><textarea className="form-input resize-none" rows={2} value={f.adminNotes} onChange={e => set('adminNotes', e.target.value)} /></Field></div>
       </div>

@@ -4,7 +4,7 @@ import { type Invoice, money, longDate, shortDate, computeTotals, GST_NOTE } fro
 // object (number may be a placeholder) before the invoice is saved.
 export type InvoicePreviewData = Omit<
   Invoice,
-  'id' | 'seq' | 'token' | 'bookingId' | 'ownerGuestId' | 'createdAt' | 'updatedAt' | 'sentAt' | 'paidAt' | 'status'
+  'id' | 'seq' | 'token' | 'bookingId' | 'bookingIds' | 'ownerGuestId' | 'createdAt' | 'updatedAt' | 'sentAt' | 'paidAt' | 'status'
   | 'viewCount' | 'firstViewedAt' | 'lastViewedAt'
 >;
 
@@ -104,7 +104,7 @@ export default function InvoicePreview({ invoice }: { invoice: InvoicePreviewDat
               {invoice.items.map((it, i) => (
                 <tr key={i} className="border-t border-slate-100 align-top">
                   <td className="px-4 py-3">
-                    <div className="text-slate-900 font-medium">{it.description || '—'}</div>
+                    <div className="text-slate-900 font-medium">{it.description || '-'}</div>
                     {it.detail && <div className="text-slate-500 text-xs mt-1 whitespace-pre-line">{it.detail}</div>}
                     {it.serviceAddress && (
                       <div className="text-slate-500 text-xs mt-1">Service address: {it.serviceAddress}</div>

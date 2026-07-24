@@ -14,6 +14,7 @@ const RECURRING_PATH = path.join(process.cwd(), 'data', 'recurring.json');
 const INVOICE_PATH = path.join(process.cwd(), 'data', 'invoices.json');
 const PAYMENT_PROFILE_PATH = path.join(process.cwd(), 'data', 'payment-profiles.json');
 const GUEST_PATH = path.join(process.cwd(), 'data', 'guests.json');
+const GROUP_PATH = path.join(process.cwd(), 'data', 'booking-groups.json');
 
 export type BookingStatus = 'pending' | 'quoted' | 'confirmed' | 'completed' | 'cancelled';
 export type ServiceType = 'window-washing' | 'pressure-washing' | 'both' | 'flyscreen-repair' | 'solar-panel-cleaning' | 'other';
@@ -38,12 +39,35 @@ export interface Booking {
   paid: boolean;
   source: BookingSource;
   paidAt?: string | null;      // date the booking was marked paid (editable)
+  customerMarkedPaidAt?: string | null; // customer clicked "I've paid" on the invoice —
+                                         // NOT the same as `paid`. Only counts once the
+                                         // money is actually seen in the account.
   completedAt?: string | null; // date the job was marked completed (editable)
   assignedGuestId?: string | null; // guest (subcontractor) this job was sent to
   assignedAt?: string | null;      // when it was assigned
+  scheduledAt?: string | null;     // internal calendar slot start (ISO). null = not in calendar
+  scheduledEnd?: string | null;    // slot end (ISO). null = default duration from scheduledAt
+  recurringId?: string | null;     // recurring plan that generated this booking (customer history)
+  leadSource?: LeadSource | null;  // "how did we get this job?" (manual adds)
+  groupId?: string | null;         // booking group this job belongs to
+  publicToken?: string | null;     // unguessable token for the customer thank-you page
+  feedbackStars?: number | null;   // customer rating 1-5 (from the thank-you page)
+  feedbackText?: string | null;    // written feedback (shown for 1-3 stars)
+  feedbackAt?: string | null;      // when feedback was left
   createdAt: string;
   updatedAt: string;
 }
+
+// How a manually-added job came in. Powers the customer-sources analytics chart.
+export type LeadSource = 'called-us' | 'we-called' | 'door-to-door' | 'in-person' | 'real-estate' | 'other';
+export const LEAD_SOURCES: { value: LeadSource; label: string }[] = [
+  { value: 'called-us', label: 'Called us' },
+  { value: 'we-called', label: 'We called them' },
+  { value: 'door-to-door', label: 'Door to door' },
+  { value: 'in-person', label: 'In person' },
+  { value: 'real-estate', label: 'Real estate agent' },
+  { value: 'other', label: 'Other' },
+];
 
 // ─── Guests (subcontractor / guest logins) ──────────────────────────────────
 export interface Guest {
@@ -160,9 +184,19 @@ function rowToBooking(r: any): Booking {
     paid: r.paid === true || r.paid === 1,
     source: r.source ?? 'website',
     paidAt: r.paid_at == null ? null : (typeof r.paid_at === 'string' ? r.paid_at : new Date(r.paid_at).toISOString()),
+    customerMarkedPaidAt: r.customer_marked_paid_at == null ? null : (typeof r.customer_marked_paid_at === 'string' ? r.customer_marked_paid_at : new Date(r.customer_marked_paid_at).toISOString()),
     completedAt: r.completed_at == null ? null : (typeof r.completed_at === 'string' ? r.completed_at : new Date(r.completed_at).toISOString()),
     assignedGuestId: r.assigned_guest_id ?? null,
     assignedAt: r.assigned_at == null ? null : (typeof r.assigned_at === 'string' ? r.assigned_at : new Date(r.assigned_at).toISOString()),
+    scheduledAt: r.scheduled_at == null ? null : (typeof r.scheduled_at === 'string' ? r.scheduled_at : new Date(r.scheduled_at).toISOString()),
+    scheduledEnd: r.scheduled_end == null ? null : (typeof r.scheduled_end === 'string' ? r.scheduled_end : new Date(r.scheduled_end).toISOString()),
+    recurringId: r.recurring_id ?? null,
+    leadSource: r.lead_source ?? null,
+    groupId: r.group_id ?? null,
+    publicToken: r.public_token ?? null,
+    feedbackStars: r.feedback_stars == null ? null : Number(r.feedback_stars),
+    feedbackText: r.feedback_text ?? null,
+    feedbackAt: r.feedback_at == null ? null : (typeof r.feedback_at === 'string' ? r.feedback_at : new Date(r.feedback_at).toISOString()),
     createdAt: typeof r.created_at === 'string' ? r.created_at : new Date(r.created_at).toISOString(),
     updatedAt: typeof r.updated_at === 'string' ? r.updated_at : new Date(r.updated_at).toISOString(),
   };
@@ -202,8 +236,30 @@ async function ensureSchema(): Promise<void> {
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'website'`;
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ`;
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS paid_at TIMESTAMPTZ`;
+      await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS customer_marked_paid_at TIMESTAMPTZ`;
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS assigned_guest_id TEXT`;
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS assigned_at TIMESTAMPTZ`;
+      await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMPTZ`;
+      await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS scheduled_end TIMESTAMPTZ`;
+      await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS recurring_id TEXT`;
+      await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS lead_source TEXT`;
+      await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS group_id TEXT`;
+      await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS public_token TEXT`;
+      await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS feedback_stars INTEGER`;
+      await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS feedback_text TEXT`;
+      await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS feedback_at TIMESTAMPTZ`;
+      // Backfill customer-link tokens for pre-existing rows.
+      await sql`UPDATE bookings SET public_token = 'bk_' || substr(md5(random()::text || id), 1, 20) WHERE public_token IS NULL`;
+      await sql`CREATE INDEX IF NOT EXISTS bookings_scheduled_idx ON bookings (scheduled_at)`;
+      await sql`CREATE INDEX IF NOT EXISTS bookings_token_idx ON bookings (public_token)`;
+      // Booking groups (batch a set of jobs under a title)
+      await sql`
+        CREATE TABLE IF NOT EXISTS booking_groups (
+          id         TEXT PRIMARY KEY,
+          title      TEXT NOT NULL DEFAULT '',
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+      `;
       // Guests (subcontractor logins)
       await sql`
         CREATE TABLE IF NOT EXISTS guests (
@@ -305,6 +361,9 @@ async function ensureSchema(): Promise<void> {
       await sql`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS first_viewed_at TIMESTAMPTZ`;
       await sql`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS last_viewed_at TIMESTAMPTZ`;
       await sql`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS owner_guest_id TEXT`;
+      await sql`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS booking_ids TEXT NOT NULL DEFAULT '[]'`;
+      // Backfill the multi-link array from the legacy single booking_id.
+      await sql`UPDATE invoices SET booking_ids = json_build_array(booking_id)::text WHERE (booking_ids = '[]' OR booking_ids IS NULL) AND booking_id IS NOT NULL`;
       await sql`CREATE UNIQUE INDEX IF NOT EXISTS invoices_token_idx ON invoices (token)`;
       await sql`CREATE UNIQUE INDEX IF NOT EXISTS invoices_number_idx ON invoices (number)`;
       await sql`CREATE TABLE IF NOT EXISTS invoice_counter (id TEXT PRIMARY KEY, last_seq INTEGER NOT NULL)`;
@@ -363,6 +422,25 @@ export async function getBookings(): Promise<Booking[]> {
   return readFile().sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
+// Bookings with a calendar slot inside [startISO, endISO). Powers the internal
+// calendar's day / week / month views (the calendar reads bookings directly —
+// there is no separate calendar store).
+export async function getBookingsInRange(startISO: string, endISO: string): Promise<Booking[]> {
+  if (sql) {
+    return withTimeout((async () => {
+      await ensureSchema();
+      const rows = await sql`
+        SELECT * FROM bookings
+        WHERE scheduled_at IS NOT NULL AND scheduled_at >= ${startISO} AND scheduled_at < ${endISO}
+        ORDER BY scheduled_at ASC`;
+      return (rows as any[]).map(rowToBooking);
+    })());
+  }
+  return readFile()
+    .filter(b => b.scheduledAt && b.scheduledAt >= startISO && b.scheduledAt < endISO)
+    .sort((a, b) => (a.scheduledAt ?? '').localeCompare(b.scheduledAt ?? ''));
+}
+
 export async function getBookingById(id: string): Promise<Booking | null> {
   if (sql) {
     await ensureSchema();
@@ -391,6 +469,15 @@ export async function addBooking(data: NewBooking): Promise<Booking> {
     paid: data.paid ?? false,
     assignedGuestId: data.assignedGuestId ?? null,
     assignedAt: data.assignedGuestId ? now : null,
+    scheduledAt: data.scheduledAt ?? null,
+    scheduledEnd: data.scheduledEnd ?? null,
+    recurringId: data.recurringId ?? null,
+    leadSource: data.leadSource ?? null,
+    groupId: data.groupId ?? null,
+    publicToken: `bk_${crypto.randomBytes(12).toString('hex')}`,
+    feedbackStars: null,
+    feedbackText: null,
+    feedbackAt: null,
     id: `BK-${Date.now()}`,
     status: data.status ?? 'pending',
     source: data.source ?? 'website',
@@ -401,8 +488,8 @@ export async function addBooking(data: NewBooking): Promise<Booking> {
   if (sql) {
     await ensureSchema();
     await sql`
-      INSERT INTO bookings (id, name, email, phone, service, property_type, address, suburb, preferred_date, preferred_time, notes, status, quote_amount, admin_notes, paid, source, assigned_guest_id, assigned_at)
-      VALUES (${booking.id}, ${booking.name}, ${booking.email}, ${booking.phone}, ${booking.service}, ${booking.propertyType}, ${booking.address}, ${booking.suburb}, ${booking.preferredDate}, ${booking.preferredTime}, ${booking.notes}, ${booking.status}, ${booking.quoteAmount}, ${booking.adminNotes}, ${booking.paid}, ${booking.source}, ${booking.assignedGuestId}, ${booking.assignedAt})
+      INSERT INTO bookings (id, name, email, phone, service, property_type, address, suburb, preferred_date, preferred_time, notes, status, quote_amount, admin_notes, paid, source, assigned_guest_id, assigned_at, scheduled_at, scheduled_end, recurring_id, lead_source, group_id, public_token)
+      VALUES (${booking.id}, ${booking.name}, ${booking.email}, ${booking.phone}, ${booking.service}, ${booking.propertyType}, ${booking.address}, ${booking.suburb}, ${booking.preferredDate}, ${booking.preferredTime}, ${booking.notes}, ${booking.status}, ${booking.quoteAmount}, ${booking.adminNotes}, ${booking.paid}, ${booking.source}, ${booking.assignedGuestId}, ${booking.assignedAt}, ${booking.scheduledAt}, ${booking.scheduledEnd}, ${booking.recurringId}, ${booking.leadSource}, ${booking.groupId}, ${booking.publicToken})
     `;
     return booking;
   }
@@ -411,6 +498,56 @@ export async function addBooking(data: NewBooking): Promise<Booking> {
   rows.push(booking);
   writeFile(rows);
   return booking;
+}
+
+// ─── Customer thank-you link + feedback ─────────────────────────────────────
+
+export async function getBookingByToken(token: string): Promise<Booking | null> {
+  if (sql) {
+    await ensureSchema();
+    const rows = await sql`SELECT * FROM bookings WHERE public_token = ${token} LIMIT 1`;
+    const arr = rows as any[];
+    return arr.length ? rowToBooking(arr[0]) : null;
+  }
+  return readFile().find(b => b.publicToken === token) ?? null;
+}
+
+// Returns the booking's public token, generating + persisting one if it's an old
+// row created before tokens existed.
+export async function ensureBookingToken(id: string): Promise<string | null> {
+  const b = await getBookingById(id);
+  if (!b) return null;
+  if (b.publicToken) return b.publicToken;
+  const token = `bk_${crypto.randomBytes(12).toString('hex')}`;
+  await updateBooking(id, { publicToken: token });
+  return token;
+}
+
+// Customer taps "I've paid" on the invoice. Records the CLAIM only — never
+// flips `paid` itself, since that stays a manual call once the money is
+// actually seen in the account. Returns the linked booking (with a public
+// token minted if it didn't have one yet) so the caller can redirect to the
+// thank-you page, plus the invoice number for the admin notification.
+export async function markCustomerPaidByInvoiceToken(invoiceToken: string): Promise<{ booking: Booking; invoiceNumber: string } | null> {
+  const invoice = await getInvoiceByToken(invoiceToken);
+  if (!invoice) return null;
+  const bookingId = invoice.bookingIds[0] ?? invoice.bookingId ?? null;
+  if (!bookingId) return null;
+  const updated = await updateBooking(bookingId, { customerMarkedPaidAt: new Date().toISOString() });
+  if (!updated) return null;
+  const token = updated.publicToken ?? (await ensureBookingToken(bookingId));
+  return { booking: { ...updated, publicToken: token }, invoiceNumber: invoice.number };
+}
+
+// Customer submits feedback from the thank-you page. Stars 1-5; text kept for 1-3.
+export async function submitBookingFeedback(token: string, stars: number, text: string): Promise<Booking | null> {
+  const b = await getBookingByToken(token);
+  if (!b) return null;
+  return updateBooking(b.id, {
+    feedbackStars: Math.max(1, Math.min(5, Math.round(stars))),
+    feedbackText: text ?? '',
+    feedbackAt: new Date().toISOString(),
+  });
 }
 
 // Stamp completedAt the first time a booking flips to "completed", unless the
@@ -468,8 +605,18 @@ export async function updateBooking(id: string, rawUpdates: Partial<Booking>): P
         preferred_time = ${m.preferredTime ?? ''},
         completed_at = ${m.completedAt ?? null},
         paid_at = ${m.paidAt ?? null},
+        customer_marked_paid_at = ${m.customerMarkedPaidAt ?? null},
         assigned_guest_id = ${m.assignedGuestId ?? null},
         assigned_at = ${m.assignedAt ?? null},
+        scheduled_at = ${m.scheduledAt ?? null},
+        scheduled_end = ${m.scheduledEnd ?? null},
+        recurring_id = ${m.recurringId ?? null},
+        lead_source = ${m.leadSource ?? null},
+        group_id = ${m.groupId ?? null},
+        public_token = ${m.publicToken ?? null},
+        feedback_stars = ${m.feedbackStars ?? null},
+        feedback_text = ${m.feedbackText ?? null},
+        feedback_at = ${m.feedbackAt ?? null},
         updated_at = now()
       WHERE id = ${id}
       RETURNING *
@@ -959,37 +1106,61 @@ export function advanceDate(dateStr: string, frequency: RecurringFrequency): str
 
 // Create bookings for every active recurring job that has come due, then push
 // its nextDate forward one cycle. Called by the daily cron. Returns what it made.
+// Create one confirmed, calendar-scheduled booking from a plan's current
+// nextDate, then advance the plan a cycle. Shared by the daily cron and the
+// manual "generate next visit" action. The booking carries recurringId so the
+// customer's visit history stays linked to the plan.
+async function createBookingFromPlan(job: RecurringJob): Promise<{ job: RecurringJob; booking: Booking }> {
+  // Default recurring visits to a 9am slot on the due date; editable on the
+  // calendar afterwards. This is what "generates the future calendar entry".
+  const scheduledAt = new Date(`${job.nextDate}T09:00:00`).toISOString();
+  const booking = await addBooking({
+    name: job.name,
+    phone: job.phone,
+    email: job.email,
+    address: job.address,
+    suburb: job.suburb,
+    // Bookings store services as a comma-separated string (same as the website form)
+    service: job.service as ServiceType,
+    propertyType: job.propertyType,
+    preferredDate: job.nextDate,
+    preferredTime: job.preferredTime,
+    notes: job.notes,
+    quoteAmount: null,
+    adminNotes: `Auto-created from ${job.frequency} plan ${job.id}${job.discount ? ` (plan discount $${job.discount}/clean)` : ''}`,
+    status: 'confirmed',
+    source: 'manual',
+    scheduledAt,
+    recurringId: job.id,
+  });
+  const advanced = await updateRecurringJob(job.id, {
+    nextDate: advanceDate(job.nextDate, job.frequency),
+    lastBookingId: booking.id,
+  });
+  return { job: advanced ?? job, booking };
+}
+
 export async function runRecurringDue(): Promise<{ job: RecurringJob; booking: Booking }[]> {
   const today = new Date().toISOString().slice(0, 10);
   const jobs = await getRecurringJobs();
   const due = jobs.filter(j => j.active && j.nextDate <= today);
   const created: { job: RecurringJob; booking: Booking }[] = [];
-
-  for (const job of due) {
-    const booking = await addBooking({
-      name: job.name,
-      phone: job.phone,
-      email: job.email,
-      address: job.address,
-      suburb: job.suburb,
-      // Bookings store services as a comma-separated string (same as the website form)
-      service: job.service as ServiceType,
-      propertyType: job.propertyType,
-      preferredDate: job.nextDate,
-      preferredTime: job.preferredTime,
-      notes: job.notes,
-      quoteAmount: null,
-      adminNotes: `Auto-created from ${job.frequency} plan ${job.id}${job.discount ? ` (plan discount $${job.discount}/clean)` : ''}`,
-      status: 'confirmed',
-      source: 'manual',
-    });
-    const advanced = await updateRecurringJob(job.id, {
-      nextDate: advanceDate(job.nextDate, job.frequency),
-      lastBookingId: booking.id,
-    });
-    created.push({ job: advanced ?? job, booking });
-  }
+  for (const job of due) created.push(await createBookingFromPlan(job));
   return created;
+}
+
+// Manually roll a plan forward one visit now (regardless of due date), placing a
+// scheduled booking on the calendar. Returns the created booking + advanced plan.
+export async function generateNextVisit(planId: string): Promise<{ job: RecurringJob; booking: Booking } | null> {
+  const job = (await getRecurringJobs()).find(j => j.id === planId);
+  if (!job) return null;
+  return createBookingFromPlan(job);
+}
+
+// A customer's recurring visit history: every booking generated by a plan.
+export async function getBookingsForRecurring(planId: string): Promise<Booking[]> {
+  const all = await getBookings();
+  return all.filter(b => b.recurringId === planId);
 }
 
 // ─── Invoices ────────────────────────────────────────────────────────────────
@@ -1049,6 +1220,14 @@ function rowToInvoice(r: any): Invoice {
     payAccountNumber: r.pay_account_number ?? '',
     token: r.token,
     bookingId: r.booking_id ?? null,
+    bookingIds: (() => {
+      const raw = r.booking_ids;
+      let arr: unknown[] = [];
+      if (Array.isArray(raw)) arr = raw;
+      else { try { const p = JSON.parse(raw ?? '[]'); if (Array.isArray(p)) arr = p; } catch { /* ignore */ } }
+      const ids = arr.filter((x): x is string => typeof x === 'string' && !!x);
+      return ids.length === 0 && r.booking_id ? [r.booking_id] : ids;
+    })(),
     ownerGuestId: r.owner_guest_id ?? null,
     createdAt: typeof r.created_at === 'string' ? r.created_at : new Date(r.created_at).toISOString(),
     updatedAt: typeof r.updated_at === 'string' ? r.updated_at : new Date(r.updated_at).toISOString(),
@@ -1088,6 +1267,13 @@ export async function getInvoices(ownerGuestId?: string): Promise<Invoice[]> {
   return ownerGuestId ? all.filter(i => i.ownerGuestId === ownerGuestId) : all;
 }
 
+// Every invoice linked to a booking (linkage lives only on invoice.bookingIds —
+// the booking derives its invoices, keeping one source of truth).
+export async function getInvoicesForBooking(bookingId: string): Promise<Invoice[]> {
+  const all = await getInvoices();
+  return all.filter(i => i.bookingIds.includes(bookingId));
+}
+
 export async function getInvoiceById(id: string): Promise<Invoice | null> {
   if (sql) {
     await ensureSchema();
@@ -1119,6 +1305,12 @@ export async function createInvoice(input: InvoiceInput): Promise<Invoice> {
   }));
   const { subtotal, total } = computeTotals(items);
 
+  // Linked bookings: merge the multi-link array with the legacy single id, dedupe.
+  const bookingIds = Array.from(new Set(
+    [...(input.bookingIds ?? []), ...(input.bookingId ? [input.bookingId] : [])].filter(Boolean),
+  ));
+  const bookingId = bookingIds[0] ?? null;
+
   if (sql) {
     await ensureSchema();
     const seq = await nextInvoiceSeq();
@@ -1137,7 +1329,8 @@ export async function createInvoice(input: InvoiceInput): Promise<Invoice> {
       notes: input.notes ?? '',
       payAccountName: input.payAccountName ?? '', payBsb: input.payBsb ?? '', payAccountNumber: input.payAccountNumber ?? '',
       token: `inv_${crypto.randomBytes(12).toString('hex')}`,
-      bookingId: input.bookingId ?? null,
+      bookingId,
+      bookingIds,
       ownerGuestId: input.ownerGuestId ?? null,
       createdAt: now, updatedAt: now, sentAt: null, paidAt: null,
       viewCount: 0, firstViewedAt: null, lastViewedAt: null,
@@ -1151,7 +1344,7 @@ export async function createInvoice(input: InvoiceInput): Promise<Invoice> {
         invoice_date, service_date, due_date,
         items, subtotal, total, notes,
         pay_account_name, pay_bsb, pay_account_number,
-        token, booking_id, owner_guest_id
+        token, booking_id, booking_ids, owner_guest_id
       ) VALUES (
         ${invoice.id}, ${invoice.number}, ${invoice.seq}, ${invoice.isTaxInvoice}, ${invoice.status},
         ${invoice.fromName}, ${invoice.fromTradingAs}, ${invoice.fromAbn}, ${invoice.fromAddress}, ${invoice.fromEmail}, ${invoice.fromPhone},
@@ -1160,7 +1353,7 @@ export async function createInvoice(input: InvoiceInput): Promise<Invoice> {
         ${invoice.invoiceDate}, ${invoice.serviceDate}, ${invoice.dueDate},
         ${JSON.stringify(invoice.items)}, ${invoice.subtotal}, ${invoice.total}, ${invoice.notes},
         ${invoice.payAccountName}, ${invoice.payBsb}, ${invoice.payAccountNumber},
-        ${invoice.token}, ${invoice.bookingId}, ${invoice.ownerGuestId}
+        ${invoice.token}, ${invoice.bookingId}, ${JSON.stringify(invoice.bookingIds)}, ${invoice.ownerGuestId}
       )
     `;
     return invoice;
@@ -1183,7 +1376,8 @@ export async function createInvoice(input: InvoiceInput): Promise<Invoice> {
     notes: input.notes ?? '',
     payAccountName: input.payAccountName ?? '', payBsb: input.payBsb ?? '', payAccountNumber: input.payAccountNumber ?? '',
     token: `inv_${crypto.randomBytes(12).toString('hex')}`,
-    bookingId: input.bookingId ?? null,
+    bookingId,
+    bookingIds,
     ownerGuestId: input.ownerGuestId ?? null,
     createdAt: now, updatedAt: now, sentAt: null, paidAt: null,
     viewCount: 0, firstViewedAt: null, lastViewedAt: null,
@@ -1206,6 +1400,28 @@ function withInvoiceStamps(cur: Invoice, updates: Partial<Invoice>): Partial<Inv
   return out;
 }
 
+// Authoritative linked-booking set for an invoice update. If the caller passes
+// bookingIds it wins outright (so unlinking works); otherwise merge the legacy
+// single id in.
+function resolveBookingIds(cur: Invoice, rawUpdates: Partial<Invoice>, mergedBookingId: string | null): string[] {
+  if (Array.isArray(rawUpdates.bookingIds)) {
+    return Array.from(new Set(rawUpdates.bookingIds.filter(Boolean)));
+  }
+  return Array.from(new Set([...(cur.bookingIds ?? []), ...(mergedBookingId ? [mergedBookingId] : [])].filter(Boolean)));
+}
+
+// When an invoice first becomes paid, flip every linked booking to paid too
+// (one-way: invoice → booking). Best-effort; never throws.
+async function syncInvoicePaidToBookings(cur: Invoice, updated: Invoice): Promise<void> {
+  if (cur.status === 'paid' || updated.status !== 'paid') return;
+  for (const bid of updated.bookingIds) {
+    try {
+      const b = await getBookingById(bid);
+      if (b && !b.paid) await updateBooking(bid, { paid: true });
+    } catch { /* best-effort */ }
+  }
+}
+
 export async function updateInvoice(id: string, rawUpdates: Partial<Invoice>): Promise<Invoice | null> {
   if (sql) {
     await ensureSchema();
@@ -1217,6 +1433,8 @@ export async function updateInvoice(id: string, rawUpdates: Partial<Invoice>): P
     m.id = cur.id; m.number = cur.number; m.seq = cur.seq; m.token = cur.token;
     const totals = computeTotals(m.items);
     m.subtotal = totals.subtotal; m.total = totals.total;
+    m.bookingIds = resolveBookingIds(cur, rawUpdates, m.bookingId);
+    m.bookingId = m.bookingIds[0] ?? null;
     const rows = await sql`
       UPDATE invoices SET
         is_tax_invoice = ${m.isTaxInvoice},
@@ -1230,26 +1448,33 @@ export async function updateInvoice(id: string, rawUpdates: Partial<Invoice>): P
         items = ${JSON.stringify(m.items)}, subtotal = ${m.subtotal}, total = ${m.total}, notes = ${m.notes},
         pay_account_name = ${m.payAccountName}, pay_bsb = ${m.payBsb}, pay_account_number = ${m.payAccountNumber},
         booking_id = ${m.bookingId},
+        booking_ids = ${JSON.stringify(m.bookingIds)},
         sent_at = ${m.sentAt ?? null}, paid_at = ${m.paidAt ?? null},
         updated_at = now()
       WHERE id = ${id}
       RETURNING *
     `;
     const arr = rows as any[];
-    return arr.length ? rowToInvoice(arr[0]) : null;
+    const updated = arr.length ? rowToInvoice(arr[0]) : null;
+    if (updated) await syncInvoicePaidToBookings(cur, updated);
+    return updated;
   }
 
   const rows = readInvoices();
   const idx = rows.findIndex(i => i.id === id);
   if (idx === -1) return null;
   const updates = withInvoiceStamps(rows[idx], rawUpdates);
-  const m = { ...rows[idx], ...updates };
-  m.id = rows[idx].id; m.number = rows[idx].number; m.seq = rows[idx].seq; m.token = rows[idx].token;
+  const cur = rows[idx];
+  const m = { ...cur, ...updates };
+  m.id = cur.id; m.number = cur.number; m.seq = cur.seq; m.token = cur.token;
   const totals = computeTotals(m.items);
   m.subtotal = totals.subtotal; m.total = totals.total;
+  m.bookingIds = resolveBookingIds(cur, rawUpdates, m.bookingId);
+  m.bookingId = m.bookingIds[0] ?? null;
   m.updatedAt = new Date().toISOString();
   rows[idx] = m;
   writeInvoices(rows);
+  await syncInvoicePaidToBookings(cur, m);
   return rows[idx];
 }
 
@@ -1465,6 +1690,121 @@ export async function deleteGuest(id: string): Promise<boolean> {
   });
   if (touched) writeFile(bookings);
   return true;
+}
+
+// ─── Bulk booking actions ───────────────────────────────────────────────────
+
+export async function bulkUpdateBookingStatus(ids: string[], status: BookingStatus): Promise<number> {
+  let n = 0;
+  for (const id of ids) { if (await updateBooking(id, { status })) n++; }
+  return n;
+}
+
+export async function bulkDeleteBookings(ids: string[]): Promise<number> {
+  let n = 0;
+  for (const id of ids) { if (await deleteBooking(id)) n++; }
+  return n;
+}
+
+// ─── Booking groups ─────────────────────────────────────────────────────────
+
+export interface BookingGroup {
+  id: string;
+  title: string;
+  createdAt: string;
+  jobCount: number;   // computed
+  totalValue: number; // computed (sum of quoteAmount)
+}
+
+function readGroups(): { id: string; title: string; createdAt: string }[] {
+  try {
+    if (!fs.existsSync(GROUP_PATH)) return [];
+    return JSON.parse(fs.readFileSync(GROUP_PATH, 'utf-8'));
+  } catch { return []; }
+}
+function writeGroups(rows: { id: string; title: string; createdAt: string }[]): void {
+  const dir = path.dirname(GROUP_PATH);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(GROUP_PATH, JSON.stringify(rows, null, 2));
+}
+
+// Groups with live job count + total value (from their member bookings).
+export async function getBookingGroups(): Promise<BookingGroup[]> {
+  const bookings = await getBookings();
+  const tally = (id: string) => {
+    const members = bookings.filter(b => b.groupId === id);
+    return { jobCount: members.length, totalValue: members.reduce((s, b) => s + (b.quoteAmount ?? 0), 0) };
+  };
+  if (sql) {
+    return withTimeout((async () => {
+      await ensureSchema();
+      const rows = await sql`SELECT * FROM booking_groups ORDER BY created_at DESC`;
+      return (rows as any[]).map(r => ({
+        id: r.id, title: r.title ?? '',
+        createdAt: typeof r.created_at === 'string' ? r.created_at : new Date(r.created_at).toISOString(),
+        ...tally(r.id),
+      }));
+    })());
+  }
+  return readGroups()
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .map(g => ({ ...g, ...tally(g.id) }));
+}
+
+export async function createBookingGroup(title: string, bookingIds: string[]): Promise<BookingGroup> {
+  const id = `GRP-${Date.now()}`;
+  const createdAt = new Date().toISOString();
+  if (sql) {
+    await ensureSchema();
+    await sql`INSERT INTO booking_groups (id, title) VALUES (${id}, ${title})`;
+    for (const bid of bookingIds) await sql`UPDATE bookings SET group_id = ${id}, updated_at = now() WHERE id = ${bid}`;
+  } else {
+    const rows = readGroups();
+    rows.push({ id, title, createdAt });
+    writeGroups(rows);
+    const bks = readFile();
+    bks.forEach(b => { if (bookingIds.includes(b.id)) b.groupId = id; });
+    writeFile(bks);
+  }
+  const groups = await getBookingGroups();
+  return groups.find(g => g.id === id) ?? { id, title, createdAt, jobCount: 0, totalValue: 0 };
+}
+
+// Delete a group only — its bookings survive (group_id cleared).
+export async function deleteBookingGroup(id: string): Promise<boolean> {
+  if (sql) {
+    await ensureSchema();
+    await sql`UPDATE bookings SET group_id = NULL, updated_at = now() WHERE group_id = ${id}`;
+    const rows = await sql`DELETE FROM booking_groups WHERE id = ${id} RETURNING id`;
+    return (rows as any[]).length > 0;
+  }
+  const groups = readGroups();
+  const filtered = groups.filter(g => g.id !== id);
+  if (filtered.length === groups.length) return false;
+  writeGroups(filtered);
+  const bks = readFile();
+  bks.forEach(b => { if (b.groupId === id) b.groupId = null; });
+  writeFile(bks);
+  return true;
+}
+
+// Delete a group AND every booking inside it (destructive — confirmed in the UI).
+export async function deleteBookingGroupWithBookings(id: string): Promise<{ ok: boolean; deletedBookings: number }> {
+  if (sql) {
+    await ensureSchema();
+    const del = await sql`DELETE FROM bookings WHERE group_id = ${id} RETURNING id`;
+    const rows = await sql`DELETE FROM booking_groups WHERE id = ${id} RETURNING id`;
+    return { ok: (rows as any[]).length > 0, deletedBookings: (del as any[]).length };
+  }
+  const groups = readGroups();
+  const filtered = groups.filter(g => g.id !== id);
+  if (filtered.length === groups.length) return { ok: false, deletedBookings: 0 };
+  const bks = readFile();
+  const remaining = bks.filter(b => b.groupId !== id);
+  const deletedBookings = bks.length - remaining.length;
+  writeFile(remaining);
+  writeGroups(filtered);
+  return { ok: true, deletedBookings };
 }
 
 // Jobs sent to a particular guest (their whole dashboard).

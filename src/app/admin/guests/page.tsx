@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import toast from 'react-hot-toast';
 import { ArrowLeft, Plus, Users, Trash2, Eye, X, Check, KeyRound } from 'lucide-react';
+import { AdminSidebar, AdminMobileNav, AdminMoreSheet, useMoreSheet, adminNavItems } from '@/components/admin/AdminNav';
 
 type Guest = { id: string; name: string; active: boolean; createdAt: string };
 
@@ -17,6 +18,8 @@ export default function GuestsPage() {
   const [saving, setSaving] = useState(false);
   const [resetFor, setResetFor] = useState<Guest | null>(null);
   const [newPassword, setNewPassword] = useState('');
+  const moreSheet = useMoreSheet();
+  const navItems = adminNavItems();
 
   useEffect(() => {
     (async () => {
@@ -87,12 +90,14 @@ export default function GuestsPage() {
   };
 
   return (
-    <div className="min-h-[100svh] bg-navy-900">
+    <div className="min-h-[100svh] bg-navy-900 flex">
+      <AdminSidebar active="guests" items={navItems} />
+      <div className="flex-1 flex flex-col min-w-0">
       <header
         className="sticky top-0 z-30 bg-navy-900/90 backdrop-blur border-b border-white/10 px-4 flex items-center justify-between"
         style={{ paddingTop: 'calc(env(safe-area-inset-top) + 0.85rem)', paddingBottom: '0.85rem' }}
       >
-        <button onClick={() => router.push('/admin/dashboard')} className="inline-flex items-center gap-2 text-slate-300 hover:text-white text-sm cursor-pointer">
+        <button onClick={() => router.push('/admin/dashboard')} className="inline-flex items-center gap-2 text-slate-300 hover:text-white text-sm cursor-pointer lg:hidden">
           <ArrowLeft className="w-5 h-5" /> Dashboard
         </button>
         <button onClick={() => setShowCreate(true)} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-white text-sm font-semibold cursor-pointer">
@@ -184,6 +189,9 @@ export default function GuestsPage() {
           </div>
         </div>
       )}
+      </div>
+      <AdminMobileNav active="guests" items={navItems} onMore={moreSheet.show} />
+      <AdminMoreSheet open={moreSheet.open} onClose={moreSheet.hide} active="guests" items={navItems} />
     </div>
   );
 }

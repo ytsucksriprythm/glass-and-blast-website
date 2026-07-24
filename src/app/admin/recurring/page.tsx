@@ -8,6 +8,7 @@ import {
   ArrowLeft, Repeat, Plus, Check, X, Trash2, Play, MapPin, Phone as PhoneIcon, CalendarDays, CalendarPlus,
 } from 'lucide-react';
 import type { RecurringJob, RecurringFrequency, Booking } from '@/lib/db';
+import { AdminSidebar, AdminMobileNav, AdminMoreSheet, useMoreSheet, adminNavItems } from '@/components/admin/AdminNav';
 
 const SERVICE_OPTIONS = [
   { v: 'window-washing', l: 'Window Washing' },
@@ -22,27 +23,6 @@ const serviceText = (s: string) => (s ?? '').split(',').filter(Boolean).map(x =>
 const FREQ_LABEL: Record<RecurringFrequency, string> = { monthly: 'Monthly', quarterly: 'Quarterly', biannual: 'Twice a year' };
 const FREQ_DISCOUNT: Record<RecurringFrequency, number> = { monthly: 100, quarterly: 75, biannual: 50 };
 
-// Build a Google Calendar "add event" template URL for a plan's next visit.
-// All-day event on nextDate (end date is exclusive, so + 1 day). Title matches the
-// "address - name" format the calendar feed parses back into a booking match.
-function gcalUrlForNextVisit(j: RecurringJob): string {
-  const place = [j.address, j.suburb].filter(Boolean).join(', ');
-  const title = (place ? `${place} - ${j.name}` : j.name).trim();
-  const details = [
-    j.phone ? `Phone: ${j.phone}` : '',
-    j.email ? `Email: ${j.email}` : '',
-    `Service: ${serviceText(j.service)}`,
-    `${FREQ_LABEL[j.frequency]} recurring plan`,
-    j.preferredTime ? `Preferred: ${j.preferredTime}` : '',
-    (j.discount != null && j.discount > 0) ? `Plan discount: $${j.discount}/clean` : '',
-    j.notes ? `Notes: ${j.notes}` : '',
-  ].filter(Boolean).join('\n');
-  const ymd = (d: Date) => `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
-  const start = new Date(`${j.nextDate}T00:00:00`);
-  const end = new Date(start); end.setDate(end.getDate() + 1);
-  const params = new URLSearchParams({ action: 'TEMPLATE', text: title, details, location: place, dates: `${ymd(start)}/${ymd(end)}` });
-  return `https://calendar.google.com/calendar/render?${params.toString()}`;
-}
 
 type PlanForm = {
   name: string; phone: string; email: string; address: string; suburb: string;
@@ -71,6 +51,8 @@ function RecurringInner() {
   const [form, setForm] = useState<PlanForm>(EMPTY);
   const [saving, setSaving] = useState(false);
   const [running, setRunning] = useState(false);
+  const moreSheet = useMoreSheet();
+  const navItems = adminNavItems();
 
   const set = (k: keyof PlanForm, v: string) => setForm(f => ({ ...f, [k]: v }));
   const toggleService = (v: string) => setForm(f => {
@@ -185,15 +167,31 @@ function RecurringInner() {
     finally { setRunning(false); }
   };
 
+  // Roll a single plan forward now: creates a confirmed, calendar-scheduled
+  // booking for its next visit and advances the plan a cycle.
+  const generateNext = async (j: RecurringJob) => {
+    try {
+      const res = await fetch(`/api/admin/recurring/${j.id}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'generate' }),
+      });
+      if (!res.ok) throw new Error();
+      const data = await res.json();
+      setJobs(js => js.map(x => x.id === j.id ? data.job : x));
+      toast.success('Next visit added to the calendar');
+    } catch { toast.error('Could not generate visit'); }
+  };
+
   const dueSoon = (d: string) => d <= new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
 
   return (
-    <div className="min-h-[100svh] bg-navy-900">
+    <div className="min-h-[100svh] bg-navy-900 flex">
+      <AdminSidebar active="recurring" items={navItems} />
+      <div className="flex-1 flex flex-col min-w-0">
       <header
         className="sticky top-0 z-30 bg-navy-900/90 backdrop-blur border-b border-white/10 px-4 flex items-center justify-between"
         style={{ paddingTop: 'calc(env(safe-area-inset-top) + 0.85rem)', paddingBottom: '0.85rem' }}
       >
-        <button onClick={() => router.push('/admin/dashboard')} className="inline-flex items-center gap-2 text-slate-300 hover:text-white text-sm cursor-pointer">
+        <button onClick={() => router.push('/admin/dashboard')} className="inline-flex items-center gap-2 text-slate-300 hover:text-white text-sm cursor-pointer lg:hidden">
           <ArrowLeft className="w-5 h-5" /> Dashboard
         </button>
         <button onClick={runNow} disabled={running} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/15 text-slate-200 hover:text-white hover:border-sky-400/40 text-sm cursor-pointer disabled:opacity-50">
@@ -310,14 +308,12 @@ function RecurringInner() {
                   {j.discount != null && j.discount > 0 && <span className="text-emerald-400">${j.discount} off per clean</span>}
                 </div>
 
-                <a
-                  href={gcalUrlForNextVisit(j)}
-                  target="_blank"
-                  rel="noopener noreferrer"
+                <button
+                  onClick={() => generateNext(j)}
                   className="mt-3 w-full inline-flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg border border-sky-400/30 bg-sky-400/10 text-sky-300 hover:bg-sky-400/15 active:bg-sky-400/20 text-xs font-semibold transition-colors cursor-pointer touch-manipulation"
                 >
-                  <CalendarPlus className="w-4 h-4" /> Add next visit to Google Calendar
-                </a>
+                  <CalendarPlus className="w-4 h-4" /> Generate next visit &amp; add to calendar
+                </button>
 
                 <div className="mt-3 pt-3 border-t border-white/5 flex items-center justify-between">
                   <button onClick={() => toggleActive(j)} className={`text-xs font-semibold cursor-pointer ${j.active ? 'text-slate-400 hover:text-amber-400' : 'text-emerald-400'}`}>
@@ -335,6 +331,9 @@ function RecurringInner() {
           </ul>
         )}
       </main>
+      </div>
+      <AdminMobileNav active="recurring" items={navItems} onMore={moreSheet.show} />
+      <AdminMoreSheet open={moreSheet.open} onClose={moreSheet.hide} active="recurring" items={navItems} />
     </div>
   );
 }

@@ -58,6 +58,15 @@ export async function notifyStatusChange(
   );
 }
 
+/** Fired when a customer taps "I've paid" on their invoice — a claim, not a confirmed payment. */
+export async function notifyCustomerMarkedPaid(booking: Booking, invoiceNumber: string): Promise<void> {
+  await notify(
+    `Customer marked ${invoiceNumber} as paid`,
+    `${booking.name}${booking.phone ? ` · ${booking.phone}` : ''}\nCheck the bank before marking this booking paid.`,
+    { tags: 'moneybag', priority: 'high' },
+  );
+}
+
 /** Fired when a job is assigned (sent) to a guest. */
 export async function notifyJobAssigned(booking: Booking, guestName: string): Promise<void> {
   const where = [booking.address, booking.suburb].filter(Boolean).join(', ');

@@ -516,7 +516,7 @@ function Services() {
           <div className="mt-6 rounded-xl border border-slate-200 bg-slate-50 px-6 py-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <p className="text-slate-600 text-sm leading-relaxed max-w-2xl">
               We also do <span className="text-slate-900 font-medium">flyscreen repairs, gutter and roof cleaning,
-              soft washing and end-of-lease cleans</span> — and if you need something else sorted, just give us a call.
+              soft washing and end-of-lease cleans</span>, and if you need something else sorted, just give us a call.
               Booking two or more jobs in the one visit? We will bring the total down for you.
             </p>
             <button onClick={goToBook} className="flex-shrink-0 px-6 py-2.5 bg-sky-500 hover:bg-sky-600 text-white text-sm font-semibold rounded-full transition-colors cursor-pointer">
@@ -970,11 +970,20 @@ function Book() {
 function StickyCTA() {
   const [show, setShow] = useState(false);
   const [bookVisible, setBookVisible] = useState(false);
+  const [nearBottom, setNearBottom] = useState(false);
 
   useEffect(() => {
-    const onScroll = () => setShow(window.scrollY > 500);
+    // Hide once the footer is basically in view — otherwise this bar re-appears
+    // over the footer (covering the admin "Sign in" link) since #book is long
+    // scrolled past by then and stops driving visibility on its own.
+    const onScroll = () => {
+      setShow(window.scrollY > 500);
+      const fromBottom = document.documentElement.scrollHeight - (window.scrollY + window.innerHeight);
+      setNearBottom(fromBottom < 400);
+    };
     onScroll();
     window.addEventListener('scroll', onScroll, { passive: true });
+    window.addEventListener('resize', onScroll);
 
     const book = document.querySelector('#book');
     let io: IntersectionObserver | null = null;
@@ -982,10 +991,10 @@ function StickyCTA() {
       io = new IntersectionObserver(([e]) => setBookVisible(e.isIntersecting), { threshold: 0.15 });
       io.observe(book);
     }
-    return () => { window.removeEventListener('scroll', onScroll); io?.disconnect(); };
+    return () => { window.removeEventListener('scroll', onScroll); window.removeEventListener('resize', onScroll); io?.disconnect(); };
   }, []);
 
-  const visible = show && !bookVisible;
+  const visible = show && !bookVisible && !nearBottom;
 
   return (
     <div className={`md:hidden fixed bottom-0 inset-x-0 z-40 transition-transform duration-300 ${visible ? 'translate-y-0' : 'translate-y-full'}`}>

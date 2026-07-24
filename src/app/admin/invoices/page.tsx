@@ -6,6 +6,7 @@ import Link from 'next/link';
 import toast from 'react-hot-toast';
 import { ArrowLeft, Plus, FileText, Send, BadgeCheck, Share, Undo2, Eye } from 'lucide-react';
 import { type Invoice, type InvoiceStatus, money, longDate } from '@/lib/invoice';
+import { AdminSidebar, AdminMobileNav, AdminMoreSheet, useMoreSheet, adminNavItems } from '@/components/admin/AdminNav';
 
 const STATUS_LABEL: Record<InvoiceStatus, string> = { draft: 'Draft', sent: 'Sent', paid: 'Paid', cancelled: 'Cancelled' };
 const STATUS_STYLE: Record<InvoiceStatus, string> = {
@@ -14,6 +15,28 @@ const STATUS_STYLE: Record<InvoiceStatus, string> = {
   paid: 'bg-emerald-400/15 text-emerald-300 border-emerald-400/25',
   cancelled: 'bg-red-400/15 text-red-300 border-red-400/25',
 };
+
+// Sent → Read → Paid lifecycle at a glance. "Read" = the customer opened the
+// public link (firstViewedAt); "Paid" = status paid (which also marks linked jobs paid).
+function SentReadPaid({ inv }: { inv: Invoice }) {
+  const steps = [
+    { label: 'Sent', on: inv.status === 'sent' || inv.status === 'paid' || !!inv.sentAt },
+    { label: 'Read', on: !!inv.firstViewedAt },
+    { label: 'Paid', on: inv.status === 'paid' },
+  ];
+  return (
+    <div className="mt-1.5 flex items-center gap-2">
+      {steps.map((s, i) => (
+        <span key={s.label} className="inline-flex items-center gap-2">
+          {i > 0 && <span className="text-slate-700 text-[11px]">›</span>}
+          <span className={`inline-flex items-center gap-1 text-[11px] font-semibold ${s.on ? 'text-emerald-400' : 'text-slate-600'}`}>
+            <span className={`w-1.5 h-1.5 rounded-full ${s.on ? 'bg-emerald-400' : 'bg-slate-600'}`} /> {s.label}
+          </span>
+        </span>
+      ))}
+    </div>
+  );
+}
 
 export default function InvoicesPage() {
   const router = useRouter();
@@ -70,14 +93,18 @@ export default function InvoicesPage() {
   };
 
   const iconBtn = 'inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border text-xs font-semibold transition-colors cursor-pointer touch-manipulation disabled:opacity-50';
+  const moreSheet = useMoreSheet();
+  const navItems = adminNavItems();
 
   return (
-    <div className="min-h-[100svh] bg-navy-900">
+    <div className="min-h-[100svh] bg-navy-900 flex">
+      {!isGuest && <AdminSidebar active="invoices" items={navItems} />}
+      <div className="flex-1 flex flex-col min-w-0">
       <header
         className="sticky top-0 z-30 bg-navy-900/90 backdrop-blur border-b border-white/10 px-4 flex items-center justify-between"
         style={{ paddingTop: 'calc(env(safe-area-inset-top) + 0.85rem)', paddingBottom: '0.85rem' }}
       >
-        <button onClick={() => router.push(backHref)} className="inline-flex items-center gap-2 text-slate-300 hover:text-white text-sm cursor-pointer">
+        <button onClick={() => router.push(backHref)} className={`inline-flex items-center gap-2 text-slate-300 hover:text-white text-sm cursor-pointer ${isGuest ? '' : 'lg:hidden'}`}>
           <ArrowLeft className="w-5 h-5" /> {isGuest ? 'My jobs' : 'Dashboard'}
         </button>
         <Link href="/admin/invoices/new" className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-white text-sm font-semibold cursor-pointer">
@@ -132,6 +159,7 @@ export default function InvoicesPage() {
                           <span className="text-slate-600">Not opened yet</span>
                         ) : null}
                       </div>
+                      <SentReadPaid inv={inv} />
                     </div>
                     <div className="text-right flex-shrink-0">
                       <div className="text-white font-bold">{money(inv.total)}</div>
@@ -166,6 +194,11 @@ export default function InvoicesPage() {
           </ul>
         )}
       </main>
+      </div>
+      {!isGuest && <>
+        <AdminMobileNav active="invoices" items={navItems} onMore={moreSheet.show} />
+        <AdminMoreSheet open={moreSheet.open} onClose={moreSheet.hide} active="invoices" items={navItems} />
+      </>}
     </div>
   );
 }

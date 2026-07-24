@@ -33,6 +33,11 @@ export async function POST(req: NextRequest) {
       status: b.status ?? 'pending',
       source: 'manual',
       assignedGuestId,
+      // Internal calendar slot (from the calendar "Add" or a scheduled create).
+      scheduledAt: typeof b.scheduledAt === 'string' && b.scheduledAt ? b.scheduledAt : null,
+      scheduledEnd: typeof b.scheduledEnd === 'string' && b.scheduledEnd ? b.scheduledEnd : null,
+      // "How did we get this job?" — manual-add attribution for source analytics.
+      leadSource: typeof b.leadSource === 'string' && b.leadSource ? b.leadSource : null,
     });
     return NextResponse.json({ success: true, booking }, { status: 201 });
   } catch {

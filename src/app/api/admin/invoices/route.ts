@@ -55,6 +55,7 @@ export async function POST(req: NextRequest) {
       payBsb: b.payBsb ?? PAYMENT_DEFAULTS.payBsb,
       payAccountNumber: b.payAccountNumber ?? PAYMENT_DEFAULTS.payAccountNumber,
       bookingId: b.bookingId ?? null,
+      bookingIds: Array.isArray(b.bookingIds) ? b.bookingIds.filter((x: unknown) => typeof x === 'string' && x) : [],
       // An invoice a guest creates belongs to them; admin invoices are unowned.
       ownerGuestId: ctx.role === 'guest' ? ctx.guestId : null,
     };

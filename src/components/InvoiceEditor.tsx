@@ -4,11 +4,11 @@ import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import toast from 'react-hot-toast';
 import {
-  Plus, Trash2, Check, Copy, ExternalLink, Send, BadgeCheck, Undo2, FileText, Search, X, ClipboardList, Eye,
+  Plus, Trash2, Check, Copy, ExternalLink, Send, BadgeCheck, Undo2, FileText, Search, X, ClipboardList, Eye, Link2, Sparkles,
 } from 'lucide-react';
 import {
   type Invoice, type InvoiceStatus, type InvoiceLineItem, type PaymentProfile,
-  BUSINESS_DEFAULTS, PAYMENT_DEFAULTS, addDays, computeTotals, money, longDate,
+  BUSINESS_DEFAULTS, PAYMENT_DEFAULTS, addDays, computeTotals, money, longDate, addressesMatch,
 } from '@/lib/invoice';
 import type { Booking } from '@/lib/db';
 import InvoicePreview, { type InvoicePreviewData } from '@/components/InvoicePreview';
@@ -137,7 +137,10 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
   const [f, setF] = useState<Form>(initial ? fromInvoice(initial) : blankForm(prefill));
   const [saving, setSaving] = useState(false);
   const [tab, setTab] = useState<'edit' | 'preview'>('edit');
-  const [bookingId, setBookingId] = useState<string | null>(initial?.bookingId ?? prefill?.bookingId ?? null);
+  // Linked bookings (multi). Linkage is the single source of truth on the invoice.
+  const [linkedIds, setLinkedIds] = useState<string[]>(
+    initial?.bookingIds?.length ? initial.bookingIds : (prefill?.bookingId ? [prefill.bookingId] : []),
+  );
 
   // Payment profiles
   const [profiles, setProfiles] = useState<PaymentProfile[]>([]);
@@ -156,6 +159,17 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
         const res = await fetch('/api/admin/payment-profiles');
         if (res.ok) setProfiles(await res.json());
       } catch { /* selector just won't show presets */ }
+    })();
+  }, []);
+
+  // Load bookings up front so linked jobs render by name and address suggestions work.
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch('/api/admin/bookings');
+        const data = res.ok ? await res.json() : [];
+        setBookings(Array.isArray(data) ? data : (data.bookings ?? []));
+      } catch { setBookings([]); }
     })();
   }, []);
 
@@ -203,16 +217,10 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
   };
 
   // Copy-from-booking helpers
-  const openPicker = async () => {
-    setPickerOpen(true);
-    if (bookings === null) {
-      try {
-        const res = await fetch('/api/admin/bookings');
-        const data = res.ok ? await res.json() : [];
-        setBookings(Array.isArray(data) ? data : (data.bookings ?? []));
-      } catch { setBookings([]); }
-    }
-  };
+  const openPicker = () => setPickerOpen(true);
+  const byId = (id: string) => (bookings ?? []).find(b => b.id === id) ?? null;
+  const linkBooking = (id: string) => setLinkedIds(ids => ids.includes(id) ? ids : [...ids, id]);
+  const unlinkBooking = (id: string) => setLinkedIds(ids => ids.filter(x => x !== id));
   const applyBooking = (b: Booking) => {
     const address = [b.address, b.suburb].filter(Boolean).join(', ');
     const validDate = /^\d{4}-\d{2}-\d{2}$/.test(b.preferredDate) ? b.preferredDate : '';
@@ -229,16 +237,26 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
         amount: (typeof b.quoteAmount === 'number' && b.quoteAmount > 0) ? String(b.quoteAmount) : it.amount,
       } : it),
     }));
-    setBookingId(b.id);
+    linkBooking(b.id);            // copying details also links the job
     setPickerOpen(false);
     setPickerSearch('');
-    toast.success(`Copied details from ${b.name}`);
+    toast.success(`Copied + linked ${b.name}`);
   };
   const filteredBookings = (bookings ?? []).filter(b => {
     const q = pickerSearch.trim().toLowerCase();
     if (!q) return true;
     return [b.name, b.phone, b.address, b.suburb].filter(Boolean).join(' ').toLowerCase().includes(q);
   });
+
+  // Address-primary auto-linking: bookings whose address matches the bill-to /
+  // line-item service address and aren't linked yet. Matching is by address, not
+  // name or amount (per spec).
+  const invoiceAddresses = [f.billToLines, ...f.items.map(it => it.serviceAddress)].filter(Boolean);
+  const suggestedBookings = (bookings ?? []).filter(b =>
+    !linkedIds.includes(b.id) &&
+    (b.address || b.suburb) &&
+    invoiceAddresses.some(addr => addressesMatch(addr, [b.address, b.suburb].filter(Boolean).join(', '))),
+  ).slice(0, 5);
 
   const lineItems = useMemo(() => toLineItems(f.items), [f.items]);
   const { subtotal, total } = useMemo(() => computeTotals(lineItems), [lineItems]);
@@ -266,7 +284,8 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
     items: lineItems,
     notes: f.notes,
     payAccountName: f.payAccountName, payBsb: f.payBsb, payAccountNumber: f.payAccountNumber,
-    bookingId,
+    bookingId: linkedIds[0] ?? null,
+    bookingIds: linkedIds,
   });
 
   const save = async () => {
@@ -363,6 +382,46 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
           <button type="button" onClick={openPicker} className="w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-lg border border-dashed border-sky-400/40 bg-sky-400/5 text-sky-300 hover:bg-sky-400/10 text-sm font-semibold cursor-pointer">
             <ClipboardList className="w-4 h-4" /> Copy details from a booking
           </button>
+
+          <Section title="Linked jobs" right={
+            <span className="text-xs text-slate-400">{linkedIds.length} linked</span>
+          }>
+            <p className="text-xs text-slate-500 mb-3">Connect this invoice to one or more bookings. When it&apos;s marked paid, every linked job is marked paid too.</p>
+            {linkedIds.length === 0 ? (
+              <div className="text-slate-500 text-sm">No jobs linked yet.</div>
+            ) : (
+              <div className="space-y-2">
+                {linkedIds.map(id => {
+                  const b = byId(id);
+                  return (
+                    <div key={id} className="flex items-center gap-2 rounded-lg border border-sky-400/20 bg-sky-400/5 px-3 py-2">
+                      <Link2 className="w-3.5 h-3.5 text-sky-400 flex-shrink-0" />
+                      <div className="min-w-0 flex-1">
+                        <div className="text-white text-sm truncate">{b?.name ?? id}</div>
+                        {b && <div className="text-slate-500 text-xs truncate">{[serviceText(b.service), [b.address, b.suburb].filter(Boolean).join(', ')].filter(Boolean).join(' · ')}</div>}
+                      </div>
+                      <button type="button" onClick={() => unlinkBooking(id)} title="Unlink" className="text-slate-500 hover:text-red-400 cursor-pointer"><X className="w-4 h-4" /></button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            {suggestedBookings.length > 0 && (
+              <div className="mt-3">
+                <div className="text-xs text-slate-400 mb-1.5 inline-flex items-center gap-1"><Sparkles className="w-3.5 h-3.5 text-amber-400" /> Suggested by address</div>
+                <div className="flex flex-wrap gap-2">
+                  {suggestedBookings.map(b => (
+                    <button key={b.id} type="button" onClick={() => linkBooking(b.id)} className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-amber-400/30 bg-amber-400/5 text-amber-200 hover:bg-amber-400/10 text-xs font-medium cursor-pointer">
+                      <Plus className="w-3 h-3" /> {b.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+            <button type="button" onClick={openPicker} className="mt-3 w-full inline-flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg border border-dashed border-white/15 text-slate-300 hover:border-sky-400/40 hover:text-white text-sm font-semibold cursor-pointer">
+              <Plus className="w-4 h-4" /> Link a booking
+            </button>
+          </Section>
 
           <Section title="Invoice type">
             <div className="grid grid-cols-2 gap-2">

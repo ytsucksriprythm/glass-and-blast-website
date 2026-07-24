@@ -4,6 +4,7 @@ import { getInvoiceByToken } from '@/lib/db';
 import InvoicePreview from '@/components/InvoicePreview';
 import PrintButton from '@/components/PrintButton';
 import InvoiceViewBeacon from '@/components/InvoiceViewBeacon';
+import MarkPaidButton from '@/components/MarkPaidButton';
 
 export const dynamic = 'force-dynamic';
 
@@ -13,7 +14,7 @@ export async function generateMetadata({ params }: { params: Promise<{ token: st
   if (!invoice) return { title: 'Invoice not found' };
   const title = invoice.isTaxInvoice ? 'Tax Invoice' : 'Invoice';
   return {
-    title: `${title} ${invoice.number} — ${invoice.fromTradingAs}`,
+    title: `${title} ${invoice.number} - ${invoice.fromTradingAs}`,
     robots: { index: false, follow: false }, // private link, keep out of search
   };
 }
@@ -31,7 +32,10 @@ export default async function PublicInvoicePage({ params }: { params: Promise<{ 
           <span className="text-slate-500 text-sm">
             {invoice.isTaxInvoice ? 'Tax Invoice' : 'Invoice'} {invoice.number}
           </span>
-          <PrintButton />
+          <div className="flex items-center gap-2">
+            <PrintButton />
+            <MarkPaidButton token={invoice.token} />
+          </div>
         </div>
         <div className="rounded-xl shadow-lg ring-1 ring-slate-200 overflow-hidden">
           <InvoicePreview invoice={invoice} />

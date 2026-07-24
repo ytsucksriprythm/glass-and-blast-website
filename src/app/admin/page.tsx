@@ -34,8 +34,8 @@ export default function AdminLogin() {
 
   return (
     <div
-      className="min-h-[100svh] bg-navy-900 flex flex-col items-center justify-center px-6"
-      style={{ paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' }}
+      className="min-h-[100svh] bg-navy-900 flex flex-col items-center justify-center px-6 py-6 overflow-y-auto"
+      style={{ paddingTop: 'calc(env(safe-area-inset-top) + 1.5rem)', paddingBottom: 'calc(env(safe-area-inset-bottom) + 1.5rem)' }}
     >
       <div className="w-full max-w-sm">
         <div className="text-center mb-8">

@@ -59,7 +59,8 @@ export interface Invoice {
   payAccountNumber: string;
 
   token: string;           // unguessable public-link token
-  bookingId: string | null; // linked booking, if generated from one
+  bookingId: string | null; // legacy: first linked booking (kept for back-compat)
+  bookingIds: string[];     // all bookings linked to this invoice (address-matched or manual)
   ownerGuestId: string | null; // guest who created it (null = admin-owned)
   createdAt: string;
   updatedAt: string;
@@ -185,6 +186,31 @@ export function blankInvoiceInput(todayStr: string): InvoiceInput {
     notes: 'Thank you for your business.',
     ...PAYMENT_DEFAULTS,
     bookingId: null,
+    bookingIds: [],
     ownerGuestId: null,
   };
+}
+
+// ─── Booking ↔ invoice address matching (pure, client + server safe) ──────────
+// Normalise a street address for comparison: lowercase, strip punctuation,
+// collapse whitespace, drop a trailing state/postcode tail so "12 Foo St,
+// Ainslie ACT 2602" and "12 foo street ainslie" still match.
+export function normalizeAddress(raw: string): string {
+  return (raw || '')
+    .toLowerCase()
+    .replace(/\b(act|nsw|australia)\b/g, ' ')
+    .replace(/\b\d{4}\b/g, ' ')       // postcode
+    .replace(/[.,/#!$%^&*;:{}=\-_`~()]/g, ' ')
+    .replace(/\bstreet\b/g, 'st').replace(/\bavenue\b/g, 'ave').replace(/\broad\b/g, 'rd')
+    .replace(/\bcrescent\b/g, 'cres').replace(/\bplace\b/g, 'pl').replace(/\bdrive\b/g, 'dr')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// True when two addresses look like the same place (one contains the other after
+// normalising — handles "12 Foo St" vs "12 Foo St, Ainslie").
+export function addressesMatch(a: string, b: string): boolean {
+  const x = normalizeAddress(a), y = normalizeAddress(b);
+  if (!x || !y || x.length < 4 || y.length < 4) return false;
+  return x === y || x.includes(y) || y.includes(x);
 }
