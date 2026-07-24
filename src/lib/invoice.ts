@@ -4,6 +4,18 @@
 
 export type InvoiceStatus = 'draft' | 'sent' | 'paid' | 'cancelled';
 
+// How a paid invoice was actually settled. `null` = not paid yet, or paid
+// before this field existed. Bank transfer is the default payment path;
+// the others cover being paid face-to-face on the job.
+export type PaymentMethod = 'bank_transfer' | 'cash' | 'card' | 'other';
+
+export const PAYMENT_METHOD_LABEL: Record<PaymentMethod, string> = {
+  bank_transfer: 'Bank transfer',
+  cash: 'Cash (in person)',
+  card: 'Card (in person)',
+  other: 'Other',
+};
+
 export interface InvoiceLineItem {
   description: string;   // e.g. "Window Cleaning"
   detail: string;        // longer note shown under the description
@@ -27,6 +39,7 @@ export interface Invoice {
   seq: number;             // 1044 (numeric, for tracking / next-number)
   isTaxInvoice: boolean;   // false → titled "Invoice" (compliant default); true → "Tax Invoice"
   status: InvoiceStatus;
+  paymentMethod: PaymentMethod | null;  // how it was paid, set when status → paid
 
   // FROM (business) — editable per invoice, pre-filled from BUSINESS_DEFAULTS
   fromName: string;
@@ -53,10 +66,21 @@ export interface Invoice {
   total: number;
   notes: string;           // footer note to the customer
 
-  // PAYMENT (EFT bank transfer — no online processor)
+  // PAYMENT — EFT bank transfer (default) or Square card checkout
   payAccountName: string;
   payBsb: string;
   payAccountNumber: string;
+
+  // Square Online Checkout (card payment link). `squarePaidAt` is a CLAIM from
+  // Square's webhook only — same spirit as a customer's "I've paid" tap: it
+  // means Square says the card charge went through, not that the money has
+  // been confirmed in the account. The real `paid`/`paymentMethod` flip is
+  // still a manual admin action once that's verified.
+  squarePaymentLinkUrl: string | null;
+  squareOrderId: string | null;        // Square's order id — how the webhook finds this invoice
+  squarePaymentId: string | null;      // Square's payment id, once completed
+  squareLinkAmount: number | null;     // total (incl. surcharge) the link was generated for — regenerate if it drifts
+  squarePaidAt: string | null;
 
   token: string;           // unguessable public-link token
   bookingId: string | null; // legacy: first linked booking (kept for back-compat)
@@ -77,10 +101,12 @@ export interface Invoice {
 // (id, number, seq, token, totals, timestamps).
 export type InvoiceInput = Omit<
   Invoice,
-  'id' | 'number' | 'seq' | 'token' | 'subtotal' | 'total' | 'createdAt' | 'updatedAt' | 'sentAt' | 'paidAt' | 'status'
+  'id' | 'number' | 'seq' | 'token' | 'subtotal' | 'total' | 'createdAt' | 'updatedAt' | 'sentAt' | 'paidAt' | 'status' | 'paymentMethod'
   | 'viewCount' | 'firstViewedAt' | 'lastViewedAt'
+  | 'squarePaymentLinkUrl' | 'squareOrderId' | 'squarePaymentId' | 'squareLinkAmount' | 'squarePaidAt'
 > & {
   status?: InvoiceStatus;
+  paymentMethod?: PaymentMethod | null;
 };
 
 // ownerGuestId is part of InvoiceInput (via the Omit above it stays), set by the
@@ -128,6 +154,19 @@ export const INVOICE_START_SEQ = 1044;
 // Not registered for GST → this line replaces any GST/tax wording. Kept in one
 // place so the compliance note is consistent everywhere it renders.
 export const GST_NOTE = 'No GST has been charged. Supplier is not registered for GST.';
+
+// Card surcharge passed on to the customer when paying via the Square link —
+// covers Square's own transaction fee. NEXT_PUBLIC_ so both the server (when
+// creating the Square payment link) and the client preview/public page (when
+// just *displaying* the card total) compute the identical figure. Check this
+// against your actual contracted Square rate (Square dashboard → Fees) and
+// adjust the env var — don't assume 1.9% is exactly right for your account.
+export const SQUARE_SURCHARGE_PERCENT = Number(process.env.NEXT_PUBLIC_SQUARE_SURCHARGE_PERCENT || '1.9');
+
+// Invoice total plus the card surcharge, rounded to cents.
+export function cardTotal(total: number): number {
+  return Math.round(total * (1 + SQUARE_SURCHARGE_PERCENT / 100) * 100) / 100;
+}
 
 // ─── Pure helpers ─────────────────────────────────────────────────────────────
 

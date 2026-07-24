@@ -4,8 +4,8 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import toast from 'react-hot-toast';
-import { ArrowLeft, Plus, FileText, Send, BadgeCheck, Share, Undo2, Eye } from 'lucide-react';
-import { type Invoice, type InvoiceStatus, money, longDate } from '@/lib/invoice';
+import { ArrowLeft, Plus, FileText, Send, BadgeCheck, Share, Undo2, Eye, Banknote } from 'lucide-react';
+import { type Invoice, type InvoiceStatus, type PaymentMethod, PAYMENT_METHOD_LABEL, money, longDate } from '@/lib/invoice';
 import { AdminSidebar, AdminMobileNav, AdminMoreSheet, useMoreSheet, adminNavItems } from '@/components/admin/AdminNav';
 
 const STATUS_LABEL: Record<InvoiceStatus, string> = { draft: 'Draft', sent: 'Sent', paid: 'Paid', cancelled: 'Cancelled' };
@@ -65,15 +65,17 @@ export default function InvoicesPage() {
 
   const unpaidTotal = invoices.filter(i => i.status !== 'paid' && i.status !== 'cancelled').reduce((s, i) => s + i.total, 0);
 
-  const setStatus = async (inv: Invoice, status: InvoiceStatus) => {
+  const setStatus = async (inv: Invoice, status: InvoiceStatus, paymentMethod?: PaymentMethod) => {
     setBusyId(inv.id);
     try {
-      const res = await fetch(`/api/admin/invoices/${inv.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }) });
+      const body: Record<string, unknown> = { status };
+      if (paymentMethod) body.paymentMethod = paymentMethod;
+      const res = await fetch(`/api/admin/invoices/${inv.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       if (res.status === 401) { router.push('/admin'); return; }
       if (!res.ok) throw new Error();
       const updated: Invoice = await res.json();
       setInvoices(list => list.map(i => i.id === inv.id ? updated : i));
-      toast.success(`Marked ${STATUS_LABEL[status].toLowerCase()}`);
+      toast.success(status === 'paid' && paymentMethod ? `Marked paid — ${PAYMENT_METHOD_LABEL[paymentMethod].toLowerCase()}` : `Marked ${STATUS_LABEL[status].toLowerCase()}`);
     } catch { toast.error('Update failed'); }
     finally { setBusyId(null); }
   };
@@ -147,6 +149,16 @@ export default function InvoicesPage() {
                       <div className="flex items-center gap-2">
                         <span className="text-white font-semibold">{inv.number}</span>
                         <span className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold border ${STATUS_STYLE[inv.status]}`}>{STATUS_LABEL[inv.status]}</span>
+                        {inv.status === 'paid' && inv.paymentMethod && inv.paymentMethod !== 'bank_transfer' && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold border border-amber-400/25 bg-amber-400/10 text-amber-300">
+                            <Banknote className="w-3 h-3" /> {PAYMENT_METHOD_LABEL[inv.paymentMethod]}
+                          </span>
+                        )}
+                        {inv.status !== 'paid' && inv.squarePaidAt && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold border border-amber-400/25 bg-amber-400/10 text-amber-300" title="Square confirms this was paid by card — verify the money's in the account, then confirm">
+                            <Banknote className="w-3 h-3" /> Square says paid
+                          </span>
+                        )}
                       </div>
                       <div className="text-slate-400 text-sm mt-0.5 truncate">{inv.billToName || inv.client.clientName || 'No recipient'}</div>
                       <div className="text-slate-500 text-xs mt-0.5 flex items-center gap-2 flex-wrap">
@@ -175,13 +187,31 @@ export default function InvoicesPage() {
                       </button>
                     )}
                     {(inv.status === 'draft' || inv.status === 'sent') && (
-                      <button disabled={busyId === inv.id} onClick={() => setStatus(inv, 'paid')} className={`${iconBtn} border-emerald-400/30 bg-emerald-400/10 text-emerald-300 hover:bg-emerald-400/15`}>
-                        <BadgeCheck className="w-3.5 h-3.5" /> Mark paid
-                      </button>
+                      <div className="relative">
+                        <select
+                          disabled={busyId === inv.id}
+                          value=""
+                          onChange={e => { const v = e.target.value as PaymentMethod; if (v) setStatus(inv, 'paid', v); }}
+                          className={`${iconBtn} appearance-none pl-7 pr-6 border-emerald-400/30 bg-emerald-400/10 text-emerald-300 hover:bg-emerald-400/15`}
+                          title="Mark paid — choose how"
+                        >
+                          <option value="" disabled>Mark paid…</option>
+                          <option value="bank_transfer">Bank transfer</option>
+                          <option value="cash">Cash (in person)</option>
+                          <option value="card">Card (in person)</option>
+                          <option value="other">Other</option>
+                        </select>
+                        <BadgeCheck className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                      </div>
                     )}
                     {inv.status === 'paid' && (
                       <button disabled={busyId === inv.id} onClick={() => setStatus(inv, 'sent')} className={`${iconBtn} border-white/10 text-slate-400 hover:text-white`}>
                         <Undo2 className="w-3.5 h-3.5" /> Unmark paid
+                      </button>
+                    )}
+                    {inv.status !== 'paid' && inv.squarePaidAt && (
+                      <button disabled={busyId === inv.id} onClick={() => setStatus(inv, 'paid', 'card')} className={`${iconBtn} border-emerald-400/30 bg-emerald-400/10 text-emerald-300 hover:bg-emerald-400/15`}>
+                        <BadgeCheck className="w-3.5 h-3.5" /> Confirm Square paid
                       </button>
                     )}
                     <button onClick={() => share(inv)} title="Share invoice link" aria-label="Share invoice link" className={`${iconBtn} ml-auto border-white/10 text-slate-300 hover:text-white`}>

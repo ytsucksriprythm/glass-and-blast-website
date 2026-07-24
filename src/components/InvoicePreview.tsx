@@ -1,12 +1,19 @@
-import { type Invoice, money, longDate, shortDate, computeTotals, GST_NOTE } from '@/lib/invoice';
+import { type Invoice, type PaymentMethod, PAYMENT_METHOD_LABEL, SQUARE_SURCHARGE_PERCENT, cardTotal, money, longDate, shortDate, computeTotals, GST_NOTE } from '@/lib/invoice';
 
 // The display fields the preview needs. The live editor passes a synthesized
-// object (number may be a placeholder) before the invoice is saved.
+// object (number may be a placeholder) before the invoice is saved. `paid` /
+// `paymentMethod` are surfaced separately (rather than via the full Invoice
+// `status`) since the live editor's unsaved draft has no real status yet.
 export type InvoicePreviewData = Omit<
   Invoice,
-  'id' | 'seq' | 'token' | 'bookingId' | 'bookingIds' | 'ownerGuestId' | 'createdAt' | 'updatedAt' | 'sentAt' | 'paidAt' | 'status'
+  'id' | 'seq' | 'token' | 'bookingId' | 'bookingIds' | 'ownerGuestId' | 'createdAt' | 'updatedAt' | 'sentAt' | 'paidAt' | 'status' | 'paymentMethod'
   | 'viewCount' | 'firstViewedAt' | 'lastViewedAt'
->;
+  | 'squarePaymentLinkUrl' | 'squareOrderId' | 'squarePaymentId' | 'squareLinkAmount' | 'squarePaidAt'
+> & {
+  paid?: boolean;
+  paymentMethod?: PaymentMethod | null;
+  cardPayable?: boolean;  // a live Square payment link exists for this invoice
+};
 
 function Field({ label, value }: { label: string; value: React.ReactNode }) {
   return (
@@ -45,6 +52,11 @@ export default function InvoicePreview({ invoice }: { invoice: InvoicePreviewDat
               {title}
             </div>
             <div className="text-sky-700 font-semibold mt-1">{invoice.number}</div>
+            {invoice.paid && (
+              <div className="inline-flex items-center gap-1 mt-2 px-2.5 py-1 rounded-md border-2 border-emerald-600 text-emerald-700 font-display font-extrabold uppercase tracking-widest text-sm -rotate-3">
+                Paid
+              </div>
+            )}
           </div>
         </div>
 
@@ -135,19 +147,36 @@ export default function InvoicePreview({ invoice }: { invoice: InvoicePreviewDat
         <p className="mt-2 text-right text-xs text-slate-400 italic">{GST_NOTE}</p>
 
         {/* Payment details */}
-        <div className="mt-8 rounded-lg border border-sky-200 bg-sky-50 p-5">
-          <div className="text-[11px] font-semibold uppercase tracking-wider text-sky-700 mb-2">Payment details</div>
-          <div className="grid sm:grid-cols-2 gap-x-8 gap-y-1 text-sm">
-            <Field label="Account name" value={invoice.payAccountName} />
-            <Field label="BSB" value={invoice.payBsb} />
-            <Field label="Account number" value={invoice.payAccountNumber} />
-            <Field label="Payment reference" value={<span className="text-sky-800 font-bold">{ref}</span>} />
+        {invoice.paid ? (
+          <div className="mt-8 rounded-lg border border-emerald-200 bg-emerald-50 p-5">
+            <div className="text-[11px] font-semibold uppercase tracking-wider text-emerald-700 mb-2">Payment received</div>
+            <p className="text-sm text-emerald-900">
+              This invoice has been paid in full
+              {invoice.paymentMethod ? <> via <span className="font-bold">{PAYMENT_METHOD_LABEL[invoice.paymentMethod]}</span></> : ''}.
+              Thank you — this document serves as your receipt.
+            </p>
           </div>
-          <p className="mt-3 text-sm text-sky-900">
-            Please pay by bank transfer and use <span className="font-bold">{ref}</span> as the payment reference so we
-            can match your payment.
-          </p>
-        </div>
+        ) : (
+          <div className="mt-8 rounded-lg border border-sky-200 bg-sky-50 p-5">
+            <div className="text-[11px] font-semibold uppercase tracking-wider text-sky-700 mb-2">Payment details</div>
+            <div className="grid sm:grid-cols-2 gap-x-8 gap-y-1 text-sm">
+              <Field label="Account name" value={invoice.payAccountName} />
+              <Field label="BSB" value={invoice.payBsb} />
+              <Field label="Account number" value={invoice.payAccountNumber} />
+              <Field label="Payment reference" value={<span className="text-sky-800 font-bold">{ref}</span>} />
+            </div>
+            <p className="mt-3 text-sm text-sky-900">
+              Please pay by bank transfer and use <span className="font-bold">{ref}</span> as the payment reference so we
+              can match your payment.
+            </p>
+            {invoice.cardPayable && (
+              <p className="mt-2 text-sm text-sky-900">
+                Prefer to pay by card? Use the &quot;Pay by card&quot; button on this page (a {SQUARE_SURCHARGE_PERCENT}% card
+                surcharge applies, total <span className="font-bold">{money(cardTotal(total))}</span>).
+              </p>
+            )}
+          </div>
+        )}
 
         {/* Footer */}
         {invoice.notes && <p className="mt-6 text-center text-slate-600 text-sm">{invoice.notes}</p>}

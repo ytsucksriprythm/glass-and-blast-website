@@ -4,11 +4,11 @@ import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import toast from 'react-hot-toast';
 import {
-  Plus, Trash2, Check, Copy, ExternalLink, Send, BadgeCheck, Undo2, FileText, Search, X, ClipboardList, Eye, Link2, Sparkles,
+  Plus, Trash2, Check, Copy, ExternalLink, Send, BadgeCheck, Undo2, FileText, Search, X, ClipboardList, Eye, Link2, Sparkles, Banknote, Loader2,
 } from 'lucide-react';
 import {
-  type Invoice, type InvoiceStatus, type InvoiceLineItem, type PaymentProfile,
-  BUSINESS_DEFAULTS, PAYMENT_DEFAULTS, addDays, computeTotals, money, longDate, addressesMatch,
+  type Invoice, type InvoiceStatus, type InvoiceLineItem, type PaymentProfile, type PaymentMethod,
+  BUSINESS_DEFAULTS, PAYMENT_DEFAULTS, PAYMENT_METHOD_LABEL, SQUARE_SURCHARGE_PERCENT, addDays, cardTotal, computeTotals, money, longDate, addressesMatch,
 } from '@/lib/invoice';
 import type { Booking } from '@/lib/db';
 import InvoicePreview, { type InvoicePreviewData } from '@/components/InvoicePreview';
@@ -272,6 +272,9 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
     items: lineItems, subtotal, total,
     notes: f.notes,
     payAccountName: f.payAccountName, payBsb: f.payBsb, payAccountNumber: f.payAccountNumber,
+    paid: inv?.status === 'paid',
+    paymentMethod: inv?.paymentMethod ?? null,
+    cardPayable: !!inv?.squarePaymentLinkUrl,
   };
 
   const payload = () => ({
@@ -312,11 +315,35 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
     } finally { setSaving(false); }
   };
 
-  const setStatus = async (status: InvoiceStatus) => {
+  const setStatus = async (status: InvoiceStatus, paymentMethod?: PaymentMethod) => {
     if (!inv) return;
-    const res = await fetch(`/api/admin/invoices/${inv.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }) });
-    if (res.ok) { setInv(await res.json()); toast.success(`Marked ${STATUS_LABEL[status].toLowerCase()}`); }
-    else toast.error('Update failed');
+    const body: Record<string, unknown> = { status };
+    if (paymentMethod) body.paymentMethod = paymentMethod;
+    const res = await fetch(`/api/admin/invoices/${inv.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (res.ok) {
+      setInv(await res.json());
+      toast.success(status === 'paid' && paymentMethod ? `Marked paid — ${PAYMENT_METHOD_LABEL[paymentMethod].toLowerCase()}` : `Marked ${STATUS_LABEL[status].toLowerCase()}`);
+    } else toast.error('Update failed');
+  };
+
+  const [squareBusy, setSquareBusy] = useState(false);
+  const generateSquareLink = async () => {
+    if (!inv) return;
+    setSquareBusy(true);
+    try {
+      const res = await fetch(`/api/admin/invoices/${inv.id}/square-link`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed');
+      setInv(data);
+      toast.success('Square payment link ready');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Could not create Square link');
+    } finally { setSquareBusy(false); }
+  };
+  const copySquareLink = async () => {
+    if (!inv?.squarePaymentLinkUrl) return;
+    try { await navigator.clipboard.writeText(inv.squarePaymentLinkUrl); toast.success('Link copied'); }
+    catch { toast.error('Copy failed'); }
   };
 
   const remove = async () => {
@@ -342,10 +369,31 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
             <div className="flex items-center gap-2">
               <span className={`inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold border ${STATUS_STYLE[inv.status]}`}>{STATUS_LABEL[inv.status]}</span>
               <span className="text-white font-semibold">{inv.number}</span>
+              {inv.status === 'paid' && inv.paymentMethod && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold border border-amber-400/25 bg-amber-400/10 text-amber-300">
+                  {PAYMENT_METHOD_LABEL[inv.paymentMethod]}
+                </span>
+              )}
             </div>
             <div className="flex items-center gap-2">
               {inv.status !== 'sent' && <button onClick={() => setStatus('sent')} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/15 text-slate-200 hover:border-sky-400/40 text-xs font-semibold cursor-pointer"><Send className="w-3.5 h-3.5" /> Mark sent</button>}
-              {inv.status !== 'paid' && <button onClick={() => setStatus('paid')} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/15 text-slate-200 hover:border-emerald-400/40 text-xs font-semibold cursor-pointer"><BadgeCheck className="w-3.5 h-3.5" /> Mark paid</button>}
+              {inv.status !== 'paid' && (
+                <div className="relative">
+                  <select
+                    value=""
+                    onChange={e => { const v = e.target.value as PaymentMethod; if (v) setStatus('paid', v); }}
+                    className="appearance-none pl-7 pr-6 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/15 text-slate-200 hover:border-emerald-400/40 text-xs font-semibold cursor-pointer bg-navy-800"
+                    title="Mark paid — choose how"
+                  >
+                    <option value="" disabled>Mark paid…</option>
+                    <option value="bank_transfer">Bank transfer</option>
+                    <option value="cash">Cash (in person)</option>
+                    <option value="card">Card (in person)</option>
+                    <option value="other">Other</option>
+                  </select>
+                  <BadgeCheck className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none text-slate-200" />
+                </div>
+              )}
               {inv.status !== 'draft' && <button onClick={() => setStatus('draft')} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/15 text-slate-400 hover:text-white text-xs font-semibold cursor-pointer"><Undo2 className="w-3.5 h-3.5" /> Draft</button>}
             </div>
           </div>
@@ -363,6 +411,44 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
             <p className="mt-2 inline-flex items-center gap-1.5 text-slate-500 text-xs">
               <Eye className="w-3.5 h-3.5" /> Not opened by the customer yet
             </p>
+          )}
+
+          {/* Square card payment (online checkout link) */}
+          {inv.status !== 'paid' && inv.status !== 'cancelled' && (
+            <div className="mt-4 pt-4 border-t border-white/10">
+              {inv.squarePaidAt && (
+                <div className="mb-3 rounded-lg border border-amber-400/25 bg-amber-400/10 p-3 flex flex-wrap items-center justify-between gap-2">
+                  <span className="inline-flex items-center gap-1.5 text-amber-300 text-xs font-semibold">
+                    <Banknote className="w-3.5 h-3.5" /> Square says this was paid by card — verify the money's in the account, then confirm.
+                  </span>
+                  <button onClick={() => setStatus('paid', 'card')} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-white text-xs font-semibold cursor-pointer">
+                    <BadgeCheck className="w-3.5 h-3.5" /> Confirm paid
+                  </button>
+                </div>
+              )}
+              {inv.squarePaymentLinkUrl ? (
+                <>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <input readOnly value={inv.squarePaymentLinkUrl} className="form-input flex-1 min-w-[12rem] text-xs" onFocus={e => e.currentTarget.select()} />
+                    <button onClick={copySquareLink} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-white/15 text-slate-200 hover:text-white text-xs font-semibold cursor-pointer"><Copy className="w-3.5 h-3.5" /> Copy</button>
+                    <a href={inv.squarePaymentLinkUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-white/15 text-slate-200 hover:text-white text-xs font-semibold cursor-pointer"><ExternalLink className="w-3.5 h-3.5" /> Open</a>
+                    <button onClick={generateSquareLink} disabled={squareBusy} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-white/15 text-slate-400 hover:text-white text-xs font-semibold cursor-pointer disabled:opacity-50">
+                      {squareBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Banknote className="w-3.5 h-3.5" />} Regenerate
+                    </button>
+                  </div>
+                  <p className="mt-2 text-slate-500 text-xs">
+                    Card total incl. {SQUARE_SURCHARGE_PERCENT}% surcharge: <span className="text-slate-300 font-semibold">{money(cardTotal(total))}</span>.
+                    {inv.squareLinkAmount != null && Math.abs(inv.squareLinkAmount - cardTotal(total)) > 0.01 && (
+                      <span className="text-amber-400"> Invoice total changed since this link was made — hit Regenerate.</span>
+                    )}
+                  </p>
+                </>
+              ) : (
+                <button onClick={generateSquareLink} disabled={squareBusy} className="inline-flex items-center gap-1.5 px-3 py-2.5 rounded-lg bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-white text-sm font-semibold cursor-pointer">
+                  {squareBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Banknote className="w-4 h-4" />} Set up card payment (Square)
+                </button>
+              )}
+            </div>
           )}
         </div>
       )}

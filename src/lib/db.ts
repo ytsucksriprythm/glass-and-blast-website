@@ -353,7 +353,13 @@ async function ensureSchema(): Promise<void> {
           paid_at            TIMESTAMPTZ,
           view_count         INTEGER NOT NULL DEFAULT 0,
           first_viewed_at    TIMESTAMPTZ,
-          last_viewed_at     TIMESTAMPTZ
+          last_viewed_at     TIMESTAMPTZ,
+          payment_method     TEXT,
+          square_payment_link_url TEXT,
+          square_order_id    TEXT,
+          square_payment_id  TEXT,
+          square_link_amount NUMERIC,
+          square_paid_at     TIMESTAMPTZ
         )
       `;
       // Backfill view-tracking columns on pre-existing invoice tables
@@ -362,6 +368,13 @@ async function ensureSchema(): Promise<void> {
       await sql`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS last_viewed_at TIMESTAMPTZ`;
       await sql`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS owner_guest_id TEXT`;
       await sql`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS booking_ids TEXT NOT NULL DEFAULT '[]'`;
+      await sql`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS payment_method TEXT`;
+      await sql`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS square_payment_link_url TEXT`;
+      await sql`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS square_order_id TEXT`;
+      await sql`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS square_payment_id TEXT`;
+      await sql`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS square_link_amount NUMERIC`;
+      await sql`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS square_paid_at TIMESTAMPTZ`;
+      await sql`CREATE INDEX IF NOT EXISTS invoices_square_order_idx ON invoices (square_order_id)`;
       // Backfill the multi-link array from the legacy single booking_id.
       await sql`UPDATE invoices SET booking_ids = json_build_array(booking_id)::text WHERE (booking_ids = '[]' OR booking_ids IS NULL) AND booking_id IS NOT NULL`;
       await sql`CREATE UNIQUE INDEX IF NOT EXISTS invoices_token_idx ON invoices (token)`;
@@ -1193,6 +1206,12 @@ function rowToInvoice(r: any): Invoice {
     seq: Number(r.seq),
     isTaxInvoice: r.is_tax_invoice === true || r.is_tax_invoice === 1,
     status: r.status as InvoiceStatus,
+    paymentMethod: r.payment_method ?? null,
+    squarePaymentLinkUrl: r.square_payment_link_url ?? null,
+    squareOrderId: r.square_order_id ?? null,
+    squarePaymentId: r.square_payment_id ?? null,
+    squareLinkAmount: r.square_link_amount == null ? null : Number(r.square_link_amount),
+    squarePaidAt: r.square_paid_at == null ? null : (typeof r.square_paid_at === 'string' ? r.square_paid_at : new Date(r.square_paid_at).toISOString()),
     fromName: r.from_name ?? '',
     fromTradingAs: r.from_trading_as ?? '',
     fromAbn: r.from_abn ?? '',
@@ -1294,6 +1313,18 @@ export async function getInvoiceByToken(token: string): Promise<Invoice | null> 
   return readInvoices().find(i => i.token === token) ?? null;
 }
 
+// Used by the Square webhook to match an incoming payment back to the
+// invoice whose payment link generated that order.
+export async function getInvoiceBySquareOrderId(orderId: string): Promise<Invoice | null> {
+  if (sql) {
+    await ensureSchema();
+    const rows = await sql`SELECT * FROM invoices WHERE square_order_id = ${orderId} LIMIT 1`;
+    const arr = rows as any[];
+    return arr.length ? rowToInvoice(arr[0]) : null;
+  }
+  return readInvoices().find(i => i.squareOrderId === orderId) ?? null;
+}
+
 export async function createInvoice(input: InvoiceInput): Promise<Invoice> {
   const now = new Date().toISOString();
   const items = (input.items ?? []).map(it => ({
@@ -1320,6 +1351,7 @@ export async function createInvoice(input: InvoiceInput): Promise<Invoice> {
       seq,
       isTaxInvoice: !!input.isTaxInvoice,
       status: input.status ?? 'draft',
+      paymentMethod: input.paymentMethod ?? null,
       fromName: input.fromName, fromTradingAs: input.fromTradingAs, fromAbn: input.fromAbn,
       fromAddress: input.fromAddress, fromEmail: input.fromEmail, fromPhone: input.fromPhone,
       billToName: input.billToName ?? '', billToLines: input.billToLines ?? '',
@@ -1334,6 +1366,7 @@ export async function createInvoice(input: InvoiceInput): Promise<Invoice> {
       ownerGuestId: input.ownerGuestId ?? null,
       createdAt: now, updatedAt: now, sentAt: null, paidAt: null,
       viewCount: 0, firstViewedAt: null, lastViewedAt: null,
+      squarePaymentLinkUrl: null, squareOrderId: null, squarePaymentId: null, squareLinkAmount: null, squarePaidAt: null,
     };
     await sql`
       INSERT INTO invoices (
@@ -1344,7 +1377,7 @@ export async function createInvoice(input: InvoiceInput): Promise<Invoice> {
         invoice_date, service_date, due_date,
         items, subtotal, total, notes,
         pay_account_name, pay_bsb, pay_account_number,
-        token, booking_id, booking_ids, owner_guest_id
+        token, booking_id, booking_ids, owner_guest_id, payment_method
       ) VALUES (
         ${invoice.id}, ${invoice.number}, ${invoice.seq}, ${invoice.isTaxInvoice}, ${invoice.status},
         ${invoice.fromName}, ${invoice.fromTradingAs}, ${invoice.fromAbn}, ${invoice.fromAddress}, ${invoice.fromEmail}, ${invoice.fromPhone},
@@ -1353,7 +1386,7 @@ export async function createInvoice(input: InvoiceInput): Promise<Invoice> {
         ${invoice.invoiceDate}, ${invoice.serviceDate}, ${invoice.dueDate},
         ${JSON.stringify(invoice.items)}, ${invoice.subtotal}, ${invoice.total}, ${invoice.notes},
         ${invoice.payAccountName}, ${invoice.payBsb}, ${invoice.payAccountNumber},
-        ${invoice.token}, ${invoice.bookingId}, ${JSON.stringify(invoice.bookingIds)}, ${invoice.ownerGuestId}
+        ${invoice.token}, ${invoice.bookingId}, ${JSON.stringify(invoice.bookingIds)}, ${invoice.ownerGuestId}, ${invoice.paymentMethod}
       )
     `;
     return invoice;
@@ -1367,6 +1400,7 @@ export async function createInvoice(input: InvoiceInput): Promise<Invoice> {
     seq,
     isTaxInvoice: !!input.isTaxInvoice,
     status: input.status ?? 'draft',
+    paymentMethod: input.paymentMethod ?? null,
     fromName: input.fromName, fromTradingAs: input.fromTradingAs, fromAbn: input.fromAbn,
     fromAddress: input.fromAddress, fromEmail: input.fromEmail, fromPhone: input.fromPhone,
     billToName: input.billToName ?? '', billToLines: input.billToLines ?? '',
@@ -1381,6 +1415,7 @@ export async function createInvoice(input: InvoiceInput): Promise<Invoice> {
     ownerGuestId: input.ownerGuestId ?? null,
     createdAt: now, updatedAt: now, sentAt: null, paidAt: null,
     viewCount: 0, firstViewedAt: null, lastViewedAt: null,
+    squarePaymentLinkUrl: null, squareOrderId: null, squarePaymentId: null, squareLinkAmount: null, squarePaidAt: null,
   };
   rows.push(invoice);
   writeInvoices(rows);
@@ -1396,6 +1431,11 @@ function withInvoiceStamps(cur: Invoice, updates: Partial<Invoice>): Partial<Inv
   }
   if (!('paidAt' in updates) && updates.status === 'paid' && cur.status !== 'paid' && !cur.paidAt) {
     out.paidAt = new Date().toISOString();
+  }
+  // Un-marking paid (e.g. "Unmark paid") without specifying a new method
+  // clears the stale one, so a later re-mark-paid doesn't inherit it.
+  if (!('paymentMethod' in updates) && updates.status && updates.status !== 'paid' && cur.status === 'paid') {
+    out.paymentMethod = null;
   }
   return out;
 }
@@ -1450,6 +1490,12 @@ export async function updateInvoice(id: string, rawUpdates: Partial<Invoice>): P
         booking_id = ${m.bookingId},
         booking_ids = ${JSON.stringify(m.bookingIds)},
         sent_at = ${m.sentAt ?? null}, paid_at = ${m.paidAt ?? null},
+        payment_method = ${m.paymentMethod ?? null},
+        square_payment_link_url = ${m.squarePaymentLinkUrl ?? null},
+        square_order_id = ${m.squareOrderId ?? null},
+        square_payment_id = ${m.squarePaymentId ?? null},
+        square_link_amount = ${m.squareLinkAmount ?? null},
+        square_paid_at = ${m.squarePaidAt ?? null},
         updated_at = now()
       WHERE id = ${id}
       RETURNING *
