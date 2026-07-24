@@ -9,7 +9,7 @@ import {
 import {
   Calendar, LogOut, TrendingUp,
   Clock, CheckCircle, XCircle, Trash2, ChevronUp,
-  ChevronDown, Search, RefreshCw, DollarSign,
+  ChevronDown, ChevronRight, Search, RefreshCw, DollarSign,
   ArrowUpRight, ArrowDownRight, Edit3, Check, Plus, X, StickyNote, BadgeCheck, Wallet,
   Globe, Eye, Users, Link2, MapPin, Target, ClipboardCopy, CalendarDays, CalendarClock, ArrowRight,
   Repeat, PhoneCall, FileText, Send, CheckSquare, Square, Layers, AlertTriangle,
@@ -274,6 +274,191 @@ function CustomerPaidClaimBadge({ booking }: { booking: Booking }) {
   );
 }
 
+// Shared per-booking action handlers, threaded down to the row/card renderers
+// so the same markup works whether a booking is shown loose in the list or
+// nested inside an expanded group.
+type BookingRowActions = {
+  guestName: (id?: string | null) => string;
+  onOpen: (id: string) => void;
+  onInlineStatus: (b: Booking, val: BookingStatus) => void;
+  onTogglePaid: (b: Booking) => void;
+  onManage: (b: Booking) => void;
+  onRemove: (id: string) => void;
+};
+
+// One booking, mobile-card layout (phone-first list + inside expanded groups).
+function BookingCard({ b, actions }: { b: Booking; actions: BookingRowActions }) {
+  const { guestName, onOpen, onInlineStatus, onTogglePaid, onManage, onRemove } = actions;
+  return (
+    <div
+      onClick={() => onOpen(b.id)}
+      className="glass rounded-2xl border border-white/8 p-4 cursor-pointer hover:border-white/20 hover:bg-white/[0.03] active:bg-white/[0.05] transition-colors"
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-white font-semibold flex items-center gap-2 flex-wrap">
+            {b.name}
+            {b.source === 'manual' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-400/15 text-violet-300 border border-violet-400/20">Added</span>}
+            <AssignBadge guestId={b.assignedGuestId} name={guestName(b.assignedGuestId)} />
+            <CustomerPaidClaimBadge booking={b} />
+          </div>
+          <a href={`tel:${b.phone}`} onClick={e => e.stopPropagation()} className="text-sky-400 text-sm cursor-pointer">{b.phone}</a>
+          <div className="text-slate-500 text-xs mt-0.5">{serviceText(b.service)} · <span className="capitalize">{b.propertyType}</span></div>
+        </div>
+        {typeof b.quoteAmount === 'number' && b.quoteAmount > 0 && (
+          <div className="text-violet-300 font-bold text-lg whitespace-nowrap">{money(b.quoteAmount)}</div>
+        )}
+      </div>
+      {(b.preferredDate || b.suburb || b.address) && (
+        <div className="text-slate-500 text-xs mt-2">
+          {[b.preferredDate, b.preferredTime].filter(Boolean).join(' ')}
+          {(b.preferredDate || b.preferredTime) && (b.suburb || b.address) ? ' · ' : ''}
+          {b.suburb}{b.address ? `, ${b.address}` : ''}
+        </div>
+      )}
+      {b.adminNotes && (
+        <div className="text-slate-400 text-xs mt-2 flex items-start gap-1.5">
+          <StickyNote className="w-3 h-3 mt-0.5 flex-shrink-0 text-slate-500" /> {b.adminNotes}
+        </div>
+      )}
+      {/* Controls strip — dead zone: stopPropagation so taps here (and in the
+          gaps between buttons) never open the booking, only the buttons act. */}
+      <div className="mt-4 pt-3 border-t border-white/5 space-y-2.5" onClick={e => e.stopPropagation()}>
+        <select
+          value={b.status}
+          onChange={e => onInlineStatus(b, e.target.value as BookingStatus)}
+          className={`w-full text-sm font-semibold rounded-lg px-3 py-2.5 cursor-pointer bg-transparent border focus:outline-none badge-${b.status}`}
+        >
+          {STATUS_KEYS.map(s => <option key={s} value={s} className="bg-navy-800 text-white">{STATUS_CONFIG[s].label}</option>)}
+        </select>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => onTogglePaid(b)}
+            title={b.paid ? 'Mark unpaid' : 'Mark paid'}
+            className={`flex-1 px-3 py-2.5 rounded-lg border text-sm font-semibold transition-all cursor-pointer ${b.paid ? 'bg-emerald-500/20 border-emerald-400/40 text-emerald-300' : 'bg-red-500/15 border-red-400/40 text-red-300'}`}
+          >
+            {b.paid ? '✓ Paid' : 'Not Paid'}
+          </button>
+          <button onClick={() => onManage(b)} className="p-2.5 rounded-lg glass border border-white/10 text-sky-400 cursor-pointer" title="Manage / notes / quote">
+            <Edit3 className="w-4 h-4" />
+          </button>
+          <Link href={`/admin/calendar?schedule=${b.id}`} className={`p-2.5 rounded-lg glass border border-white/10 cursor-pointer ${b.scheduledAt ? 'text-emerald-300' : 'text-sky-300'}`} title={b.scheduledAt ? `Scheduled: ${scheduledLabel(b.scheduledAt)}` : 'Add to calendar'}>
+            <CalendarClock className="w-4 h-4" />
+          </Link>
+          <button onClick={() => onRemove(b.id)} className="p-2.5 rounded-lg glass border border-white/10 text-red-400 cursor-pointer" title="Delete">
+            <Trash2 className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// One booking, desktop-table row layout.
+function BookingRow({ b, actions }: { b: Booking; actions: BookingRowActions }) {
+  const { guestName, onOpen, onInlineStatus, onTogglePaid, onManage, onRemove } = actions;
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} onClick={() => onOpen(b.id)} className="group grid grid-cols-[1.3fr_1fr_1fr_1fr_1fr_3rem_auto] gap-4 px-6 py-4 border-b border-white/5 hover:bg-white/[0.04] transition-colors items-center cursor-pointer">
+      {/* Customer — whole row opens the booking */}
+      <div className="min-w-0">
+        <div className="text-white group-hover:text-sky-400 transition-colors text-sm font-medium flex items-center gap-2 flex-wrap">
+          {b.name}
+          {b.source === 'manual' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-400/15 text-violet-300 border border-violet-400/20">Added</span>}
+          <AssignBadge guestId={b.assignedGuestId} name={guestName(b.assignedGuestId)} />
+          <CustomerPaidClaimBadge booking={b} />
+        </div>
+        <div className="text-slate-500 text-xs">{b.phone}</div>
+        <div className="text-slate-600 text-xs truncate">{b.suburb}{b.address ? ` · ${b.address}` : ''}</div>
+      </div>
+      {/* Service */}
+      <div>
+        <div className="text-slate-300 text-sm">{serviceText(b.service)}</div>
+        <div className="text-slate-600 text-xs capitalize">{b.propertyType}</div>
+      </div>
+      {/* Date */}
+      <div>
+        <div className="text-slate-300 text-sm">{b.preferredDate || '—'}</div>
+        <div className="text-slate-600 text-xs">{b.preferredTime}</div>
+      </div>
+      {/* Status — stopPropagation keeps the row-open off this control */}
+      <div onClick={e => e.stopPropagation()}>
+        <select
+          value={b.status}
+          onChange={e => onInlineStatus(b, e.target.value as BookingStatus)}
+          className={`text-xs font-semibold rounded-lg px-2 py-1 cursor-pointer bg-transparent border focus:outline-none badge-${b.status}`}
+        >
+          {STATUS_KEYS.map(s => <option key={s} value={s} className="bg-navy-800 text-white">{STATUS_CONFIG[s].label}</option>)}
+        </select>
+      </div>
+      {/* Quote */}
+      <div className="text-sm">
+        {typeof b.quoteAmount === 'number' && b.quoteAmount > 0
+          ? <span className="text-violet-300 font-semibold">{money(b.quoteAmount)}</span>
+          : <span className="text-slate-600">—</span>}
+        {b.adminNotes ? <StickyNote className="inline w-3 h-3 ml-1.5 text-slate-500" /> : null}
+      </div>
+      {/* Paid — stopPropagation dead zone */}
+      <div onClick={e => e.stopPropagation()}>
+        <button
+          onClick={() => onTogglePaid(b)}
+          title={b.paid ? 'Mark unpaid' : 'Mark paid'}
+          className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer ${b.paid ? 'bg-emerald-500/20 border border-emerald-400/40 text-emerald-300' : 'bg-red-500/15 border border-red-400/40 text-red-300 hover:bg-red-500/20'}`}
+        >
+          {b.paid ? '✓ Paid' : 'Not Paid'}
+        </button>
+      </div>
+      {/* Actions — dead-zone wrapper (with left padding buffer) so stray
+          clicks near the icons never open the row */}
+      <div className="flex gap-2 pl-3" onClick={e => e.stopPropagation()}>
+        <button onClick={() => onManage(b)} className="p-1.5 rounded-lg text-slate-500 hover:text-sky-400 hover:bg-sky-400/10 transition-all cursor-pointer" title="Manage / notes / quote">
+          <Edit3 className="w-3.5 h-3.5" />
+        </button>
+        <Link href={`/admin/calendar?schedule=${b.id}`} className={`p-1.5 rounded-lg hover:bg-sky-400/10 transition-all cursor-pointer ${b.scheduledAt ? 'text-emerald-300' : 'text-slate-500 hover:text-sky-300'}`} title={b.scheduledAt ? `Scheduled: ${scheduledLabel(b.scheduledAt)}` : 'Add to calendar'}>
+          <CalendarClock className="w-3.5 h-3.5" />
+        </Link>
+        <button onClick={() => onRemove(b.id)} className="p-1.5 rounded-lg text-slate-500 hover:text-red-400 hover:bg-red-400/10 transition-all cursor-pointer" title="Delete">
+          <Trash2 className="w-3.5 h-3.5" />
+        </button>
+      </div>
+    </motion.div>
+  );
+}
+
+// A group collapsed to one row (title · count · total) sitting inline with
+// everything else in the list — expands to show its member bookings using the
+// same card/row markup.
+function GroupBlock({ group, members, open, onToggle, onDelete, actions }: {
+  group: BookingGroup; members: Booking[]; open: boolean; onToggle: () => void; onDelete: () => void; actions: BookingRowActions;
+}) {
+  return (
+    <div className="glass rounded-xl border border-white/10 overflow-hidden">
+      <button onClick={onToggle} className="w-full flex items-center justify-between gap-3 p-3 text-left cursor-pointer">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <ChevronRight className={`w-4 h-4 text-slate-500 flex-shrink-0 transition-transform ${open ? 'rotate-90' : ''}`} />
+          <Layers className="w-4 h-4 text-sky-400 flex-shrink-0" />
+          <div className="min-w-0">
+            <div className="text-white text-sm font-semibold truncate">{group.title}</div>
+            <div className="text-slate-500 text-xs">{group.jobCount} job{group.jobCount !== 1 ? 's' : ''} · {money(group.totalValue)}</div>
+          </div>
+        </div>
+        <span onClick={e => { e.stopPropagation(); onDelete(); }} className="p-2 rounded-lg text-slate-500 hover:text-red-400 cursor-pointer flex-shrink-0" title="Delete group">
+          <Trash2 className="w-4 h-4" />
+        </span>
+      </button>
+      {open && (
+        <div className="border-t border-white/10 p-3 space-y-2 bg-black/10">
+          <div className="lg:hidden space-y-2">
+            {members.map(b => <BookingCard key={b.id} b={b} actions={actions} />)}
+          </div>
+          <div className="hidden lg:block rounded-lg overflow-hidden border border-white/5">
+            {members.map(b => <BookingRow key={b.id} b={b} actions={actions} />)}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Bottom tab bar (mobile / installed app) ─────────────────────────────
 
 type TabKey = 'overview' | 'bookings' | 'business' | 'site';
@@ -342,6 +527,7 @@ export default function Dashboard() {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [serviceFilter, setServiceFilter] = useState('all');
+  const [showPaid, setShowPaid] = useState(true);
   const [sortField, setSortField] = useState('createdAt');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
 
@@ -356,6 +542,10 @@ export default function Dashboard() {
   const [showGroupModal, setShowGroupModal] = useState(false);
   const [delGroup, setDelGroup] = useState<BookingGroup | null>(null);
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  const toggleGroupExpanded = (id: string) => setExpandedGroups(s => {
+    const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n;
+  });
 
   const toggleSel = (id: string) => setSelected(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const clearSel = () => { setSelected(new Set()); setSelectMode(false); };
@@ -543,6 +733,35 @@ export default function Dashboard() {
     : undefined;
 
   const navItems = adminNavItems({ onTab: setActiveTab, pending: stats?.pending ?? 0 });
+
+  // Grouped bookings collapse into one row instead of showing as separate
+  // lines — fewer rows to scan. The group sits inline with everything else,
+  // at the position of its most recently added member: `bookings` is already
+  // in the current sort order, so the first member hit while walking that
+  // order IS the group's most-recent job (default sort is createdAt desc).
+  const visibleBookings = showPaid ? bookings : bookings.filter(b => !b.paid);
+  const bookingsByGroup = new Map<string, Booking[]>();
+  for (const b of visibleBookings) {
+    if (!b.groupId) continue;
+    const list = bookingsByGroup.get(b.groupId) ?? [];
+    list.push(b);
+    bookingsByGroup.set(b.groupId, list);
+  }
+  type ListItem = { kind: 'booking'; booking: Booking } | { kind: 'group'; group: BookingGroup; members: Booking[] };
+  const listItems: ListItem[] = [];
+  const seenGroups = new Set<string>();
+  for (const b of visibleBookings) {
+    if (!b.groupId) { listItems.push({ kind: 'booking', booking: b }); continue; }
+    if (seenGroups.has(b.groupId)) continue;
+    seenGroups.add(b.groupId);
+    const group = groups.find(g => g.id === b.groupId);
+    if (!group) { listItems.push({ kind: 'booking', booking: b }); continue; }
+    listItems.push({ kind: 'group', group, members: bookingsByGroup.get(b.groupId) ?? [] });
+  }
+  const rowActions: BookingRowActions = {
+    guestName, onOpen: openBooking, onInlineStatus, onTogglePaid,
+    onManage: setManage, onRemove: removeBooking,
+  };
 
   return (
     <div className="min-h-[100svh] bg-navy-900 flex">
@@ -796,6 +1015,15 @@ export default function Dashboard() {
                       <option value="solar-panel-cleaning">Solar Panel</option>
                       <option value="other">Other</option>
                     </select>
+                    <label className="inline-flex items-center justify-center gap-2 px-3 py-2.5 glass border border-white/10 text-slate-300 text-sm font-semibold rounded-xl cursor-pointer whitespace-nowrap">
+                      <input
+                        type="checkbox"
+                        checked={showPaid}
+                        onChange={e => setShowPaid(e.target.checked)}
+                        className="appearance-none w-4 h-4 rounded border border-white/25 bg-white/10 checked:bg-sky-500 checked:border-sky-500 cursor-pointer relative before:content-['✓'] before:absolute before:inset-0 before:flex before:items-center before:justify-center before:text-[10px] before:leading-none before:text-white before:opacity-0 checked:before:opacity-100"
+                      />
+                      Show paid
+                    </label>
                     <button onClick={exportBookings} title="Copy all bookings as text (for pasting into Claude / notes)" className="inline-flex items-center justify-center gap-2 px-4 py-2.5 glass border border-white/10 text-slate-300 hover:text-white text-sm font-semibold rounded-xl transition-all cursor-pointer whitespace-nowrap">
                       <ClipboardCopy className="w-4 h-4" /> Export
                     </button>
@@ -807,36 +1035,18 @@ export default function Dashboard() {
 
                 <div className="flex items-center justify-between px-1">
                   <div className="text-slate-500 text-sm">
-                    {loading ? 'Loading...' : `${bookings.length} booking${bookings.length !== 1 ? 's' : ''}`}
+                    {loading ? 'Loading...' : `${visibleBookings.length} booking${visibleBookings.length !== 1 ? 's' : ''}`}
                   </div>
                   <button onClick={() => { setSelectMode(m => !m); setSelected(new Set()); }} className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold cursor-pointer transition-colors ${selectMode ? 'bg-sky-500 text-white' : 'glass border border-white/10 text-slate-300 hover:text-white'}`}>
                     <CheckSquare className="w-4 h-4" /> {selectMode ? 'Done' : 'Select'}
                   </button>
                 </div>
 
-                {/* Groups */}
-                {!selectMode && groups.length > 0 && (
-                  <div className="space-y-2">
-                    {groups.map(g => (
-                      <div key={g.id} className="glass rounded-xl border border-white/10 p-3 flex items-center justify-between gap-3">
-                        <div className="flex items-center gap-2.5 min-w-0">
-                          <Layers className="w-4 h-4 text-sky-400 flex-shrink-0" />
-                          <div className="min-w-0">
-                            <div className="text-white text-sm font-semibold truncate">{g.title}</div>
-                            <div className="text-slate-500 text-xs">{g.jobCount} job{g.jobCount !== 1 ? 's' : ''} · {money(g.totalValue)}</div>
-                          </div>
-                        </div>
-                        <button onClick={() => setDelGroup(g)} className="p-2 rounded-lg text-slate-500 hover:text-red-400 cursor-pointer flex-shrink-0" title="Delete group"><Trash2 className="w-4 h-4" /></button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
                 {/* Bulk select list + action bar */}
                 {selectMode && (
                   <div className="space-y-2 pb-24">
-                    <button onClick={() => setSelected(new Set(bookings.map(b => b.id)))} className="text-sky-400 text-xs font-semibold cursor-pointer">Select all ({bookings.length})</button>
-                    {bookings.map(b => {
+                    <button onClick={() => setSelected(new Set(visibleBookings.map(b => b.id)))} className="text-sky-400 text-xs font-semibold cursor-pointer">Select all ({visibleBookings.length})</button>
+                    {visibleBookings.map(b => {
                       const on = selected.has(b.id);
                       return (
                         <button key={b.id} onClick={() => toggleSel(b.id)} className={`w-full flex items-center gap-3 p-3 rounded-xl border text-left cursor-pointer transition-colors ${on ? 'border-sky-400 bg-sky-400/10' : 'border-white/10 glass hover:border-white/20'}`}>
@@ -866,78 +1076,29 @@ export default function Dashboard() {
                 )}
 
                 {!selectMode && (<>
-                {/* Mobile cards (phone-first) */}
+                {/* Mobile cards (phone-first). Grouped bookings collapse into one
+                    card, positioned by their most recently added job, instead of
+                    each appearing separately. */}
                 <div className="lg:hidden space-y-3">
                   {loading ? (
                     Array.from({ length: 4 }).map((_, i) => <div key={i} className="glass rounded-2xl border border-white/8 p-4 h-32 animate-pulse" />)
-                  ) : bookings.length === 0 ? (
+                  ) : visibleBookings.length === 0 ? (
                     <div className="glass rounded-2xl border border-white/8 p-10 text-center text-slate-600">
                       <Calendar className="w-8 h-8 mx-auto mb-3 opacity-30" /> No bookings found
                     </div>
-                  ) : bookings.map((b) => (
-                    <div
-                      key={b.id}
-                      onClick={() => openBooking(b.id)}
-                      className="glass rounded-2xl border border-white/8 p-4 cursor-pointer hover:border-white/20 hover:bg-white/[0.03] active:bg-white/[0.05] transition-colors"
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <div className="text-white font-semibold flex items-center gap-2 flex-wrap">
-                            {b.name}
-                            {b.source === 'manual' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-400/15 text-violet-300 border border-violet-400/20">Added</span>}
-                            <AssignBadge guestId={b.assignedGuestId} name={guestName(b.assignedGuestId)} />
-                            <CustomerPaidClaimBadge booking={b} />
-                          </div>
-                          <a href={`tel:${b.phone}`} onClick={e => e.stopPropagation()} className="text-sky-400 text-sm cursor-pointer">{b.phone}</a>
-                          <div className="text-slate-500 text-xs mt-0.5">{serviceText(b.service)} · <span className="capitalize">{b.propertyType}</span></div>
-                        </div>
-                        {typeof b.quoteAmount === 'number' && b.quoteAmount > 0 && (
-                          <div className="text-violet-300 font-bold text-lg whitespace-nowrap">{money(b.quoteAmount)}</div>
-                        )}
-                      </div>
-                      {(b.preferredDate || b.suburb || b.address) && (
-                        <div className="text-slate-500 text-xs mt-2">
-                          {[b.preferredDate, b.preferredTime].filter(Boolean).join(' ')}
-                          {(b.preferredDate || b.preferredTime) && (b.suburb || b.address) ? ' · ' : ''}
-                          {b.suburb}{b.address ? `, ${b.address}` : ''}
-                        </div>
-                      )}
-                      {b.adminNotes && (
-                        <div className="text-slate-400 text-xs mt-2 flex items-start gap-1.5">
-                          <StickyNote className="w-3 h-3 mt-0.5 flex-shrink-0 text-slate-500" /> {b.adminNotes}
-                        </div>
-                      )}
-                      {/* Controls strip — dead zone: stopPropagation so taps here (and in the
-                          gaps between buttons) never open the booking, only the buttons act. */}
-                      <div className="mt-4 pt-3 border-t border-white/5 space-y-2.5" onClick={e => e.stopPropagation()}>
-                        <select
-                          value={b.status}
-                          onChange={e => onInlineStatus(b, e.target.value as BookingStatus)}
-                          className={`w-full text-sm font-semibold rounded-lg px-3 py-2.5 cursor-pointer bg-transparent border focus:outline-none badge-${b.status}`}
-                        >
-                          {STATUS_KEYS.map(s => <option key={s} value={s} className="bg-navy-800 text-white">{STATUS_CONFIG[s].label}</option>)}
-                        </select>
-                        <div className="flex items-center gap-3">
-                          <button
-                            onClick={() => onTogglePaid(b)}
-                            title={b.paid ? 'Mark unpaid' : 'Mark paid'}
-                            className={`flex-1 px-3 py-2.5 rounded-lg border text-sm font-semibold transition-all cursor-pointer ${b.paid ? 'bg-emerald-500/20 border-emerald-400/40 text-emerald-300' : 'bg-red-500/15 border-red-400/40 text-red-300'}`}
-                          >
-                            {b.paid ? '✓ Paid' : 'Not Paid'}
-                          </button>
-                          <button onClick={() => setManage(b)} className="p-2.5 rounded-lg glass border border-white/10 text-sky-400 cursor-pointer" title="Manage / notes / quote">
-                            <Edit3 className="w-4 h-4" />
-                          </button>
-                          <Link href={`/admin/calendar?schedule=${b.id}`} className={`p-2.5 rounded-lg glass border border-white/10 cursor-pointer ${b.scheduledAt ? 'text-emerald-300' : 'text-sky-300'}`} title={b.scheduledAt ? `Scheduled: ${scheduledLabel(b.scheduledAt)}` : 'Add to calendar'}>
-                            <CalendarClock className="w-4 h-4" />
-                          </Link>
-                          <button onClick={() => removeBooking(b.id)} className="p-2.5 rounded-lg glass border border-white/10 text-red-400 cursor-pointer" title="Delete">
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
+                  ) : listItems.map((item) => item.kind === 'booking'
+                    ? <BookingCard key={item.booking.id} b={item.booking} actions={rowActions} />
+                    : (
+                      <GroupBlock
+                        key={item.group.id}
+                        group={item.group}
+                        members={item.members}
+                        open={expandedGroups.has(item.group.id)}
+                        onToggle={() => toggleGroupExpanded(item.group.id)}
+                        onDelete={() => setDelGroup(item.group)}
+                        actions={rowActions}
+                      />
+                    ))}
                 </div>
 
                 {/* Table (desktop) */}
@@ -964,77 +1125,25 @@ export default function Dashboard() {
                         {Array.from({ length: 7 }).map((_, j) => <div key={j} className="h-4 bg-white/5 rounded" />)}
                       </div>
                     ))
-                  ) : bookings.length === 0 ? (
+                  ) : visibleBookings.length === 0 ? (
                     <div className="px-6 py-16 text-center text-slate-600">
                       <Calendar className="w-8 h-8 mx-auto mb-3 opacity-30" />
                       No bookings found
                     </div>
                   ) : (
-                    bookings.map((b) => (
-                      <motion.div key={b.id} initial={{ opacity: 0 }} animate={{ opacity: 1 }} onClick={() => openBooking(b.id)} className="group grid grid-cols-[1.3fr_1fr_1fr_1fr_1fr_3rem_auto] gap-4 px-6 py-4 border-b border-white/5 hover:bg-white/[0.04] transition-colors items-center cursor-pointer">
-                        {/* Customer — whole row opens the booking */}
-                        <div className="min-w-0">
-                          <div className="text-white group-hover:text-sky-400 transition-colors text-sm font-medium flex items-center gap-2 flex-wrap">
-                            {b.name}
-                            {b.source === 'manual' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-400/15 text-violet-300 border border-violet-400/20">Added</span>}
-                            <AssignBadge guestId={b.assignedGuestId} name={guestName(b.assignedGuestId)} />
-                            <CustomerPaidClaimBadge booking={b} />
-                          </div>
-                          <div className="text-slate-500 text-xs">{b.phone}</div>
-                          <div className="text-slate-600 text-xs truncate">{b.suburb}{b.address ? ` · ${b.address}` : ''}</div>
-                        </div>
-                        {/* Service */}
-                        <div>
-                          <div className="text-slate-300 text-sm">{serviceText(b.service)}</div>
-                          <div className="text-slate-600 text-xs capitalize">{b.propertyType}</div>
-                        </div>
-                        {/* Date */}
-                        <div>
-                          <div className="text-slate-300 text-sm">{b.preferredDate || '—'}</div>
-                          <div className="text-slate-600 text-xs">{b.preferredTime}</div>
-                        </div>
-                        {/* Status — stopPropagation keeps the row-open off this control */}
-                        <div onClick={e => e.stopPropagation()}>
-                          <select
-                            value={b.status}
-                            onChange={e => onInlineStatus(b, e.target.value as BookingStatus)}
-                            className={`text-xs font-semibold rounded-lg px-2 py-1 cursor-pointer bg-transparent border focus:outline-none badge-${b.status}`}
-                          >
-                            {STATUS_KEYS.map(s => <option key={s} value={s} className="bg-navy-800 text-white">{STATUS_CONFIG[s].label}</option>)}
-                          </select>
-                        </div>
-                        {/* Quote */}
-                        <div className="text-sm">
-                          {typeof b.quoteAmount === 'number' && b.quoteAmount > 0
-                            ? <span className="text-violet-300 font-semibold">{money(b.quoteAmount)}</span>
-                            : <span className="text-slate-600">—</span>}
-                          {b.adminNotes ? <StickyNote className="inline w-3 h-3 ml-1.5 text-slate-500" /> : null}
-                        </div>
-                        {/* Paid — stopPropagation dead zone */}
-                        <div onClick={e => e.stopPropagation()}>
-                          <button
-                            onClick={() => onTogglePaid(b)}
-                            title={b.paid ? 'Mark unpaid' : 'Mark paid'}
-                            className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer ${b.paid ? 'bg-emerald-500/20 border border-emerald-400/40 text-emerald-300' : 'bg-red-500/15 border border-red-400/40 text-red-300 hover:bg-red-500/20'}`}
-                          >
-                            {b.paid ? '✓ Paid' : 'Not Paid'}
-                          </button>
-                        </div>
-                        {/* Actions — dead-zone wrapper (with left padding buffer) so stray
-                            clicks near the icons never open the row */}
-                        <div className="flex gap-2 pl-3" onClick={e => e.stopPropagation()}>
-                          <button onClick={() => setManage(b)} className="p-1.5 rounded-lg text-slate-500 hover:text-sky-400 hover:bg-sky-400/10 transition-all cursor-pointer" title="Manage / notes / quote">
-                            <Edit3 className="w-3.5 h-3.5" />
-                          </button>
-                          <Link href={`/admin/calendar?schedule=${b.id}`} className={`p-1.5 rounded-lg hover:bg-sky-400/10 transition-all cursor-pointer ${b.scheduledAt ? 'text-emerald-300' : 'text-slate-500 hover:text-sky-300'}`} title={b.scheduledAt ? `Scheduled: ${scheduledLabel(b.scheduledAt)}` : 'Add to calendar'}>
-                            <CalendarClock className="w-3.5 h-3.5" />
-                          </Link>
-                          <button onClick={() => removeBooking(b.id)} className="p-1.5 rounded-lg text-slate-500 hover:text-red-400 hover:bg-red-400/10 transition-all cursor-pointer" title="Delete">
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      </motion.div>
-                    ))
+                    listItems.map((item) => item.kind === 'booking'
+                      ? <BookingRow key={item.booking.id} b={item.booking} actions={rowActions} />
+                      : (
+                        <GroupBlock
+                          key={item.group.id}
+                          group={item.group}
+                          members={item.members}
+                          open={expandedGroups.has(item.group.id)}
+                          onToggle={() => toggleGroupExpanded(item.group.id)}
+                          onDelete={() => setDelGroup(item.group)}
+                          actions={rowActions}
+                        />
+                      ))
                   )}
                 </div>
                 </>)}
