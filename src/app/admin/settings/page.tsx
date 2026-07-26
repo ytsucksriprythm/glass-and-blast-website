@@ -465,6 +465,8 @@ export default function SettingsPage() {
               </Section>
 
               <ActivityLog />
+
+              <p className="text-center text-slate-700 text-[10px] pt-2">v{process.env.NEXT_PUBLIC_APP_VERSION ?? '0'}</p>
             </div>
           )}
         </main>
