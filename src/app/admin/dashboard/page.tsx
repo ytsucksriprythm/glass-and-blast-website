@@ -19,6 +19,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import toast from 'react-hot-toast';
 import type { Booking, BookingStatus, RecurringJob, BookingGroup } from '@/lib/db';
+import type { Invoice } from '@/lib/invoice';
 import { AdminSidebar, AdminMobileNav, AdminMoreSheet, useMoreSheet, adminNavItems } from '@/components/admin/AdminNav';
 import { AddressLink } from '@/components/AddressLink';
 
@@ -512,6 +513,21 @@ export default function Dashboard() {
   }, []);
   const guestName = (id?: string | null) => guests.find(g => g.id === id)?.name ?? 'guest';
 
+  // Which bookings already have an invoice linked — powers the "no invoice
+  // yet" indicator on the Done-but-not-paid list.
+  const [invoicedBookingIds, setInvoicedBookingIds] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch('/api/admin/invoices');
+        if (res.ok) {
+          const invs: Invoice[] = await res.json();
+          setInvoicedBookingIds(new Set(invs.flatMap(i => i.bookingIds ?? [])));
+        }
+      } catch { /* indicator just won't show */ }
+    })();
+  }, []);
+
   // Switch into a guest's dashboard. No password — the admin session is kept,
   // so the "Admin" button over there brings you straight back.
   const viewAsGuest = async (guestId: string) => {
@@ -830,6 +846,8 @@ export default function Dashboard() {
                   </div>
                 )}
 
+                <UpcomingJobs bookings={bookings} />
+
                 {/* Action needed: fresh leads to call + money owed — the two lists that make you money */}
                 {!loading && (() => {
                   const leads = bookings.filter(b => b.status === 'pending').sort((a, b) => a.createdAt.localeCompare(b.createdAt)).slice(0, 5);
@@ -878,7 +896,18 @@ export default function Dashboard() {
                                   <button onClick={() => openBooking(b.id)} className="w-full flex items-center gap-3 py-2 text-left cursor-pointer">
                                     <div className="min-w-0 flex-1">
                                       <div className="text-white text-sm font-medium truncate">{b.name}</div>
-                                      <div className="text-slate-500 text-xs">{b.completedAt ? `Done ${new Date(b.completedAt).toLocaleDateString('en-AU', { day: 'numeric', month: 'short' })}` : 'Completed'}</div>
+                                      <div className="text-slate-500 text-xs flex items-center gap-1.5 flex-wrap">
+                                        <span>{b.completedAt ? `Done ${new Date(b.completedAt).toLocaleDateString('en-AU', { day: 'numeric', month: 'short' })}` : 'Completed'}</span>
+                                        {invoicedBookingIds.has(b.id) ? (
+                                          <span className="inline-flex items-center gap-1 text-emerald-400" title="An invoice is linked to this job">
+                                            <FileText className="w-3 h-3" /> Invoiced
+                                          </span>
+                                        ) : (
+                                          <span className="inline-flex items-center gap-1 text-amber-400" title="No invoice linked to this job yet">
+                                            <AlertTriangle className="w-3 h-3" /> No invoice
+                                          </span>
+                                        )}
+                                      </div>
                                     </div>
                                     <span className="flex-shrink-0 text-red-300 text-sm font-semibold">{money(b.quoteAmount)}</span>
                                   </button>
@@ -941,8 +970,6 @@ export default function Dashboard() {
                     </div>
                   );
                 })()}
-
-                <UpcomingJobs bookings={bookings} />
 
                 {stats && (
                   <div className="grid lg:grid-cols-3 gap-6">
