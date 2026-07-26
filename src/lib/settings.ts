@@ -39,6 +39,10 @@ export interface AppSettings {
   // blank for that section instead of pre-filling from the first profile.
   autofillBusinessInfo: boolean;
   autofillPaymentDetails: boolean;
+
+  // Default for whether a new NORMAL invoice shows the business address.
+  // Tax invoices always show it, regardless of this setting.
+  defaultShowAddressOnInvoice: boolean;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -64,4 +68,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
 
   autofillBusinessInfo: true,
   autofillPaymentDetails: true,
+
+  defaultShowAddressOnInvoice: true,
 };

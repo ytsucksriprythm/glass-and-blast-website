@@ -68,7 +68,7 @@ export default function InvoicePreview({ invoice }: { invoice: InvoicePreviewDat
             <div className="text-slate-900 font-semibold">{invoice.fromName}</div>
             {invoice.fromTradingAs && <div className="text-slate-600 text-sm">Trading as {invoice.fromTradingAs}</div>}
             {invoice.fromAbn && <div className="text-slate-600 text-sm">ABN: {invoice.fromAbn}</div>}
-            {invoice.fromAddress && <div className="text-slate-600 text-sm">{invoice.fromAddress}</div>}
+            {invoice.fromAddress && invoice.showFromAddress !== false && <div className="text-slate-600 text-sm">{invoice.fromAddress}</div>}
             {invoice.fromEmail && <div className="text-slate-600 text-sm">{invoice.fromEmail}</div>}
             {invoice.fromPhone && <div className="text-slate-600 text-sm">{invoice.fromPhone}</div>}
           </div>

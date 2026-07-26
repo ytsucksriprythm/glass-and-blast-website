@@ -367,7 +367,8 @@ async function ensureSchema(): Promise<void> {
           square_order_id    TEXT,
           square_payment_id  TEXT,
           square_link_amount NUMERIC,
-          square_paid_at     TIMESTAMPTZ
+          square_paid_at     TIMESTAMPTZ,
+          show_from_address  BOOLEAN NOT NULL DEFAULT true
         )
       `;
       // Backfill view-tracking columns on pre-existing invoice tables
@@ -382,6 +383,7 @@ async function ensureSchema(): Promise<void> {
       await sql`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS square_payment_id TEXT`;
       await sql`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS square_link_amount NUMERIC`;
       await sql`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS square_paid_at TIMESTAMPTZ`;
+      await sql`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS show_from_address BOOLEAN NOT NULL DEFAULT true`;
       await sql`CREATE INDEX IF NOT EXISTS invoices_square_order_idx ON invoices (square_order_id)`;
       // Backfill the multi-link array from the legacy single booking_id.
       await sql`UPDATE invoices SET booking_ids = json_build_array(booking_id)::text WHERE (booking_ids = '[]' OR booking_ids IS NULL) AND booking_id IS NOT NULL`;
@@ -1297,6 +1299,7 @@ function rowToInvoice(r: any): Invoice {
     fromAddress: r.from_address ?? '',
     fromEmail: r.from_email ?? '',
     fromPhone: r.from_phone ?? '',
+    showFromAddress: r.show_from_address !== false && r.show_from_address !== 0,
     billToName: r.bill_to_name ?? '',
     billToLines: r.bill_to_lines ?? '',
     client: {
@@ -1433,6 +1436,7 @@ export async function createInvoice(input: InvoiceInput): Promise<Invoice> {
       paymentMethod: input.paymentMethod ?? null,
       fromName: input.fromName, fromTradingAs: input.fromTradingAs, fromAbn: input.fromAbn,
       fromAddress: input.fromAddress, fromEmail: input.fromEmail, fromPhone: input.fromPhone,
+      showFromAddress: input.isTaxInvoice ? true : (input.showFromAddress ?? true),
       billToName: input.billToName ?? '', billToLines: input.billToLines ?? '',
       client: input.client ?? { show: false, clientName: '', trn: '', fileNo: '', claimRef: '' },
       invoiceDate: input.invoiceDate ?? '', serviceDate: input.serviceDate ?? '', dueDate: input.dueDate ?? '',
@@ -1450,7 +1454,7 @@ export async function createInvoice(input: InvoiceInput): Promise<Invoice> {
     await sql`
       INSERT INTO invoices (
         id, number, seq, is_tax_invoice, status,
-        from_name, from_trading_as, from_abn, from_address, from_email, from_phone,
+        from_name, from_trading_as, from_abn, from_address, from_email, from_phone, show_from_address,
         bill_to_name, bill_to_lines,
         client_show, client_name, client_trn, client_file_no, client_claim_ref,
         invoice_date, service_date, due_date,
@@ -1459,7 +1463,7 @@ export async function createInvoice(input: InvoiceInput): Promise<Invoice> {
         token, booking_id, booking_ids, owner_guest_id, payment_method
       ) VALUES (
         ${invoice.id}, ${invoice.number}, ${invoice.seq}, ${invoice.isTaxInvoice}, ${invoice.status},
-        ${invoice.fromName}, ${invoice.fromTradingAs}, ${invoice.fromAbn}, ${invoice.fromAddress}, ${invoice.fromEmail}, ${invoice.fromPhone},
+        ${invoice.fromName}, ${invoice.fromTradingAs}, ${invoice.fromAbn}, ${invoice.fromAddress}, ${invoice.fromEmail}, ${invoice.fromPhone}, ${invoice.showFromAddress},
         ${invoice.billToName}, ${invoice.billToLines},
         ${invoice.client.show}, ${invoice.client.clientName}, ${invoice.client.trn}, ${invoice.client.fileNo}, ${invoice.client.claimRef},
         ${invoice.invoiceDate}, ${invoice.serviceDate}, ${invoice.dueDate},
@@ -1482,6 +1486,7 @@ export async function createInvoice(input: InvoiceInput): Promise<Invoice> {
     paymentMethod: input.paymentMethod ?? null,
     fromName: input.fromName, fromTradingAs: input.fromTradingAs, fromAbn: input.fromAbn,
     fromAddress: input.fromAddress, fromEmail: input.fromEmail, fromPhone: input.fromPhone,
+    showFromAddress: input.isTaxInvoice ? true : (input.showFromAddress ?? true),
     billToName: input.billToName ?? '', billToLines: input.billToLines ?? '',
     client: input.client ?? { show: false, clientName: '', trn: '', fileNo: '', claimRef: '' },
     invoiceDate: input.invoiceDate ?? '', serviceDate: input.serviceDate ?? '', dueDate: input.dueDate ?? '',
@@ -1554,12 +1559,16 @@ export async function updateInvoice(id: string, rawUpdates: Partial<Invoice>): P
     m.subtotal = totals.subtotal; m.total = totals.total;
     m.bookingIds = resolveBookingIds(cur, rawUpdates, m.bookingId);
     m.bookingId = m.bookingIds[0] ?? null;
+    // A tax invoice always shows the business address — non-negotiable, so
+    // this holds even if the caller sent conflicting fields.
+    if (m.isTaxInvoice) m.showFromAddress = true;
     const rows = await sql`
       UPDATE invoices SET
         is_tax_invoice = ${m.isTaxInvoice},
         status = ${m.status},
         from_name = ${m.fromName}, from_trading_as = ${m.fromTradingAs}, from_abn = ${m.fromAbn},
         from_address = ${m.fromAddress}, from_email = ${m.fromEmail}, from_phone = ${m.fromPhone},
+        show_from_address = ${m.showFromAddress},
         bill_to_name = ${m.billToName}, bill_to_lines = ${m.billToLines},
         client_show = ${m.client.show}, client_name = ${m.client.clientName}, client_trn = ${m.client.trn},
         client_file_no = ${m.client.fileNo}, client_claim_ref = ${m.client.claimRef},
@@ -1596,6 +1605,7 @@ export async function updateInvoice(id: string, rawUpdates: Partial<Invoice>): P
   m.subtotal = totals.subtotal; m.total = totals.total;
   m.bookingIds = resolveBookingIds(cur, rawUpdates, m.bookingId);
   m.bookingId = m.bookingIds[0] ?? null;
+  if (m.isTaxInvoice) m.showFromAddress = true;
   m.updatedAt = new Date().toISOString();
   rows[idx] = m;
   writeInvoices(rows);

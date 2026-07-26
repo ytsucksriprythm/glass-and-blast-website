@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import toast from 'react-hot-toast';
 import {
   ArrowLeft, Settings as SettingsIcon, Save, ShieldAlert, CreditCard, Bell, Star,
-  CalendarClock, Globe, ScrollText, RefreshCw, FileEdit, Trash2, Plus, Pencil, X, Check,
+  CalendarClock, Globe, ScrollText, RefreshCw, FileEdit, Trash2, Plus, Pencil, X, Check, MapPin,
 } from 'lucide-react';
 import type { AppSettings } from '@/lib/settings';
 import type { PaymentProfile, BusinessProfile } from '@/lib/invoice';
@@ -392,6 +392,15 @@ export default function SettingsPage() {
                 onUpdate={updateBusinessProfile}
                 onDelete={deleteBusinessProfile}
               />
+
+              <Section title="Invoice address display" icon={MapPin}>
+                <Toggle
+                  label="Show business address on new invoices (default)"
+                  sub="Applies to normal invoices only — editable per invoice next to the address field. Tax invoices always show the address, regardless of this setting."
+                  checked={s.defaultShowAddressOnInvoice}
+                  onChange={v => set('defaultShowAddressOnInvoice', v)}
+                />
+              </Section>
 
               <ProfileManager<PaymentProfile>
                 title="Invoice autofill — payment details"

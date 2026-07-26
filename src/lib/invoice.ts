@@ -48,6 +48,10 @@ export interface Invoice {
   fromAddress: string;
   fromEmail: string;
   fromPhone: string;
+  // Whether the address line renders on the invoice document. Editable
+  // per-invoice, defaulting from Settings for normal invoices — but a tax
+  // invoice always shows it, non-negotiable (enforced in db.ts too).
+  showFromAddress: boolean;
 
   // BILL TO
   billToName: string;
@@ -104,9 +108,11 @@ export type InvoiceInput = Omit<
   'id' | 'number' | 'seq' | 'token' | 'subtotal' | 'total' | 'createdAt' | 'updatedAt' | 'sentAt' | 'paidAt' | 'status' | 'paymentMethod'
   | 'viewCount' | 'firstViewedAt' | 'lastViewedAt'
   | 'squarePaymentLinkUrl' | 'squareOrderId' | 'squarePaymentId' | 'squareLinkAmount' | 'squarePaidAt'
+  | 'showFromAddress'
 > & {
   status?: InvoiceStatus;
   paymentMethod?: PaymentMethod | null;
+  showFromAddress?: boolean;
 };
 
 // ownerGuestId is part of InvoiceInput (via the Omit above it stays), set by the

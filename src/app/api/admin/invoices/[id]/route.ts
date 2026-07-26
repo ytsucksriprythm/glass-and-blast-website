@@ -41,7 +41,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   const updates: Partial<Invoice> = {};
   const copy = <K extends keyof Invoice>(k: K) => { if (k in b) (updates as any)[k] = b[k]; };
   (['isTaxInvoice', 'status', 'paymentMethod', 'fromName', 'fromTradingAs', 'fromAbn', 'fromAddress', 'fromEmail', 'fromPhone',
-    'billToName', 'billToLines', 'invoiceDate', 'serviceDate', 'dueDate', 'notes',
+    'showFromAddress', 'billToName', 'billToLines', 'invoiceDate', 'serviceDate', 'dueDate', 'notes',
     'payAccountName', 'payBsb', 'payAccountNumber', 'bookingId', 'bookingIds', 'sentAt', 'paidAt'] as (keyof Invoice)[])
     .forEach(copy);
 

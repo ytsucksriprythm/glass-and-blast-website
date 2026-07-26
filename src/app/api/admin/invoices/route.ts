@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getInvoices, createInvoice, logActivity } from '@/lib/db';
+import { getInvoices, createInvoice, getSettings, logActivity } from '@/lib/db';
 import { getActiveContext } from '@/lib/auth';
 import { BUSINESS_DEFAULTS, PAYMENT_DEFAULTS, type InvoiceInput } from '@/lib/invoice';
 
@@ -22,8 +22,14 @@ export async function POST(req: NextRequest) {
     if (items.length === 0) {
       return NextResponse.json({ error: 'Add at least one line item' }, { status: 400 });
     }
+    const isTaxInvoice = !!b.isTaxInvoice;
+    // Tax invoices always show the address; otherwise use whatever the
+    // client sent, falling back to the Settings default if it omitted it.
+    const showFromAddress = isTaxInvoice
+      ? true
+      : (typeof b.showFromAddress === 'boolean' ? b.showFromAddress : (await getSettings()).defaultShowAddressOnInvoice);
     const input: InvoiceInput = {
-      isTaxInvoice: !!b.isTaxInvoice,
+      isTaxInvoice,
       status: b.status === 'sent' || b.status === 'paid' ? b.status : 'draft',
       fromName: b.fromName ?? BUSINESS_DEFAULTS.fromName,
       fromTradingAs: b.fromTradingAs ?? BUSINESS_DEFAULTS.fromTradingAs,
@@ -31,6 +37,7 @@ export async function POST(req: NextRequest) {
       fromAddress: b.fromAddress ?? BUSINESS_DEFAULTS.fromAddress,
       fromEmail: b.fromEmail ?? BUSINESS_DEFAULTS.fromEmail,
       fromPhone: b.fromPhone ?? BUSINESS_DEFAULTS.fromPhone,
+      showFromAddress,
       billToName: b.billToName ?? '',
       billToLines: b.billToLines ?? '',
       client: {

@@ -30,6 +30,7 @@ type ItemForm = { description: string; detail: string; serviceAddress: string; d
 type Form = {
   isTaxInvoice: boolean;
   fromName: string; fromTradingAs: string; fromAbn: string; fromAddress: string; fromEmail: string; fromPhone: string;
+  showFromAddress: boolean; // per-invoice toggle; tax invoices always show it regardless (enforced at save/render)
   billToName: string; billToLines: string;
   clientShow: boolean; clientName: string; clientTrn: string; clientFileNo: string; clientClaimRef: string;
   invoiceDate: string; serviceDate: string; dueDate: string;
@@ -53,6 +54,7 @@ function fromInvoice(inv: Invoice): Form {
     isTaxInvoice: inv.isTaxInvoice,
     fromName: inv.fromName, fromTradingAs: inv.fromTradingAs, fromAbn: inv.fromAbn,
     fromAddress: inv.fromAddress, fromEmail: inv.fromEmail, fromPhone: inv.fromPhone,
+    showFromAddress: inv.showFromAddress,
     billToName: inv.billToName, billToLines: inv.billToLines,
     clientShow: inv.client.show, clientName: inv.client.clientName, clientTrn: inv.client.trn,
     clientFileNo: inv.client.fileNo, clientClaimRef: inv.client.claimRef,
@@ -82,6 +84,7 @@ function blankForm(prefill?: InvoicePrefill): Form {
   return {
     isTaxInvoice: false,
     ...BUSINESS_DEFAULTS,
+    showFromAddress: true,
     billToName: prefill?.billToName ?? '',
     billToLines: prefill?.billToLines ?? '',
     clientShow: false, clientName: '', clientTrn: '', clientFileNo: '', clientClaimRef: '',
@@ -213,6 +216,7 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
       } else {
         next.payAccountName = ''; next.payBsb = ''; next.payAccountNumber = '';
       }
+      next.showFromAddress = settings.defaultShowAddressOnInvoice;
       return next;
     });
   }, [initial, settings, profiles, businessProfiles]);
@@ -356,11 +360,17 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
   const lineItems = useMemo(() => toLineItems(f.items), [f.items]);
   const { subtotal, total } = useMemo(() => computeTotals(lineItems), [lineItems]);
 
+  // Tax invoices always show the address, regardless of the stored toggle —
+  // computed here rather than mutating f.showFromAddress so flipping "Tax
+  // invoice" off doesn't silently wipe out what the admin had set.
+  const effectiveShowFromAddress = f.isTaxInvoice || f.showFromAddress;
+
   const previewData: InvoicePreviewData = {
     number: inv?.number ?? 'GB####',
     isTaxInvoice: f.isTaxInvoice,
     fromName: f.fromName, fromTradingAs: f.fromTradingAs, fromAbn: f.fromAbn,
     fromAddress: f.fromAddress, fromEmail: f.fromEmail, fromPhone: f.fromPhone,
+    showFromAddress: effectiveShowFromAddress,
     billToName: f.billToName, billToLines: f.billToLines,
     client: { show: f.clientShow, clientName: f.clientName, trn: f.clientTrn, fileNo: f.clientFileNo, claimRef: f.clientClaimRef },
     invoiceDate: f.invoiceDate, serviceDate: f.serviceDate, dueDate: f.dueDate,
@@ -377,6 +387,7 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
     isTaxInvoice: f.isTaxInvoice,
     fromName: f.fromName, fromTradingAs: f.fromTradingAs, fromAbn: f.fromAbn,
     fromAddress: f.fromAddress, fromEmail: f.fromEmail, fromPhone: f.fromPhone,
+    showFromAddress: effectiveShowFromAddress,
     billToName: f.billToName, billToLines: f.billToLines,
     client: { show: f.clientShow, clientName: f.clientName, trn: f.clientTrn, fileNo: f.clientFileNo, claimRef: f.clientClaimRef },
     invoiceDate: f.invoiceDate, serviceDate: f.serviceDate, dueDate: f.dueDate,
@@ -746,7 +757,22 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
               <div><L>Trading as</L><input className="form-input text-sm" value={f.fromTradingAs} onChange={e => set('fromTradingAs', e.target.value)} /></div>
               <div><L>ABN</L><input className="form-input text-sm" value={f.fromAbn} onChange={e => set('fromAbn', e.target.value)} /></div>
               <div><L>Phone</L><input className="form-input text-sm" value={f.fromPhone} onChange={e => set('fromPhone', e.target.value)} /></div>
-              <div className="col-span-2"><L>Address</L><input className="form-input text-sm" value={f.fromAddress} onChange={e => set('fromAddress', e.target.value)} /></div>
+              <div className="col-span-2">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="block text-slate-400 text-xs font-medium">Address</span>
+                  <label className={`inline-flex items-center gap-1.5 text-xs ${f.isTaxInvoice ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`} title={f.isTaxInvoice ? 'Tax invoices always show the business address' : 'Show the business address on this invoice'}>
+                    <input
+                      type="checkbox"
+                      checked={effectiveShowFromAddress}
+                      disabled={f.isTaxInvoice}
+                      onChange={e => set('showFromAddress', e.target.checked)}
+                      className="appearance-none w-3.5 h-3.5 rounded border border-white/25 bg-white/10 checked:bg-sky-500 checked:border-sky-500 cursor-pointer disabled:cursor-not-allowed relative before:content-['✓'] before:absolute before:inset-0 before:flex before:items-center before:justify-center before:text-[9px] before:leading-none before:text-white before:opacity-0 checked:before:opacity-100"
+                    />
+                    <span className="text-slate-400">{f.isTaxInvoice ? 'Always shown on tax invoices' : 'Show on invoice'}</span>
+                  </label>
+                </div>
+                <input className="form-input text-sm" value={f.fromAddress} onChange={e => set('fromAddress', e.target.value)} />
+              </div>
               <div className="col-span-2"><L>Email</L><input className="form-input text-sm" value={f.fromEmail} onChange={e => set('fromEmail', e.target.value)} /></div>
             </div>
           </Section>
