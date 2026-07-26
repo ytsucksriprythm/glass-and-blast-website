@@ -1,13 +1,13 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import toast from 'react-hot-toast';
 import {
   Plus, Trash2, Check, Copy, ExternalLink, Send, BadgeCheck, Undo2, FileText, Search, X, ClipboardList, Eye, Link2, Sparkles, Banknote, Loader2,
 } from 'lucide-react';
 import {
-  type Invoice, type InvoiceStatus, type InvoiceLineItem, type PaymentProfile, type PaymentMethod,
+  type Invoice, type InvoiceStatus, type InvoiceLineItem, type PaymentProfile, type BusinessProfile, type PaymentMethod,
   BUSINESS_DEFAULTS, PAYMENT_DEFAULTS, PAYMENT_METHOD_LABEL, SQUARE_SURCHARGE_PERCENT_FALLBACK, addDays, cardTotal, computeTotals, money, longDate, addressesMatch,
 } from '@/lib/invoice';
 import type { AppSettings } from '@/lib/settings';
@@ -149,6 +149,12 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
   const [newProfileName, setNewProfileName] = useState('');
   const [savingProfile, setSavingProfile] = useState(false);
 
+  // Business-info profiles — same idea, for the "from" block
+  const [businessProfiles, setBusinessProfiles] = useState<BusinessProfile[]>([]);
+  const [newBusinessProfileOpen, setNewBusinessProfileOpen] = useState(false);
+  const [newBusinessProfileName, setNewBusinessProfileName] = useState('');
+  const [savingBusinessProfile, setSavingBusinessProfile] = useState(false);
+
   // Copy-from-booking picker
   const [pickerOpen, setPickerOpen] = useState(false);
   const [bookings, setBookings] = useState<Booking[] | null>(null);
@@ -173,6 +179,43 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
       } catch { /* selector just won't show presets */ }
     })();
   }, []);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch('/api/admin/business-profiles');
+        if (res.ok) setBusinessProfiles(await res.json());
+      } catch { /* selector just won't show presets */ }
+    })();
+  }, []);
+
+  // For a brand-new invoice only: once settings + both profile lists have
+  // loaded, seed the form from the first profile of each section (or leave it
+  // blank) according to Settings -> Invoice autofill. Runs once — after the
+  // admin starts editing, further profile changes shouldn't stomp their work.
+  const seededAutofill = useRef(false);
+  useEffect(() => {
+    if (initial || seededAutofill.current) return;
+    if (!settings || profiles.length === 0 || businessProfiles.length === 0) return;
+    seededAutofill.current = true;
+    setF(prev => {
+      const next = { ...prev };
+      if (settings.autofillBusinessInfo) {
+        const p = businessProfiles[0];
+        next.fromName = p.fromName; next.fromTradingAs = p.fromTradingAs; next.fromAbn = p.fromAbn;
+        next.fromAddress = p.fromAddress; next.fromEmail = p.fromEmail; next.fromPhone = p.fromPhone;
+      } else {
+        next.fromName = ''; next.fromTradingAs = ''; next.fromAbn = ''; next.fromAddress = ''; next.fromEmail = ''; next.fromPhone = '';
+      }
+      if (settings.autofillPaymentDetails) {
+        const p = profiles[0];
+        next.payAccountName = p.accountName; next.payBsb = p.bsb; next.payAccountNumber = p.accountNumber;
+      } else {
+        next.payAccountName = ''; next.payBsb = ''; next.payAccountNumber = '';
+      }
+      return next;
+    });
+  }, [initial, settings, profiles, businessProfiles]);
 
   // Load bookings up front so linked jobs render by name and address suggestions work.
   useEffect(() => {
@@ -225,6 +268,46 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
     if (!window.confirm(`Delete payment profile "${p.name}"?`)) return;
     const res = await fetch(`/api/admin/payment-profiles/${p.id}`, { method: 'DELETE' });
     if (res.ok) { setProfiles(ps => ps.filter(x => x.id !== p.id)); toast.success('Profile deleted'); }
+    else toast.error('Delete failed');
+  };
+
+  // Business-info profile helpers (same pattern as payment profiles above)
+  const applyBusinessProfile = (p: BusinessProfile) =>
+    setF(prev => ({ ...prev, fromName: p.fromName, fromTradingAs: p.fromTradingAs, fromAbn: p.fromAbn, fromAddress: p.fromAddress, fromEmail: p.fromEmail, fromPhone: p.fromPhone }));
+  const applyOtherBusiness = () =>
+    setF(prev => ({ ...prev, fromName: '', fromTradingAs: '', fromAbn: '', fromAddress: '', fromEmail: '', fromPhone: '' }));
+  const activeBusinessProfileId = businessProfiles.find(p =>
+    p.fromName === f.fromName && p.fromTradingAs === f.fromTradingAs && p.fromAbn === f.fromAbn &&
+    p.fromAddress === f.fromAddress && p.fromEmail === f.fromEmail && p.fromPhone === f.fromPhone
+  )?.id ?? null;
+  const isOtherBusiness = !activeBusinessProfileId && !f.fromName && !f.fromTradingAs && !f.fromAbn && !f.fromAddress && !f.fromEmail && !f.fromPhone;
+
+  const saveNewBusinessProfile = async () => {
+    const name = newBusinessProfileName.trim();
+    if (!name) { toast.error('Give the profile a name'); return; }
+    setSavingBusinessProfile(true);
+    try {
+      const res = await fetch('/api/admin/business-profiles', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name, fromName: f.fromName, fromTradingAs: f.fromTradingAs, fromAbn: f.fromAbn,
+          fromAddress: f.fromAddress, fromEmail: f.fromEmail, fromPhone: f.fromPhone,
+        }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error || 'Failed');
+      const created: BusinessProfile = await res.json();
+      setBusinessProfiles(ps => [...ps, created]);
+      setNewBusinessProfileOpen(false); setNewBusinessProfileName('');
+      toast.success(`Saved profile "${created.name}"`);
+    } catch (err) { toast.error(err instanceof Error ? err.message : 'Failed'); }
+    finally { setSavingBusinessProfile(false); }
+  };
+
+  const deleteBusinessProfile = async (p: BusinessProfile) => {
+    if (p.builtin) return;
+    if (!window.confirm(`Delete business profile "${p.name}"?`)) return;
+    const res = await fetch(`/api/admin/business-profiles/${p.id}`, { method: 'DELETE' });
+    if (res.ok) { setBusinessProfiles(ps => ps.filter(x => x.id !== p.id)); toast.success('Profile deleted'); }
     else toast.error('Delete failed');
   };
 
@@ -590,24 +673,26 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
           </Section>
 
           <Section title="Payment details">
-            <p className="text-xs text-slate-500 mb-2">Pick who gets paid. Fields below stay editable for one-offs.</p>
-            <div className="flex flex-wrap gap-2">
-              {profiles.map(p => {
-                const on = activeProfileId === p.id;
-                return (
-                  <span key={p.id} className={`inline-flex items-center rounded-lg border text-sm font-medium ${on ? 'border-sky-400 bg-sky-400/15 text-white' : 'border-white/10 text-slate-300'}`}>
-                    <button type="button" onClick={() => applyProfile(p)} className="pl-3 pr-2 py-2 cursor-pointer">{p.name}</button>
-                    {!p.builtin && (
-                      <button type="button" onClick={() => deleteProfile(p)} title="Delete profile" className="pr-2 text-slate-500 hover:text-red-400 cursor-pointer"><X className="w-3.5 h-3.5" /></button>
-                    )}
-                  </span>
-                );
-              })}
-              <button type="button" onClick={applyOther} className={`px-3 py-2 rounded-lg border text-sm font-medium cursor-pointer ${isOther ? 'border-sky-400 bg-sky-400/15 text-white' : 'border-white/10 text-slate-300'}`}>Other</button>
-              <button type="button" onClick={() => setNewProfileOpen(v => !v)} className="inline-flex items-center gap-1 px-3 py-2 rounded-lg border border-dashed border-white/15 text-slate-300 hover:text-white text-sm font-medium cursor-pointer"><Plus className="w-3.5 h-3.5" /> New profile</button>
-            </div>
+            {profiles.length > 1 && <p className="text-xs text-slate-500 mb-2">Pick who gets paid. Fields below stay editable for one-offs.</p>}
+            {profiles.length > 1 && (
+              <div className="flex flex-wrap gap-2">
+                {profiles.map(p => {
+                  const on = activeProfileId === p.id;
+                  return (
+                    <span key={p.id} className={`inline-flex items-center rounded-lg border text-sm font-medium ${on ? 'border-sky-400 bg-sky-400/15 text-white' : 'border-white/10 text-slate-300'}`}>
+                      <button type="button" onClick={() => applyProfile(p)} className="pl-3 pr-2 py-2 cursor-pointer">{p.name}</button>
+                      {!p.builtin && (
+                        <button type="button" onClick={() => deleteProfile(p)} title="Delete profile" className="pr-2 text-slate-500 hover:text-red-400 cursor-pointer"><X className="w-3.5 h-3.5" /></button>
+                      )}
+                    </span>
+                  );
+                })}
+                <button type="button" onClick={applyOther} className={`px-3 py-2 rounded-lg border text-sm font-medium cursor-pointer ${isOther ? 'border-sky-400 bg-sky-400/15 text-white' : 'border-white/10 text-slate-300'}`}>Other</button>
+                <button type="button" onClick={() => setNewProfileOpen(v => !v)} className="inline-flex items-center gap-1 px-3 py-2 rounded-lg border border-dashed border-white/15 text-slate-300 hover:text-white text-sm font-medium cursor-pointer"><Plus className="w-3.5 h-3.5" /> New profile</button>
+              </div>
+            )}
 
-            {newProfileOpen && (
+            {newProfileOpen && profiles.length > 1 && (
               <div className="mt-3 rounded-lg border border-sky-400/30 bg-sky-400/5 p-3">
                 <p className="text-xs text-slate-400 mb-2">Set the account fields below, then name and save them as a reusable profile.</p>
                 <div className="flex items-center gap-2">
@@ -618,16 +703,45 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
               </div>
             )}
 
-            <div className="grid grid-cols-3 gap-3 mt-3">
+            <div className={`grid grid-cols-3 gap-3 ${profiles.length > 1 ? 'mt-3' : ''}`}>
               <div><L>Account name</L><input className="form-input text-sm" value={f.payAccountName} onChange={e => set('payAccountName', e.target.value)} /></div>
               <div><L>BSB</L><input className="form-input text-sm" value={f.payBsb} onChange={e => set('payBsb', e.target.value)} /></div>
               <div><L>Account no.</L><input className="form-input text-sm" value={f.payAccountNumber} onChange={e => set('payAccountNumber', e.target.value)} /></div>
             </div>
           </Section>
 
-          <details className="rounded-xl border border-white/10 bg-navy-800 p-4">
-            <summary className="text-white font-semibold text-sm cursor-pointer">Business details (from)</summary>
-            <div className="mt-3 grid grid-cols-2 gap-3">
+          <Section title="Business details (from)">
+            {businessProfiles.length > 1 && <p className="text-xs text-slate-500 mb-2">Pick which identity this invoice is from. Fields below stay editable for one-offs.</p>}
+            {businessProfiles.length > 1 && (
+              <div className="flex flex-wrap gap-2">
+                {businessProfiles.map(p => {
+                  const on = activeBusinessProfileId === p.id;
+                  return (
+                    <span key={p.id} className={`inline-flex items-center rounded-lg border text-sm font-medium ${on ? 'border-sky-400 bg-sky-400/15 text-white' : 'border-white/10 text-slate-300'}`}>
+                      <button type="button" onClick={() => applyBusinessProfile(p)} className="pl-3 pr-2 py-2 cursor-pointer">{p.name}</button>
+                      {!p.builtin && (
+                        <button type="button" onClick={() => deleteBusinessProfile(p)} title="Delete profile" className="pr-2 text-slate-500 hover:text-red-400 cursor-pointer"><X className="w-3.5 h-3.5" /></button>
+                      )}
+                    </span>
+                  );
+                })}
+                <button type="button" onClick={applyOtherBusiness} className={`px-3 py-2 rounded-lg border text-sm font-medium cursor-pointer ${isOtherBusiness ? 'border-sky-400 bg-sky-400/15 text-white' : 'border-white/10 text-slate-300'}`}>Other</button>
+                <button type="button" onClick={() => setNewBusinessProfileOpen(v => !v)} className="inline-flex items-center gap-1 px-3 py-2 rounded-lg border border-dashed border-white/15 text-slate-300 hover:text-white text-sm font-medium cursor-pointer"><Plus className="w-3.5 h-3.5" /> New profile</button>
+              </div>
+            )}
+
+            {newBusinessProfileOpen && businessProfiles.length > 1 && (
+              <div className="mt-3 rounded-lg border border-sky-400/30 bg-sky-400/5 p-3">
+                <p className="text-xs text-slate-400 mb-2">Set the fields below, then name and save them as a reusable profile.</p>
+                <div className="flex items-center gap-2">
+                  <input className="form-input text-sm flex-1" placeholder="Profile name (e.g. Liam)" value={newBusinessProfileName} onChange={e => setNewBusinessProfileName(e.target.value)} />
+                  <button onClick={saveNewBusinessProfile} disabled={savingBusinessProfile} className="px-3 py-2.5 rounded-lg bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-white text-sm font-semibold cursor-pointer whitespace-nowrap">Save profile</button>
+                  <button onClick={() => { setNewBusinessProfileOpen(false); setNewBusinessProfileName(''); }} className="p-2.5 text-slate-400 hover:text-white cursor-pointer"><X className="w-4 h-4" /></button>
+                </div>
+              </div>
+            )}
+
+            <div className={`grid grid-cols-2 gap-3 ${businessProfiles.length > 1 ? 'mt-3' : ''}`}>
               <div><L>Your name</L><input className="form-input text-sm" value={f.fromName} onChange={e => set('fromName', e.target.value)} /></div>
               <div><L>Trading as</L><input className="form-input text-sm" value={f.fromTradingAs} onChange={e => set('fromTradingAs', e.target.value)} /></div>
               <div><L>ABN</L><input className="form-input text-sm" value={f.fromAbn} onChange={e => set('fromAbn', e.target.value)} /></div>
@@ -635,7 +749,7 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
               <div className="col-span-2"><L>Address</L><input className="form-input text-sm" value={f.fromAddress} onChange={e => set('fromAddress', e.target.value)} /></div>
               <div className="col-span-2"><L>Email</L><input className="form-input text-sm" value={f.fromEmail} onChange={e => set('fromEmail', e.target.value)} /></div>
             </div>
-          </details>
+          </Section>
 
           <div className="flex items-center gap-3 pt-1">
             <button onClick={save} disabled={saving} className="flex-1 inline-flex items-center justify-center gap-2 py-3 bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-white font-semibold rounded-lg cursor-pointer">

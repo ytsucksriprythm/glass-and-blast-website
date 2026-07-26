@@ -30,7 +30,8 @@ export async function PATCH(req: NextRequest) {
   (['squareSurchargePercent', 'reviewStarThreshold'] as (keyof AppSettings)[]).forEach(copyNum);
   (['squareCardPaymentsEnabled', 'notificationsEnabled', 'notifyStatusChange', 'notifyJobAssigned',
     'notifyCustomerMarkedPaid', 'notifySquarePaid', 'notifyNewBooking', 'customerFeedbackEnabled',
-    'recurringAutoBookEnabled', 'acceptingNewBookings', 'siteTrackingEnabled'] as (keyof AppSettings)[]).forEach(copyBool);
+    'recurringAutoBookEnabled', 'acceptingNewBookings', 'siteTrackingEnabled',
+    'autofillBusinessInfo', 'autofillPaymentDetails'] as (keyof AppSettings)[]).forEach(copyBool);
 
   const changedKeys = Object.keys(updates);
   const updated = await updateSettings(updates);

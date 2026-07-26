@@ -5,9 +5,10 @@ import { useRouter } from 'next/navigation';
 import toast from 'react-hot-toast';
 import {
   ArrowLeft, Settings as SettingsIcon, Save, ShieldAlert, CreditCard, Bell, Star,
-  CalendarClock, Globe, ScrollText, RefreshCw,
+  CalendarClock, Globe, ScrollText, RefreshCw, FileEdit, Trash2, Plus,
 } from 'lucide-react';
 import type { AppSettings } from '@/lib/settings';
+import type { PaymentProfile, BusinessProfile } from '@/lib/invoice';
 import { ACTIVITY_TYPE_LABEL, type ActivityEntry } from '@/lib/activity';
 import { AdminSidebar, AdminMobileNav, AdminMoreSheet, useMoreSheet, adminNavItems } from '@/components/admin/AdminNav';
 
@@ -62,6 +63,81 @@ function Toggle({ label, sub, checked, onChange, disabled }: {
         className="mt-0.5 flex-shrink-0 appearance-none w-9 h-5 rounded-full border border-white/20 bg-white/10 checked:bg-sky-500 checked:border-sky-500 cursor-pointer disabled:cursor-not-allowed relative transition-colors before:content-[''] before:absolute before:top-[1px] before:left-[1px] before:w-[16px] before:h-[16px] before:rounded-full before:bg-slate-300 checked:before:bg-white before:transition-transform checked:before:translate-x-4"
       />
     </label>
+  );
+}
+
+type FieldConfig = { key: string; label: string };
+
+// Shared "list of named profiles, add/remove, plus an autofill toggle" UI —
+// used for both business-info and payment-detail profiles. When only one
+// (built-in) profile exists there's nothing to pick between, so the same
+// single-profile-hides-the-picker rule from the invoice editor applies here
+// too: with 1 profile there's just a plain "add another" affordance; once a
+// second exists, this list is what makes the invoice-page picker appear.
+function ProfileManager<T extends { id: string; name: string; builtin: boolean }>({
+  title, icon, autofillLabel, autofillSub, autofillEnabled, onToggleAutofill,
+  profiles, fields, onAdd, onDelete,
+}: {
+  title: string;
+  icon: React.ComponentType<{ className?: string }>;
+  autofillLabel: string;
+  autofillSub: string;
+  autofillEnabled: boolean;
+  onToggleAutofill: (v: boolean) => void;
+  profiles: T[];
+  fields: FieldConfig[];
+  onAdd: (data: Record<string, string>) => Promise<void>;
+  onDelete: (p: T) => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState(false);
+
+  const submit = async () => {
+    if (!form.name?.trim()) { toast.error('Give the profile a name'); return; }
+    setSaving(true);
+    try { await onAdd(form); setOpen(false); setForm({}); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <Section title={title} icon={icon}>
+      <Toggle label={autofillLabel} sub={autofillSub} checked={autofillEnabled} onChange={onToggleAutofill} />
+      <div className="space-y-2">
+        {profiles.map(p => (
+          <div key={p.id} className="rounded-lg border border-white/10 bg-white/[0.02] p-3 flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-white text-sm font-medium">{p.name}{p.builtin && <span className="text-slate-500 text-xs ml-1.5">(built-in)</span>}</div>
+              <div className="text-slate-500 text-xs mt-0.5 truncate">
+                {fields.map(fc => (p as unknown as Record<string, string>)[fc.key]).filter(Boolean).join(' · ') || '—'}
+              </div>
+            </div>
+            {!p.builtin && (
+              <button onClick={() => onDelete(p)} title="Delete profile" className="flex-shrink-0 text-slate-500 hover:text-red-400 cursor-pointer"><Trash2 className="w-4 h-4" /></button>
+            )}
+          </div>
+        ))}
+      </div>
+      {profiles.length <= 1 && (
+        <p className="text-slate-600 text-xs">Only one profile — the invoice page won&apos;t show a picker until a second one exists here.</p>
+      )}
+      {!open ? (
+        <button onClick={() => setOpen(true)} className="inline-flex items-center gap-1.5 text-xs text-sky-400 hover:text-sky-300 cursor-pointer"><Plus className="w-3.5 h-3.5" /> Add profile</button>
+      ) : (
+        <div className="rounded-lg border border-sky-400/30 bg-sky-400/5 p-3 space-y-2">
+          <input className="form-input text-sm w-full" placeholder="Profile name (e.g. Liam)" value={form.name ?? ''} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} />
+          <div className="grid grid-cols-2 gap-2">
+            {fields.map(fc => (
+              <input key={fc.key} className="form-input text-sm" placeholder={fc.label} value={form[fc.key] ?? ''} onChange={e => setForm(f => ({ ...f, [fc.key]: e.target.value }))} />
+            ))}
+          </div>
+          <div className="flex gap-2">
+            <button onClick={submit} disabled={saving} className="px-3 py-2 rounded-lg bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-white text-sm font-semibold cursor-pointer">Save profile</button>
+            <button onClick={() => { setOpen(false); setForm({}); }} className="px-3 py-2 rounded-lg border border-white/10 text-slate-300 hover:text-white cursor-pointer">Cancel</button>
+          </div>
+        </div>
+      )}
+    </Section>
   );
 }
 
@@ -131,22 +207,61 @@ export default function SettingsPage() {
   const [s, setS] = useState<AppSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [businessProfiles, setBusinessProfiles] = useState<BusinessProfile[]>([]);
+  const [paymentProfiles, setPaymentProfiles] = useState<PaymentProfile[]>([]);
   const moreSheet = useMoreSheet();
   const navItems = adminNavItems();
 
   useEffect(() => {
     (async () => {
       try {
-        const [meRes, settingsRes] = await Promise.all([
+        const [meRes, settingsRes, bizRes, payRes] = await Promise.all([
           fetch('/api/auth/me'),
           fetch('/api/admin/settings'),
+          fetch('/api/admin/business-profiles'),
+          fetch('/api/admin/payment-profiles'),
         ]);
         if (meRes.status === 401 || settingsRes.status === 401) { router.push('/admin'); return; }
         if (meRes.ok) setRole((await meRes.json()).role);
         if (settingsRes.ok) setS(await settingsRes.json());
+        if (bizRes.ok) setBusinessProfiles(await bizRes.json());
+        if (payRes.ok) setPaymentProfiles(await payRes.json());
       } finally { setLoading(false); }
     })();
   }, [router]);
+
+  const addBusinessProfile = async (data: Record<string, string>) => {
+    const res = await fetch('/api/admin/business-profiles', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
+    });
+    if (!res.ok) { toast.error((await res.json()).error || 'Failed'); return; }
+    const created: BusinessProfile = await res.json();
+    setBusinessProfiles(ps => [...ps, created]);
+    toast.success(`Saved profile "${created.name}"`);
+  };
+  const deleteBusinessProfile = async (p: BusinessProfile) => {
+    if (!window.confirm(`Delete business profile "${p.name}"?`)) return;
+    const res = await fetch(`/api/admin/business-profiles/${p.id}`, { method: 'DELETE' });
+    if (res.ok) { setBusinessProfiles(ps => ps.filter(x => x.id !== p.id)); toast.success('Profile deleted'); }
+    else toast.error('Delete failed');
+  };
+
+  const addPaymentProfile = async (data: Record<string, string>) => {
+    const res = await fetch('/api/admin/payment-profiles', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: data.name, accountName: data.accountName, bsb: data.bsb, accountNumber: data.accountNumber }),
+    });
+    if (!res.ok) { toast.error((await res.json()).error || 'Failed'); return; }
+    const created: PaymentProfile = await res.json();
+    setPaymentProfiles(ps => [...ps, created]);
+    toast.success(`Saved profile "${created.name}"`);
+  };
+  const deletePaymentProfile = async (p: PaymentProfile) => {
+    if (!window.confirm(`Delete payment profile "${p.name}"?`)) return;
+    const res = await fetch(`/api/admin/payment-profiles/${p.id}`, { method: 'DELETE' });
+    if (res.ok) { setPaymentProfiles(ps => ps.filter(x => x.id !== p.id)); toast.success('Profile deleted'); }
+    else toast.error('Delete failed');
+  };
 
   const set = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) =>
     setS(prev => prev ? { ...prev, [key]: value } : prev);
@@ -206,6 +321,38 @@ export default function SettingsPage() {
             </div>
           ) : s && (
             <div className="space-y-4">
+              <ProfileManager<BusinessProfile>
+                title="Invoice autofill — business info"
+                icon={FileEdit}
+                autofillLabel="Auto-fill business info"
+                autofillSub="Pre-fills new invoices' 'From' block. Already-created invoices keep their own saved copy."
+                autofillEnabled={s.autofillBusinessInfo}
+                onToggleAutofill={v => set('autofillBusinessInfo', v)}
+                profiles={businessProfiles}
+                fields={[
+                  { key: 'fromName', label: 'Name' }, { key: 'fromTradingAs', label: 'Trading as' },
+                  { key: 'fromAbn', label: 'ABN' }, { key: 'fromPhone', label: 'Phone' },
+                  { key: 'fromAddress', label: 'Address' }, { key: 'fromEmail', label: 'Email' },
+                ]}
+                onAdd={addBusinessProfile}
+                onDelete={deleteBusinessProfile}
+              />
+
+              <ProfileManager<PaymentProfile>
+                title="Invoice autofill — payment details"
+                icon={FileEdit}
+                autofillLabel="Auto-fill payment details"
+                autofillSub="Pre-fills new invoices' bank details."
+                autofillEnabled={s.autofillPaymentDetails}
+                onToggleAutofill={v => set('autofillPaymentDetails', v)}
+                profiles={paymentProfiles}
+                fields={[
+                  { key: 'accountName', label: 'Account name' }, { key: 'bsb', label: 'BSB' }, { key: 'accountNumber', label: 'Account number' },
+                ]}
+                onAdd={addPaymentProfile}
+                onDelete={deletePaymentProfile}
+              />
+
               <Section title="Card payments (Square)" icon={CreditCard}>
                 <Toggle
                   label="Card payments enabled"

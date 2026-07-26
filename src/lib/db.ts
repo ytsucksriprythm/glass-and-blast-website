@@ -4,7 +4,8 @@ import crypto from 'crypto';
 import { neon } from '@neondatabase/serverless';
 import {
   type Invoice, type InvoiceInput, type InvoiceLineItem, type InvoiceStatus,
-  type PaymentProfile, INVOICE_PREFIX, INVOICE_START_SEQ, SEED_PAYMENT_PROFILES, computeTotals,
+  type PaymentProfile, type BusinessProfile, INVOICE_PREFIX, INVOICE_START_SEQ,
+  SEED_PAYMENT_PROFILES, SEED_BUSINESS_PROFILES, computeTotals,
 } from './invoice';
 import { type AppSettings, DEFAULT_SETTINGS } from './settings';
 import { type ActivityEntry, type InvoiceViewSession } from './activity';
@@ -15,6 +16,7 @@ const PHOTO_PATH = path.join(process.cwd(), 'data', 'photos.json');
 const RECURRING_PATH = path.join(process.cwd(), 'data', 'recurring.json');
 const INVOICE_PATH = path.join(process.cwd(), 'data', 'invoices.json');
 const PAYMENT_PROFILE_PATH = path.join(process.cwd(), 'data', 'payment-profiles.json');
+const BUSINESS_PROFILE_PATH = path.join(process.cwd(), 'data', 'business-profiles.json');
 const GUEST_PATH = path.join(process.cwd(), 'data', 'guests.json');
 const GROUP_PATH = path.join(process.cwd(), 'data', 'booking-groups.json');
 const SETTINGS_PATH = path.join(process.cwd(), 'data', 'settings.json');
@@ -405,6 +407,30 @@ async function ensureSchema(): Promise<void> {
         await sql`
           INSERT INTO payment_profiles (id, name, account_name, bsb, account_number, sort, builtin)
           VALUES (${p.id}, ${p.name}, ${p.accountName}, ${p.bsb}, ${p.accountNumber}, ${p.sort}, ${p.builtin})
+          ON CONFLICT (id) DO NOTHING
+        `;
+      }
+      // Selectable business-info ("from") profiles for invoices — same idea as
+      // payment profiles, managed from Settings -> Invoice autofill.
+      await sql`
+        CREATE TABLE IF NOT EXISTS business_profiles (
+          id                TEXT PRIMARY KEY,
+          name              TEXT NOT NULL,
+          from_name         TEXT NOT NULL DEFAULT '',
+          from_trading_as   TEXT NOT NULL DEFAULT '',
+          from_abn          TEXT NOT NULL DEFAULT '',
+          from_address      TEXT NOT NULL DEFAULT '',
+          from_email        TEXT NOT NULL DEFAULT '',
+          from_phone        TEXT NOT NULL DEFAULT '',
+          sort              INTEGER NOT NULL DEFAULT 0,
+          builtin           BOOLEAN NOT NULL DEFAULT false,
+          created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+      `;
+      for (const p of SEED_BUSINESS_PROFILES) {
+        await sql`
+          INSERT INTO business_profiles (id, name, from_name, from_trading_as, from_abn, from_address, from_email, from_phone, sort, builtin)
+          VALUES (${p.id}, ${p.name}, ${p.fromName}, ${p.fromTradingAs}, ${p.fromAbn}, ${p.fromAddress}, ${p.fromEmail}, ${p.fromPhone}, ${p.sort}, ${p.builtin})
           ON CONFLICT (id) DO NOTHING
         `;
       }
@@ -1683,6 +1709,84 @@ export async function addPaymentProfile(data: { name: string; accountName: strin
   rows.push(profile);
   writePaymentProfiles(rows);
   return profile;
+}
+
+function readBusinessProfiles(): BusinessProfile[] {
+  try {
+    if (!fs.existsSync(BUSINESS_PROFILE_PATH)) {
+      const dir = path.dirname(BUSINESS_PROFILE_PATH);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(BUSINESS_PROFILE_PATH, JSON.stringify(SEED_BUSINESS_PROFILES, null, 2));
+      return [...SEED_BUSINESS_PROFILES];
+    }
+    return JSON.parse(fs.readFileSync(BUSINESS_PROFILE_PATH, 'utf-8'));
+  } catch { return [...SEED_BUSINESS_PROFILES]; }
+}
+function writeBusinessProfiles(rows: BusinessProfile[]): void {
+  const dir = path.dirname(BUSINESS_PROFILE_PATH);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(BUSINESS_PROFILE_PATH, JSON.stringify(rows, null, 2));
+}
+
+function rowToBusinessProfile(r: any): BusinessProfile {
+  return {
+    id: r.id,
+    name: r.name,
+    fromName: r.from_name ?? '',
+    fromTradingAs: r.from_trading_as ?? '',
+    fromAbn: r.from_abn ?? '',
+    fromAddress: r.from_address ?? '',
+    fromEmail: r.from_email ?? '',
+    fromPhone: r.from_phone ?? '',
+    sort: Number(r.sort ?? 0),
+    builtin: r.builtin === true || r.builtin === 1,
+  };
+}
+
+export async function getBusinessProfiles(): Promise<BusinessProfile[]> {
+  if (sql) {
+    return withTimeout((async () => {
+      await ensureSchema();
+      const rows = await sql`SELECT * FROM business_profiles ORDER BY sort ASC, created_at ASC`;
+      return (rows as any[]).map(rowToBusinessProfile);
+    })());
+  }
+  return readBusinessProfiles().sort((a, b) => a.sort - b.sort);
+}
+
+export async function addBusinessProfile(data: {
+  name: string; fromName: string; fromTradingAs: string; fromAbn: string; fromAddress: string; fromEmail: string; fromPhone: string;
+}): Promise<BusinessProfile> {
+  if (sql) {
+    await ensureSchema();
+    const maxRows = await sql`SELECT COALESCE(MAX(sort), 0) + 1 AS next FROM business_profiles`;
+    const sort = Number((maxRows as any[])[0]?.next ?? 1);
+    const profile: BusinessProfile = { id: `BP-${Date.now()}`, sort, builtin: false, ...data };
+    await sql`
+      INSERT INTO business_profiles (id, name, from_name, from_trading_as, from_abn, from_address, from_email, from_phone, sort, builtin)
+      VALUES (${profile.id}, ${profile.name}, ${profile.fromName}, ${profile.fromTradingAs}, ${profile.fromAbn}, ${profile.fromAddress}, ${profile.fromEmail}, ${profile.fromPhone}, ${profile.sort}, false)
+    `;
+    return profile;
+  }
+  const rows = readBusinessProfiles();
+  const sort = rows.reduce((m, p) => Math.max(m, p.sort), 0) + 1;
+  const profile: BusinessProfile = { id: `BP-${Date.now()}`, sort, builtin: false, ...data };
+  rows.push(profile);
+  writeBusinessProfiles(rows);
+  return profile;
+}
+
+export async function deleteBusinessProfile(id: string): Promise<boolean> {
+  if (sql) {
+    await ensureSchema();
+    const rows = await sql`DELETE FROM business_profiles WHERE id = ${id} AND builtin = false RETURNING id`;
+    return (rows as any[]).length > 0;
+  }
+  const rows = readBusinessProfiles();
+  const target = rows.find(p => p.id === id);
+  if (!target || target.builtin) return false;
+  writeBusinessProfiles(rows.filter(p => p.id !== id));
+  return true;
 }
 
 // ─── App settings (singleton) ───────────────────────────────────────────────

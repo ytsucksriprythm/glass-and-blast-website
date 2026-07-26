@@ -33,6 +33,12 @@ export interface AppSettings {
   // Public site
   acceptingNewBookings: boolean; // false shows a "not currently accepting bookings" message instead of the form
   siteTrackingEnabled: boolean;  // page-view tracking (src/components/PageTracker.tsx)
+
+  // Invoice autofill (src/lib/invoice.ts BusinessProfile/PaymentProfile, managed
+  // in Settings -> Invoice autofill). With the toggle off, a new invoice starts
+  // blank for that section instead of pre-filling from the first profile.
+  autofillBusinessInfo: boolean;
+  autofillPaymentDetails: boolean;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -55,4 +61,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
 
   acceptingNewBookings: true,
   siteTrackingEnabled: true,
+
+  autofillBusinessInfo: true,
+  autofillPaymentDetails: true,
 };

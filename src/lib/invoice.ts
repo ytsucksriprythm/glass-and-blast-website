@@ -146,6 +146,24 @@ export const SEED_PAYMENT_PROFILES: PaymentProfile[] = [
   { id: 'liam',    name: 'Liam',    accountName: 'Liam Ward',    bsb: '062-904', accountNumber: '1061 9656',  sort: 1, builtin: true },
 ];
 
+// ─── Saved business-info profiles (same idea, for the invoice "from" block) ───
+export interface BusinessProfile {
+  id: string;
+  name: string;          // label shown in the selector, e.g. "Lincoln"
+  fromName: string;
+  fromTradingAs: string;
+  fromAbn: string;
+  fromAddress: string;
+  fromEmail: string;
+  fromPhone: string;
+  sort: number;
+  builtin: boolean;      // built-ins can't be deleted from the UI
+}
+
+export const SEED_BUSINESS_PROFILES: BusinessProfile[] = [
+  { id: 'lincoln-business', name: 'Lincoln', ...BUSINESS_DEFAULTS, sort: 0, builtin: true },
+];
+
 export const INVOICE_PREFIX = 'GB';
 // Next number after the DVA invoice GB1043. The counter is seeded to 1043 so the
 // first generated invoice is GB1044.
