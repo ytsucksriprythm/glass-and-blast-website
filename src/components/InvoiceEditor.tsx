@@ -4,11 +4,11 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import toast from 'react-hot-toast';
 import {
-  Plus, Trash2, Check, Copy, ExternalLink, Send, BadgeCheck, Undo2, FileText, Search, X, ClipboardList, Eye, Link2, Sparkles, Banknote, Loader2,
+  Plus, Trash2, Check, Copy, ExternalLink, Send, BadgeCheck, Undo2, FileText, Search, X, ClipboardList, Eye, Link2, Sparkles, Banknote, Loader2, AlertTriangle,
 } from 'lucide-react';
 import {
   type Invoice, type InvoiceStatus, type InvoiceLineItem, type PaymentProfile, type BusinessProfile, type PaymentMethod,
-  BUSINESS_DEFAULTS, PAYMENT_DEFAULTS, PAYMENT_METHOD_LABEL, SQUARE_SURCHARGE_PERCENT_FALLBACK, addDays, cardTotal, computeTotals, money, longDate, addressesMatch,
+  BUSINESS_DEFAULTS, PAYMENT_DEFAULTS, PAYMENT_METHOD_LABEL, SQUARE_SURCHARGE_PERCENT_FALLBACK, isInvoiceOverdue, addDays, cardTotal, computeTotals, money, longDate, addressesMatch,
 } from '@/lib/invoice';
 import type { AppSettings } from '@/lib/settings';
 import type { Booking } from '@/lib/db';
@@ -476,6 +476,11 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
             <div className="flex items-center gap-2">
               <span className={`inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold border ${STATUS_STYLE[inv.status]}`}>{STATUS_LABEL[inv.status]}</span>
               <span className="text-white font-semibold">{inv.number}</span>
+              {isInvoiceOverdue(inv) && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold border border-red-400/30 bg-red-500/15 text-red-300" title={`Due ${longDate(inv.dueDate)}`}>
+                  <AlertTriangle className="w-3 h-3" /> Overdue
+                </span>
+              )}
               {inv.status === 'paid' && inv.paymentMethod && (
                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold border border-amber-400/25 bg-amber-400/10 text-amber-300">
                   {PAYMENT_METHOD_LABEL[inv.paymentMethod]}

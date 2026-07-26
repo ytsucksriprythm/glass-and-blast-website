@@ -202,6 +202,22 @@ export function computeTotals(items: InvoiceLineItem[]): { subtotal: number; tot
   return { subtotal, total: subtotal }; // no GST → total === subtotal
 }
 
+// Overdue = sent, unpaid, and past its due date. Draft invoices aren't
+// "overdue" — the customer was never told about them.
+export function isInvoiceOverdue(invoice: Pick<Invoice, 'status' | 'dueDate'>): boolean {
+  if (invoice.status !== 'sent' || !invoice.dueDate) return false;
+  return invoice.dueDate < new Date().toISOString().slice(0, 10);
+}
+
+// Whole days between an invoice being marked sent and being marked paid —
+// null if either timestamp is missing (never sent, or not paid yet/paid
+// without ever going through "sent").
+export function debtorDays(invoice: Pick<Invoice, 'sentAt' | 'paidAt'>): number | null {
+  if (!invoice.sentAt || !invoice.paidAt) return null;
+  const days = Math.round((new Date(invoice.paidAt).getTime() - new Date(invoice.sentAt).getTime()) / 86400000);
+  return Math.max(0, days);
+}
+
 // Add days to a YYYY-MM-DD date, returning YYYY-MM-DD.
 export function addDays(dateStr: string, days: number): string {
   const [y, m, d] = dateStr.split('-').map(Number);

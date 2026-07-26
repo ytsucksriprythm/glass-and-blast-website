@@ -43,6 +43,9 @@ interface BusinessStats {
   revByMonth: { month: string; revenue: number }[];
   topSuburbs: { suburb: string; count: number }[];
   serviceBreakdown: { name: string; value: number }[];
+  avgDebtorDays: number | null;
+  overdueCount: number;
+  overdueValue: number;
 }
 
 interface SiteStats {
@@ -245,15 +248,11 @@ function UpcomingJobs({ bookings }: { bookings: Booking[] }) {
 
 export type GuestProfile = { id: string; name: string; active: boolean; createdAt: string };
 
-// Shows at a glance whether a job has been sent to a subcontractor.
+// Shows at a glance whether a job has been sent to a subcontractor. Unassigned
+// is the default, unmarked state — no tag at all, so the badge only ever
+// draws attention when a job actually has been sent somewhere.
 function AssignBadge({ guestId, name }: { guestId?: string | null; name: string }) {
-  if (!guestId) {
-    return (
-      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-white/5 text-slate-500 border border-white/10">
-        Unassigned
-      </span>
-    );
-  }
+  if (!guestId) return null;
   return (
     <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-sky-400/15 text-sky-300 border border-sky-400/25" title={`Sent to ${name}`}>
       <Send className="w-2.5 h-2.5" /> {name}
@@ -1195,6 +1194,23 @@ export default function Dashboard() {
                       <StatCard label="Avg Quote" value={money(bizStats.avgQuote) || '$0'} icon={DollarSign} color="#A78BFA" sub={`${bizStats.quotedCount} quoted`} />
                       <StatCard label="Revenue (paid)" value={money(bizStats.paidValue) || '$0'} icon={CheckCircle} color="#38BDF8" sub="Money collected" />
                       <StatCard label="Owed" value={money(bizStats.owedValue) || '$0'} icon={Wallet} color="#F87171" sub="Completed, unpaid" />
+                    </div>
+
+                    <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                      <StatCard
+                        label="Avg Debtor Days"
+                        value={bizStats.avgDebtorDays != null ? `${bizStats.avgDebtorDays}d` : '—'}
+                        icon={CalendarClock}
+                        color="#818CF8"
+                        sub="Invoice sent → job paid"
+                      />
+                      <StatCard
+                        label="Overdue Invoices"
+                        value={String(bizStats.overdueCount)}
+                        icon={AlertTriangle}
+                        color={bizStats.overdueCount > 0 ? '#F87171' : '#34D399'}
+                        sub={bizStats.overdueCount > 0 ? `${money(bizStats.overdueValue)} overdue` : 'None overdue'}
+                      />
                     </div>
 
                     <div className="grid lg:grid-cols-3 gap-6">

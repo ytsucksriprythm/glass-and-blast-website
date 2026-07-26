@@ -5,7 +5,7 @@ import { neon } from '@neondatabase/serverless';
 import {
   type Invoice, type InvoiceInput, type InvoiceLineItem, type InvoiceStatus,
   type PaymentProfile, type BusinessProfile, INVOICE_PREFIX, INVOICE_START_SEQ,
-  SEED_PAYMENT_PROFILES, SEED_BUSINESS_PROFILES, computeTotals,
+  SEED_PAYMENT_PROFILES, SEED_BUSINESS_PROFILES, computeTotals, isInvoiceOverdue, debtorDays,
 } from './invoice';
 import { type AppSettings, DEFAULT_SETTINGS } from './settings';
 import { type ActivityEntry, type InvoiceViewSession } from './activity';
@@ -923,6 +923,7 @@ export async function getSiteStats() {
 
 export async function getBusinessStats() {
   const bookings = await getBookings();
+  const invoices = await getInvoices();
   const total = bookings.length;
   const completed = bookings.filter(b => b.status === 'completed').length;
   const withQuote = bookings.filter(b => typeof b.quoteAmount === 'number' && (b.quoteAmount ?? 0) > 0);
@@ -971,6 +972,16 @@ export async function getBusinessStats() {
     'Both Services': bookings.filter(b => hasService(b, 'both')).length, // legacy records
   };
 
+  // Debtor days: whole days from an invoice being marked sent to being marked
+  // paid, averaged across every invoice where both timestamps exist.
+  const debtorSamples = invoices.map(debtorDays).filter((d): d is number => d != null);
+  const avgDebtorDays = debtorSamples.length ? Math.round(debtorSamples.reduce((a, b) => a + b, 0) / debtorSamples.length) : null;
+
+  // Overdue: sent, unpaid, past the due date.
+  const overdueInvoices = invoices.filter(isInvoiceOverdue);
+  const overdueCount = overdueInvoices.length;
+  const overdueValue = overdueInvoices.reduce((s, i) => s + i.total, 0);
+
   return {
     total,
     completed,
@@ -986,6 +997,9 @@ export async function getBusinessStats() {
     revByMonth,
     topSuburbs,
     serviceBreakdown: Object.entries(serviceBreakdown).map(([name, value]) => ({ name, value })),
+    avgDebtorDays,
+    overdueCount,
+    overdueValue,
   };
 }
 

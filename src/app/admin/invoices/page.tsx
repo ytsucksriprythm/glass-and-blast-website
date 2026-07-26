@@ -4,8 +4,8 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import toast from 'react-hot-toast';
-import { ArrowLeft, Plus, FileText, Send, BadgeCheck, Share, Undo2, Eye, Banknote, ScrollText, X, Smartphone, Tablet, Monitor, MapPin, Clock } from 'lucide-react';
-import { type Invoice, type InvoiceStatus, type PaymentMethod, PAYMENT_METHOD_LABEL, money, longDate } from '@/lib/invoice';
+import { ArrowLeft, Plus, FileText, Send, BadgeCheck, Share, Undo2, Eye, Banknote, ScrollText, X, Smartphone, Tablet, Monitor, MapPin, Clock, AlertTriangle } from 'lucide-react';
+import { type Invoice, type InvoiceStatus, type PaymentMethod, PAYMENT_METHOD_LABEL, isInvoiceOverdue, money, longDate } from '@/lib/invoice';
 import type { AppSettings } from '@/lib/settings';
 import { ACTIVITY_TYPE_LABEL, type ActivityEntry, type InvoiceViewSession } from '@/lib/activity';
 import { AdminSidebar, AdminMobileNav, AdminMoreSheet, useMoreSheet, adminNavItems } from '@/components/admin/AdminNav';
@@ -249,6 +249,11 @@ export default function InvoicesPage() {
                       <div className="flex items-center gap-2">
                         <span className="text-white font-semibold">{inv.number}</span>
                         <span className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold border ${STATUS_STYLE[inv.status]}`}>{STATUS_LABEL[inv.status]}</span>
+                        {isInvoiceOverdue(inv) && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold border border-red-400/30 bg-red-500/15 text-red-300" title={`Due ${longDate(inv.dueDate)}`}>
+                            <AlertTriangle className="w-3 h-3" /> Overdue
+                          </span>
+                        )}
                         {inv.status === 'paid' && inv.paymentMethod && inv.paymentMethod !== 'bank_transfer' && (
                           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold border border-amber-400/25 bg-amber-400/10 text-amber-300">
                             <Banknote className="w-3 h-3" /> {PAYMENT_METHOD_LABEL[inv.paymentMethod]}
