@@ -384,9 +384,10 @@ export default function SettingsPage() {
                 onToggleAutofill={v => set('autofillBusinessInfo', v)}
                 profiles={businessProfiles}
                 fields={[
+                  // Same order these fields render in on the actual invoice (From block).
                   { key: 'fromName', label: 'Name' }, { key: 'fromTradingAs', label: 'Trading as' },
-                  { key: 'fromAbn', label: 'ABN' }, { key: 'fromPhone', label: 'Phone' },
-                  { key: 'fromAddress', label: 'Address' }, { key: 'fromEmail', label: 'Email' },
+                  { key: 'fromAbn', label: 'ABN' }, { key: 'fromAddress', label: 'Address' },
+                  { key: 'fromEmail', label: 'Email' }, { key: 'fromPhone', label: 'Phone' },
                 ]}
                 onAdd={addBusinessProfile}
                 onUpdate={updateBusinessProfile}

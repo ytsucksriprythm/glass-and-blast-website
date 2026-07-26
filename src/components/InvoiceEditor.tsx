@@ -757,11 +757,11 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
               </div>
             )}
 
+            {/* Field order matches how they render on the actual invoice's From block. */}
             <div className={`grid grid-cols-2 gap-3 ${businessProfiles.length > 1 ? 'mt-3' : ''}`}>
               <div><L>Your name</L><input className="form-input text-sm" value={f.fromName} onChange={e => set('fromName', e.target.value)} /></div>
               <div><L>Trading as</L><input className="form-input text-sm" value={f.fromTradingAs} onChange={e => set('fromTradingAs', e.target.value)} /></div>
-              <div><L>ABN</L><input className="form-input text-sm" value={f.fromAbn} onChange={e => set('fromAbn', e.target.value)} /></div>
-              <div><L>Phone</L><input className="form-input text-sm" value={f.fromPhone} onChange={e => set('fromPhone', e.target.value)} /></div>
+              <div className="col-span-2"><L>ABN</L><input className="form-input text-sm" value={f.fromAbn} onChange={e => set('fromAbn', e.target.value)} /></div>
               <div className="col-span-2">
                 <div className="flex items-center justify-between mb-1">
                   <span className="block text-slate-400 text-xs font-medium">Address</span>
@@ -778,7 +778,8 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
                 </div>
                 <input className="form-input text-sm" value={f.fromAddress} onChange={e => set('fromAddress', e.target.value)} />
               </div>
-              <div className="col-span-2"><L>Email</L><input className="form-input text-sm" value={f.fromEmail} onChange={e => set('fromEmail', e.target.value)} /></div>
+              <div><L>Email</L><input className="form-input text-sm" value={f.fromEmail} onChange={e => set('fromEmail', e.target.value)} /></div>
+              <div><L>Phone</L><input className="form-input text-sm" value={f.fromPhone} onChange={e => set('fromPhone', e.target.value)} /></div>
             </div>
           </Section>
 
