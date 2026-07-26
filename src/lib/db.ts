@@ -1776,6 +1776,30 @@ export async function addBusinessProfile(data: {
   return profile;
 }
 
+// Editing is allowed on any profile, built-in included — only deletion is
+// restricted, so the seeded identity can be corrected but not removed.
+export async function updateBusinessProfile(id: string, data: Partial<Omit<BusinessProfile, 'id' | 'sort' | 'builtin'>>): Promise<BusinessProfile | null> {
+  if (sql) {
+    await ensureSchema();
+    const cur = (await sql`SELECT * FROM business_profiles WHERE id = ${id} LIMIT 1`) as any[];
+    if (!cur.length) return null;
+    const m = { ...rowToBusinessProfile(cur[0]), ...data };
+    await sql`
+      UPDATE business_profiles SET
+        name = ${m.name}, from_name = ${m.fromName}, from_trading_as = ${m.fromTradingAs}, from_abn = ${m.fromAbn},
+        from_address = ${m.fromAddress}, from_email = ${m.fromEmail}, from_phone = ${m.fromPhone}
+      WHERE id = ${id}
+    `;
+    return m;
+  }
+  const rows = readBusinessProfiles();
+  const idx = rows.findIndex(p => p.id === id);
+  if (idx === -1) return null;
+  rows[idx] = { ...rows[idx], ...data };
+  writeBusinessProfiles(rows);
+  return rows[idx];
+}
+
 export async function deleteBusinessProfile(id: string): Promise<boolean> {
   if (sql) {
     await ensureSchema();
@@ -2235,6 +2259,28 @@ export async function getBookingsForGuest(guestId: string): Promise<Booking[]> {
     })());
   }
   return readFile().filter(b => b.assignedGuestId === guestId).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+// Editing is allowed on any profile, built-in included — only deletion is
+// restricted, so the seeded identity can be corrected but not removed.
+export async function updatePaymentProfile(id: string, data: Partial<Omit<PaymentProfile, 'id' | 'sort' | 'builtin'>>): Promise<PaymentProfile | null> {
+  if (sql) {
+    await ensureSchema();
+    const cur = (await sql`SELECT * FROM payment_profiles WHERE id = ${id} LIMIT 1`) as any[];
+    if (!cur.length) return null;
+    const m = { ...rowToProfile(cur[0]), ...data };
+    await sql`
+      UPDATE payment_profiles SET name = ${m.name}, account_name = ${m.accountName}, bsb = ${m.bsb}, account_number = ${m.accountNumber}
+      WHERE id = ${id}
+    `;
+    return m;
+  }
+  const rows = readPaymentProfiles();
+  const idx = rows.findIndex(p => p.id === id);
+  if (idx === -1) return null;
+  rows[idx] = { ...rows[idx], ...data };
+  writePaymentProfiles(rows);
+  return rows[idx];
 }
 
 // Built-in profiles can't be deleted.

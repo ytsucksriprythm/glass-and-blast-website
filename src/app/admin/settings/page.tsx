@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import toast from 'react-hot-toast';
 import {
   ArrowLeft, Settings as SettingsIcon, Save, ShieldAlert, CreditCard, Bell, Star,
-  CalendarClock, Globe, ScrollText, RefreshCw, FileEdit, Trash2, Plus,
+  CalendarClock, Globe, ScrollText, RefreshCw, FileEdit, Trash2, Plus, Pencil, X, Check,
 } from 'lucide-react';
 import type { AppSettings } from '@/lib/settings';
 import type { PaymentProfile, BusinessProfile } from '@/lib/invoice';
@@ -76,7 +76,7 @@ type FieldConfig = { key: string; label: string };
 // second exists, this list is what makes the invoice-page picker appear.
 function ProfileManager<T extends { id: string; name: string; builtin: boolean }>({
   title, icon, autofillLabel, autofillSub, autofillEnabled, onToggleAutofill,
-  profiles, fields, onAdd, onDelete,
+  profiles, fields, onAdd, onUpdate, onDelete,
 }: {
   title: string;
   icon: React.ComponentType<{ className?: string }>;
@@ -87,11 +87,17 @@ function ProfileManager<T extends { id: string; name: string; builtin: boolean }
   profiles: T[];
   fields: FieldConfig[];
   onAdd: (data: Record<string, string>) => Promise<void>;
+  onUpdate: (p: T, data: Record<string, string>) => Promise<void>;
   onDelete: (p: T) => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
+
+  // Which profile (if any) is being edited inline, and its working copy.
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState<Record<string, string>>({});
+  const [savingEdit, setSavingEdit] = useState(false);
 
   const submit = async () => {
     if (!form.name?.trim()) { toast.error('Give the profile a name'); return; }
@@ -100,11 +106,37 @@ function ProfileManager<T extends { id: string; name: string; builtin: boolean }
     finally { setSaving(false); }
   };
 
+  const startEdit = (p: T) => {
+    const base: Record<string, string> = { name: p.name };
+    for (const fc of fields) base[fc.key] = (p as unknown as Record<string, string>)[fc.key] ?? '';
+    setEditForm(base);
+    setEditingId(p.id);
+  };
+  const submitEdit = async (p: T) => {
+    if (!editForm.name?.trim()) { toast.error('Give the profile a name'); return; }
+    setSavingEdit(true);
+    try { await onUpdate(p, editForm); setEditingId(null); }
+    finally { setSavingEdit(false); }
+  };
+
   return (
     <Section title={title} icon={icon}>
       <Toggle label={autofillLabel} sub={autofillSub} checked={autofillEnabled} onChange={onToggleAutofill} />
       <div className="space-y-2">
-        {profiles.map(p => (
+        {profiles.map(p => editingId === p.id ? (
+          <div key={p.id} className="rounded-lg border border-sky-400/30 bg-sky-400/5 p-3 space-y-2">
+            <input className="form-input text-sm w-full" placeholder="Profile name" value={editForm.name ?? ''} onChange={e => setEditForm(f => ({ ...f, name: e.target.value }))} />
+            <div className="grid grid-cols-2 gap-2">
+              {fields.map(fc => (
+                <input key={fc.key} className="form-input text-sm" placeholder={fc.label} value={editForm[fc.key] ?? ''} onChange={e => setEditForm(f => ({ ...f, [fc.key]: e.target.value }))} />
+              ))}
+            </div>
+            <div className="flex gap-2">
+              <button onClick={() => submitEdit(p)} disabled={savingEdit} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-white text-sm font-semibold cursor-pointer"><Check className="w-3.5 h-3.5" /> Save</button>
+              <button onClick={() => setEditingId(null)} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-white/10 text-slate-300 hover:text-white cursor-pointer"><X className="w-3.5 h-3.5" /> Cancel</button>
+            </div>
+          </div>
+        ) : (
           <div key={p.id} className="rounded-lg border border-white/10 bg-white/[0.02] p-3 flex items-start justify-between gap-3">
             <div className="min-w-0">
               <div className="text-white text-sm font-medium">{p.name}{p.builtin && <span className="text-slate-500 text-xs ml-1.5">(built-in)</span>}</div>
@@ -112,9 +144,12 @@ function ProfileManager<T extends { id: string; name: string; builtin: boolean }
                 {fields.map(fc => (p as unknown as Record<string, string>)[fc.key]).filter(Boolean).join(' · ') || '—'}
               </div>
             </div>
-            {!p.builtin && (
-              <button onClick={() => onDelete(p)} title="Delete profile" className="flex-shrink-0 text-slate-500 hover:text-red-400 cursor-pointer"><Trash2 className="w-4 h-4" /></button>
-            )}
+            <div className="flex-shrink-0 flex items-center gap-2">
+              <button onClick={() => startEdit(p)} title="Edit profile" className="text-slate-500 hover:text-sky-400 cursor-pointer"><Pencil className="w-4 h-4" /></button>
+              {!p.builtin && (
+                <button onClick={() => onDelete(p)} title="Delete profile" className="text-slate-500 hover:text-red-400 cursor-pointer"><Trash2 className="w-4 h-4" /></button>
+              )}
+            </div>
           </div>
         ))}
       </div>
@@ -239,6 +274,15 @@ export default function SettingsPage() {
     setBusinessProfiles(ps => [...ps, created]);
     toast.success(`Saved profile "${created.name}"`);
   };
+  const updateBusinessProfile = async (p: BusinessProfile, data: Record<string, string>) => {
+    const res = await fetch(`/api/admin/business-profiles/${p.id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
+    });
+    if (!res.ok) { toast.error((await res.json()).error || 'Failed'); return; }
+    const updated: BusinessProfile = await res.json();
+    setBusinessProfiles(ps => ps.map(x => x.id === p.id ? updated : x));
+    toast.success('Profile updated');
+  };
   const deleteBusinessProfile = async (p: BusinessProfile) => {
     if (!window.confirm(`Delete business profile "${p.name}"?`)) return;
     const res = await fetch(`/api/admin/business-profiles/${p.id}`, { method: 'DELETE' });
@@ -255,6 +299,16 @@ export default function SettingsPage() {
     const created: PaymentProfile = await res.json();
     setPaymentProfiles(ps => [...ps, created]);
     toast.success(`Saved profile "${created.name}"`);
+  };
+  const updatePaymentProfile = async (p: PaymentProfile, data: Record<string, string>) => {
+    const res = await fetch(`/api/admin/payment-profiles/${p.id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: data.name, accountName: data.accountName, bsb: data.bsb, accountNumber: data.accountNumber }),
+    });
+    if (!res.ok) { toast.error((await res.json()).error || 'Failed'); return; }
+    const updated: PaymentProfile = await res.json();
+    setPaymentProfiles(ps => ps.map(x => x.id === p.id ? updated : x));
+    toast.success('Profile updated');
   };
   const deletePaymentProfile = async (p: PaymentProfile) => {
     if (!window.confirm(`Delete payment profile "${p.name}"?`)) return;
@@ -335,6 +389,7 @@ export default function SettingsPage() {
                   { key: 'fromAddress', label: 'Address' }, { key: 'fromEmail', label: 'Email' },
                 ]}
                 onAdd={addBusinessProfile}
+                onUpdate={updateBusinessProfile}
                 onDelete={deleteBusinessProfile}
               />
 
@@ -350,6 +405,7 @@ export default function SettingsPage() {
                   { key: 'accountName', label: 'Account name' }, { key: 'bsb', label: 'BSB' }, { key: 'accountNumber', label: 'Account number' },
                 ]}
                 onAdd={addPaymentProfile}
+                onUpdate={updatePaymentProfile}
                 onDelete={deletePaymentProfile}
               />
 
