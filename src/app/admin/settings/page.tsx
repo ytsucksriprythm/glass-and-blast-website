@@ -10,6 +10,7 @@ import {
 import type { AppSettings } from '@/lib/settings';
 import type { PaymentProfile, BusinessProfile } from '@/lib/invoice';
 import { ACTIVITY_TYPE_LABEL, type ActivityEntry } from '@/lib/activity';
+import { APP_VERSION } from '@/lib/version';
 import { AdminSidebar, AdminMobileNav, AdminMoreSheet, useMoreSheet, adminNavItems } from '@/components/admin/AdminNav';
 
 function Section({ title, icon: Icon, children }: { title: string; icon: React.ComponentType<{ className?: string }>; children: React.ReactNode }) {
@@ -466,7 +467,7 @@ export default function SettingsPage() {
 
               <ActivityLog />
 
-              <p className="text-center text-slate-700 text-[10px] pt-2">v{process.env.NEXT_PUBLIC_APP_VERSION ?? '0'}</p>
+              <p className="text-center text-slate-700 text-[10px] pt-2">v{APP_VERSION}</p>
             </div>
           )}
         </main>
