@@ -117,7 +117,7 @@ export type InvoiceInput = Omit<
 export const BUSINESS_DEFAULTS = {
   fromName: 'Lincoln Uren',
   fromTradingAs: 'Glass and Blast',
-  fromAbn: '17 169 059 505',
+  fromAbn: '69 220 703 470',
   fromAddress: '3/14 Portus Place, Bruce ACT 2617',
   fromEmail: 'lincolnblu@icloud.com',
   fromPhone: '0466 050 834',
