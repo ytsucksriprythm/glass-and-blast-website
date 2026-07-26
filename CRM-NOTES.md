@@ -156,15 +156,19 @@ Route optimization, SMS, and advanced reports are the consistent paywall feature
 | Booking intake | ✔ | ✔ single-screen form |
 | Customer records + history | ✔ | ✔ bookings DB |
 | Status pipeline | ✔ | ✔ pending→quoted→confirmed→completed |
-| Quote + paid tracking | ✔ | ✔ |
-| Calendar | ✔ built-in | ✔ Google Calendar feed (read-only) |
-| Before/after photos | ✔ | ✔ built |
-| Recurring plans | ✔ | ✔ built (auto-create + cron) |
-| Revenue/lead reports | ✔ | ✔ business + site stats |
+| Quote + paid tracking | ✔ | ✔, plus a "customer says paid" claim flag separate from confirmed paid |
+| Calendar | ✔ built-in | ✔ built-in (bookings own their own `scheduledAt` slot; no external feed) |
+| Before/after photos | ✔ | ✔ built (camera roll or camera, not camera-only) |
+| Recurring plans | ✔ | ✔ built (auto-create + cron, schedules straight onto the calendar) |
+| Revenue/lead reports | ✔ | ✔ business + site stats, plus a lead-source (how-we-got-the-job) chart |
 | Push notifications | ✔ | ✔ ntfy |
 | Leads-to-call / owed panels | ✔ | ✔ built |
+| Bulk actions | ✔ | ✔ multi-select → status change / delete |
+| Job grouping / batching | some | ✔ built — grouped jobs collapse to one row (title/count/total), inline in the list |
+| Post-job review request | ✔ premium | ✔ built — thank-you page after "I've paid", 4–5★ redirects to the Google review link |
+| Invoice ↔ job linking | ✔ | ✔ multi-booking link, address-matched suggestions, payment sync |
 | SMS automation | ✔ premium | ✘ skipped (not free in AU) |
 | Route optimization | ✔ premium | ✘ future (Phase 2) |
 | Tech field app | ✔ | ✘ future (admin PWA covers 2–3 person team) |
 | On-site card payment | ✔ | ✘ using Square separately |
-| Customer portal | ✔ | ✘ skipped (sales by phone) |
+| Customer portal | ✔ | partial — no account/login, but a per-booking thank-you page (invoice, photos, feedback) |

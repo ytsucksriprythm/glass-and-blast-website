@@ -82,13 +82,18 @@ export async function GET(req: NextRequest) {
       b.suburb.toLowerCase().includes(search)
     );
 
-    filtered.sort((a, b) => {
-      const av = a[sort as keyof typeof a] ?? '';
-      const bv = b[sort as keyof typeof b] ?? '';
-      return order === 'asc'
-        ? String(av).localeCompare(String(bv))
-        : String(bv).localeCompare(String(av));
-    });
+    if (sort === 'sortOrder') {
+      // Manual drag order (Bookings tab, select mode) — numeric, unset sinks to the bottom.
+      filtered = [...filtered].sort((a, b) => (a.sortOrder ?? Infinity) - (b.sortOrder ?? Infinity));
+    } else {
+      filtered.sort((a, b) => {
+        const av = a[sort as keyof typeof a] ?? '';
+        const bv = b[sort as keyof typeof b] ?? '';
+        return order === 'asc'
+          ? String(av).localeCompare(String(bv))
+          : String(bv).localeCompare(String(av));
+      });
+    }
 
     return NextResponse.json(filtered);
   } catch (e) {

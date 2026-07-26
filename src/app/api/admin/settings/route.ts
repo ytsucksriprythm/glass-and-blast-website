@@ -27,7 +27,7 @@ export async function PATCH(req: NextRequest) {
   const copyBool = (k: keyof AppSettings) => { if (typeof b[k] === 'boolean') (updates as any)[k] = b[k]; };
 
   (['googleReviewUrl', 'defaultJobStartTime'] as (keyof AppSettings)[]).forEach(copyStr);
-  (['squareSurchargePercent', 'reviewStarThreshold'] as (keyof AppSettings)[]).forEach(copyNum);
+  (['squareSurchargePercent', 'reviewStarThreshold', 'larpRevenueTarget'] as (keyof AppSettings)[]).forEach(copyNum);
   (['squareCardPaymentsEnabled', 'notificationsEnabled', 'notifyStatusChange', 'notifyJobAssigned',
     'notifyCustomerMarkedPaid', 'notifySquarePaid', 'notifyNewBooking', 'customerFeedbackEnabled',
     'recurringAutoBookEnabled', 'acceptingNewBookings', 'siteTrackingEnabled',

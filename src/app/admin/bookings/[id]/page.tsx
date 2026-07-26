@@ -48,21 +48,22 @@ const SERVICE_OPTIONS = [
   { v: 'solar-panel-cleaning', l: 'Solar Panel Cleaning' },
   { v: 'other', l: 'Other' },
 ];
-const STATUS_KEYS: BookingStatus[] = ['pending', 'quoted', 'confirmed', 'completed', 'cancelled'];
-const STATUS_LABEL: Record<string, string> = { pending: 'Pending', quoted: 'Quoted', confirmed: 'Confirmed', completed: 'Completed', cancelled: 'Cancelled' };
+const STATUS_KEYS: BookingStatus[] = ['pending', 'quoted', 'confirmed', 'completed', 'cancelled', 'cold'];
+const STATUS_LABEL: Record<string, string> = { pending: 'Pending', quoted: 'Quoted', confirmed: 'Confirmed', completed: 'Completed', cancelled: 'Cancelled', cold: 'Cold Lead' };
 
 const serviceText = (s: string) => (s ?? '').split(',').filter(Boolean).map(x => SERVICE_LABELS[x] ?? x).join(' + ') || '-';
 const money = (n?: number | null) => typeof n === 'number' ? `$${n.toLocaleString('en-AU', { maximumFractionDigits: 0 })}` : '';
 
 // Editable form: quoteAmount held as a string for the input; service is a CSV string;
-// paidAt / completedAt held as YYYY-MM-DD strings for the date inputs.
-type EditForm = Omit<Booking, 'quoteAmount' | 'service' | 'completedAt' | 'paidAt' | 'scheduledAt'> & { quoteAmount: string; service: string; completedAt: string; paidAt: string; scheduledAt: string };
+// paidAt / completedAt / createdAtDate held as YYYY-MM-DD strings for the date inputs.
+type EditForm = Omit<Booking, 'quoteAmount' | 'service' | 'completedAt' | 'paidAt' | 'scheduledAt'> & { quoteAmount: string; service: string; completedAt: string; paidAt: string; scheduledAt: string; createdAtDate: string };
 const toForm = (b: Booking): EditForm => ({
   ...b,
   quoteAmount: b.quoteAmount != null ? String(b.quoteAmount) : '',
   completedAt: b.completedAt ? b.completedAt.slice(0, 10) : '',
   paidAt: b.paidAt ? b.paidAt.slice(0, 10) : '',
   scheduledAt: toLocalInput(b.scheduledAt ?? null),
+  createdAtDate: b.createdAt.slice(0, 10),
 });
 
 const longDate = (iso: string) => new Date(iso).toLocaleDateString('en-AU', { day: 'numeric', month: 'long', year: 'numeric' });
@@ -322,6 +323,22 @@ export default function BookingView() {
     return { ...f, service: next.join(',') };
   });
 
+  // Website lead followed up — drops it out of "Leads to call back" on the
+  // dashboard without changing status (still pending until quoted/confirmed).
+  const markContacted = async () => {
+    if (!b) return;
+    try {
+      const res = await fetch(`/api/admin/bookings/${b.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contactedAt: new Date().toISOString() }),
+      });
+      if (!res.ok) throw new Error();
+      const updated: Booking = await res.json();
+      setB(updated); setForm(toForm(updated));
+      toast.success('Marked as contacted');
+    } catch { toast.error('Could not update'); }
+  };
+
   const startEdit = () => { if (b) setForm(toForm(b)); setEdit(true); };
   const cancel = () => { if (b) setForm(toForm(b)); setEdit(false); };
 
@@ -360,6 +377,10 @@ export default function BookingView() {
       // set date, send it; if paid but blank, omit so the server stamps today.
       if (!form.paid) { if (b?.paidAt) patch.paidAt = null; }
       else if (form.paidAt.trim() !== '') patch.paidAt = new Date(`${form.paidAt}T00:00:00`).toISOString();
+      // Date added: only send it if the date actually changed, so the original time-of-day survives untouched.
+      if (form.createdAtDate && form.createdAtDate !== b?.createdAt.slice(0, 10)) {
+        patch.createdAt = new Date(`${form.createdAtDate}T00:00:00`).toISOString();
+      }
       const res = await fetch(`/api/admin/bookings/${id}`, {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
       });
@@ -425,6 +446,12 @@ export default function BookingView() {
               </span>
             </div>
 
+            {b.source === 'website' && b.status === 'pending' && !b.contactedAt && (
+              <button onClick={markContacted} className="mb-5 w-full inline-flex items-center justify-center gap-2 px-4 py-3.5 rounded-lg border border-emerald-400/30 bg-emerald-400/10 text-emerald-300 hover:bg-emerald-400/15 text-base font-semibold transition-colors cursor-pointer">
+                <Check className="w-5 h-5" /> Mark as Contacted
+              </button>
+            )}
+
             <div className="mb-5 grid grid-cols-2 gap-3">
               {/* Opens the calendar in scheduling mode: pick a day and the slot is
                   filled in from this booking, on this same record. */}
@@ -439,7 +466,7 @@ export default function BookingView() {
             <div className="rounded-lg border border-white/10 bg-navy-800 px-4">
               {b.phone && <Row icon={Phone} label="Phone"><a href={`tel:${b.phone}`} className="text-sky-400">{b.phone}</a></Row>}
               {b.email && <Row icon={Mail} label="Email"><a href={`mailto:${b.email}`} className="text-sky-400 break-all">{b.email}</a></Row>}
-              <Row icon={User} label="Service">{serviceText(b.service)} · <span className="capitalize">{b.propertyType}</span></Row>
+              <Row icon={User} label="Service">{serviceText(b.service)}{b.propertyType === 'commercial' ? ' · Commercial' : ''}</Row>
               {(b.address || b.suburb) && <Row icon={MapPin} label="Address"><AddressLink address={[b.address, b.suburb].filter(Boolean).join(', ')} /></Row>}
               {(b.preferredDate || b.preferredTime) && <Row icon={CalendarDays} label="Preferred time">{[b.preferredDate, b.preferredTime].filter(Boolean).join(' ')}</Row>}
               <Row icon={CalendarClock} label="Calendar">
@@ -613,6 +640,7 @@ export default function BookingView() {
               </div>
               <div><FieldLabel>Preferred date</FieldLabel><input className="form-input" type="date" value={form.preferredDate} onChange={e => set('preferredDate', e.target.value)} /></div>
               <div><FieldLabel>Preferred time</FieldLabel><input className="form-input" placeholder="e.g. Morning" value={form.preferredTime} onChange={e => set('preferredTime', e.target.value)} /></div>
+              <div><FieldLabel>Date added</FieldLabel><input className="form-input" type="date" value={form.createdAtDate} onChange={e => set('createdAtDate', e.target.value)} /></div>
               <div className="sm:col-span-2">
                 <FieldLabel>Scheduled slot (calendar)</FieldLabel>
                 <div className="flex items-center gap-2">

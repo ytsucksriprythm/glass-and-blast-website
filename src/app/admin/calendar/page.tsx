@@ -15,7 +15,7 @@ import { AddressLink } from '@/components/AddressLink';
 type View = 'day' | 'week' | 'month';
 
 const STATUS_LABEL: Record<BookingStatus, string> = {
-  pending: 'Pending', quoted: 'Quoted', confirmed: 'Confirmed', completed: 'Completed', cancelled: 'Cancelled',
+  pending: 'Pending', quoted: 'Quoted', confirmed: 'Confirmed', completed: 'Completed', cancelled: 'Cancelled', cold: 'Cold Lead',
 };
 const STATUS_KEYS: BookingStatus[] = ['pending', 'quoted', 'confirmed', 'completed', 'cancelled'];
 

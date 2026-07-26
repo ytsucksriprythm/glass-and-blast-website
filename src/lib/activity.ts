@@ -35,6 +35,8 @@ export const ACTIVITY_TYPE_LABEL: Record<string, string> = {
   'booking.created': 'Booking created',
   'booking.deleted': 'Booking deleted',
   'booking.status_changed': 'Booking status changed',
+  'booking.auto_moved_cold': 'Auto-moved to Cold Lead',
+  'booking.contacted': 'Lead marked contacted',
   'invoice.created': 'Invoice created',
   'invoice.deleted': 'Invoice deleted',
   'invoice.status_changed': 'Invoice status changed',
@@ -46,6 +48,8 @@ export const ACTIVITY_TYPE_LABEL: Record<string, string> = {
   'guest.deleted': 'Guest login deleted',
   'group.created': 'Booking group created',
   'group.deleted': 'Booking group deleted',
+  'larp.started': 'LARP mode turned on',
+  'larp.stopped': 'LARP mode turned off',
 };
 
 // Lightweight User-Agent classification — no dependency needed for this.

@@ -13,13 +13,14 @@ import {
   ArrowUpRight, ArrowDownRight, Edit3, Check, Plus, X, StickyNote, BadgeCheck, Wallet,
   Globe, Eye, Users, Link2, MapPin, Target, ClipboardCopy, CalendarDays, CalendarClock, ArrowRight,
   Repeat, PhoneCall, FileText, Send, CheckSquare, Square, Layers, AlertTriangle,
+  Snowflake, Undo2, GripVertical,
 } from 'lucide-react';
 import Image from 'next/image';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import toast from 'react-hot-toast';
 import type { Booking, BookingStatus, RecurringJob, BookingGroup } from '@/lib/db';
-import type { Invoice } from '@/lib/invoice';
+import { type Invoice, type PaymentMethod, PAYMENT_METHOD_LABEL } from '@/lib/invoice';
 import { AdminSidebar, AdminMobileNav, AdminMoreSheet, useMoreSheet, adminNavItems } from '@/components/admin/AdminNav';
 import { AddressLink } from '@/components/AddressLink';
 
@@ -27,7 +28,7 @@ import { AddressLink } from '@/components/AddressLink';
 
 interface Stats {
   total: number; thisMonth: number; lastMonth: number;
-  pending: number; quoted: number; confirmed: number; completed: number; cancelled: number;
+  pending: number; quoted: number; confirmed: number; completed: number; cancelled: number; cold: number;
   quotedCount: number; quotedValue: number;
   paidValue: number; owedValue: number; owedCount: number;
   wonValue: number; estimatedRevenue: number;
@@ -65,8 +66,12 @@ const STATUS_CONFIG: Record<BookingStatus, { label: string; color: string; icon:
   confirmed: { label: 'Confirmed', color: '#38BDF8', icon: CheckCircle },
   completed: { label: 'Completed', color: '#34D399', icon: Check },
   cancelled: { label: 'Cancelled', color: '#F87171', icon: XCircle },
+  cold:      { label: 'Cold Lead', color: '#94A3B8', icon: Snowflake },
 };
 const STATUS_KEYS = Object.keys(STATUS_CONFIG) as BookingStatus[];
+// Everything except "cold" — the Bookings tab's main list only ever shows
+// these; cold leads live in their own collapsible section further down.
+const ACTIVE_STATUS_KEYS = STATUS_KEYS.filter(s => s !== 'cold');
 
 const SERVICE_LABELS: Record<string, string> = {
   'window-washing':       'Window Washing',
@@ -99,6 +104,14 @@ function scheduledLabel(iso: string): string {
     return `${d.toLocaleDateString('en-AU', { weekday: 'long' })} ${d.toLocaleTimeString('en-AU', { hour: 'numeric', minute: '2-digit' })}`;
   }
   return d.toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+// "Today" / "3d ago" / "2mo ago" — sub-line under the Date Added column.
+function daysAgoLabel(iso: string): string {
+  const days = Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
+  if (days <= 0) return 'Today';
+  if (days === 1) return 'Yesterday';
+  if (days < 30) return `${days}d ago`;
+  return `${Math.floor(days / 30)}mo ago`;
 }
 const toLocalInput = (iso: string | null) => {
   if (!iso) return '';
@@ -303,7 +316,7 @@ function BookingCard({ b, actions }: { b: Booking; actions: BookingRowActions })
             <CustomerPaidClaimBadge booking={b} />
           </div>
           <a href={`tel:${b.phone}`} onClick={e => e.stopPropagation()} className="text-sky-400 text-sm cursor-pointer">{b.phone}</a>
-          <div className="text-slate-500 text-xs mt-0.5">{serviceText(b.service)} · <span className="capitalize">{b.propertyType}</span></div>
+          <div className="text-slate-500 text-xs mt-0.5">{serviceText(b.service)}{b.propertyType === 'commercial' ? ' · Commercial' : ''}</div>
         </div>
         {typeof b.quoteAmount === 'number' && b.quoteAmount > 0 && (
           <div className="text-violet-300 font-bold text-lg whitespace-nowrap">{money(b.quoteAmount)}</div>
@@ -373,12 +386,12 @@ function BookingRow({ b, actions }: { b: Booking; actions: BookingRowActions }) 
       {/* Service */}
       <div>
         <div className="text-slate-300 text-sm">{serviceText(b.service)}</div>
-        <div className="text-slate-600 text-xs capitalize">{b.propertyType}</div>
+        {b.propertyType === 'commercial' && <div className="text-slate-600 text-xs">Commercial</div>}
       </div>
-      {/* Date */}
+      {/* Date added — the chronological order the list defaults to */}
       <div>
-        <div className="text-slate-300 text-sm">{b.preferredDate || '—'}</div>
-        <div className="text-slate-600 text-xs">{b.preferredTime}</div>
+        <div className="text-slate-300 text-sm">{new Date(b.createdAt).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' })}</div>
+        <div className="text-slate-600 text-xs">{daysAgoLabel(b.createdAt)}</div>
       </div>
       {/* Status — stopPropagation keeps the row-open off this control */}
       <div onClick={e => e.stopPropagation()}>
@@ -459,6 +472,53 @@ function GroupBlock({ group, members, open, onToggle, onDelete, actions }: {
   );
 }
 
+// Collapsed section for "cold" leads — kept out of the main active-jobs list
+// so it doesn't clutter day-to-day work, but still reachable in one click.
+// Sits below the main list rather than mixed into it.
+function ColdLeadsSection({ bookings, open, onToggle, onOpen, onRevive }: {
+  bookings: Booking[]; open: boolean; onToggle: () => void; onOpen: (id: string) => void; onRevive: (b: Booking) => void;
+}) {
+  if (bookings.length === 0) return null;
+  return (
+    <div className="glass rounded-2xl border border-white/8 overflow-hidden">
+      <button onClick={onToggle} className="w-full flex items-center justify-between gap-3 p-4 text-left cursor-pointer">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <ChevronRight className={`w-4 h-4 text-slate-500 flex-shrink-0 transition-transform ${open ? 'rotate-90' : ''}`} />
+          <Snowflake className="w-4 h-4 text-slate-400 flex-shrink-0" />
+          <span className="text-white text-sm font-semibold">Cold Leads</span>
+          <span className="text-slate-500 text-xs">{bookings.length} job{bookings.length !== 1 ? 's' : ''}</span>
+        </div>
+      </button>
+      {open && (
+        <div className="border-t border-white/10 p-3 space-y-2 bg-black/10">
+          {bookings.map(b => (
+            <div key={b.id} className="glass rounded-xl border border-white/8 p-3 flex items-center gap-3">
+              <button onClick={() => onOpen(b.id)} className="min-w-0 flex-1 text-left cursor-pointer">
+                <div className="text-white text-sm font-medium truncate flex items-center gap-2 flex-wrap">
+                  {b.name}
+                  {b.autoMoved && (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-400/15 text-slate-300 border border-slate-400/20" title="Moved here automatically, not by a person">Auto</span>
+                  )}
+                </div>
+                <div className="text-slate-500 text-xs truncate">
+                  {serviceText(b.service)}
+                  {b.autoMoved && b.autoMovedAt ? ` · Auto-moved ${new Date(b.autoMovedAt).toLocaleDateString('en-AU')}` : ''}
+                </div>
+              </button>
+              <button
+                onClick={() => onRevive(b)}
+                className="flex-shrink-0 inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-sky-400/30 bg-sky-400/10 text-sky-300 text-xs font-semibold cursor-pointer"
+              >
+                <Undo2 className="w-3.5 h-3.5" /> Move to active
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Bottom tab bar (mobile / installed app) ─────────────────────────────
 
 type TabKey = 'overview' | 'bookings' | 'business' | 'site';
@@ -513,19 +573,19 @@ export default function Dashboard() {
   const guestName = (id?: string | null) => guests.find(g => g.id === id)?.name ?? 'guest';
 
   // Which bookings already have an invoice linked — powers the "no invoice
-  // yet" indicator on the Done-but-not-paid list.
-  const [invoicedBookingIds, setInvoicedBookingIds] = useState<Set<string>>(new Set());
-  useEffect(() => {
-    (async () => {
-      try {
-        const res = await fetch('/api/admin/invoices');
-        if (res.ok) {
-          const invs: Invoice[] = await res.json();
-          setInvoicedBookingIds(new Set(invs.flatMap(i => i.bookingIds ?? [])));
-        }
-      } catch { /* indicator just won't show */ }
-    })();
+  // yet" indicator on the Done-but-not-paid list, and lets "mark paid" offer
+  // to settle the linked invoice (with a payment method) in the same step.
+  const [invoices, setInvoices] = useState<Invoice[]>([]);
+  const loadInvoices = useCallback(async () => {
+    try {
+      const res = await fetch('/api/admin/invoices');
+      if (res.ok) setInvoices(await res.json());
+    } catch { /* indicator just won't show */ }
   }, []);
+  useEffect(() => { loadInvoices(); }, [loadInvoices]);
+  const invoicedBookingIds = new Set(invoices.flatMap(i => i.bookingIds ?? []));
+  // First unpaid invoice linked to a booking — that's the one "mark paid" should settle.
+  const unpaidInvoiceFor = (bookingId: string) => invoices.find(i => (i.bookingIds ?? []).includes(bookingId) && i.status !== 'paid') ?? null;
 
   // Switch into a guest's dashboard. No password — the admin session is kept,
   // so the "Admin" button over there brings you straight back.
@@ -561,6 +621,31 @@ export default function Dashboard() {
   const toggleGroupExpanded = (id: string) => setExpandedGroups(s => {
     const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n;
   });
+
+  // Cold-leads collapsible section + "move back to active" modal
+  const [coldOpen, setColdOpen] = useState(false);
+  const [revive, setRevive] = useState<Booking | null>(null);
+  const [reviveStatus, setReviveStatus] = useState<BookingStatus>('pending');
+  const openRevive = (b: Booking) => { setRevive(b); setReviveStatus('pending'); };
+
+  // Drag-to-reorder in select mode
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+
+  // Jobs the 14-day stale-lead check JUST auto-moved to Cold Lead this load —
+  // shown as a one-time "moved to Cold Lead" popup with Undo.
+  const [staleMoved, setStaleMoved] = useState<Booking[]>([]);
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch('/api/admin/bookings/stale-check');
+        if (!res.ok) return;
+        const moved: Booking[] = await res.json();
+        if (moved.length > 0) { setStaleMoved(moved); fetchData(); }
+      } catch { /* best-effort, no popup if it fails */ }
+    })();
+    // Runs once per dashboard load only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const toggleSel = (id: string) => setSelected(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const clearSel = () => { setSelected(new Set()); setSelectMode(false); };
@@ -669,7 +754,35 @@ export default function Dashboard() {
     saveBooking(b.id, { status: val });
   };
 
-  const onTogglePaid = (b: Booking) => saveBooking(b.id, { paid: !b.paid });
+  // Marking a job paid when it has a linked (not-yet-paid) invoice settles
+  // the invoice instead of the booking directly — the invoice's own paid-sync
+  // (syncInvoicePaidToBookings in db.ts) then flips the booking's `paid` too,
+  // so the two never end up disagreeing about a job with an invoice.
+  const [payInvoicePrompt, setPayInvoicePrompt] = useState<{ booking: Booking; invoice: Invoice } | null>(null);
+  const onTogglePaid = (b: Booking) => {
+    if (!b.paid) {
+      const inv = unpaidInvoiceFor(b.id);
+      if (inv) { setPayInvoicePrompt({ booking: b, invoice: inv }); return; }
+    }
+    saveBooking(b.id, { paid: !b.paid });
+  };
+  const confirmPayInvoice = async (method: PaymentMethod) => {
+    if (!payInvoicePrompt) return;
+    try {
+      const res = await fetch(`/api/admin/invoices/${payInvoicePrompt.invoice.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'paid', paymentMethod: method }),
+      });
+      if (!res.ok) throw new Error();
+      toast.success(`Marked paid — ${PAYMENT_METHOD_LABEL[method].toLowerCase()}`);
+      setPayInvoicePrompt(null);
+      await Promise.all([fetchData(), loadInvoices()]);
+    } catch { toast.error('Could not mark paid'); }
+  };
+
+  // Website lead followed up — drops it from "Leads to call back" without
+  // touching status (still pending until it's actually quoted/confirmed).
+  const markContacted = (b: Booking) => saveBooking(b.id, { contactedAt: new Date().toISOString() });
 
   const saveBooking = async (id: string, patch: Partial<Booking>) => {
     try {
@@ -691,6 +804,29 @@ export default function Dashboard() {
       toast.success('Booking deleted');
       fetchData();
     } catch { toast.error('Delete failed'); }
+  };
+
+  // Drag-and-drop reorder (select mode). Reorders just the currently-visible
+  // subset in place, then persists sort_order for exactly those ids and
+  // switches the list to display by that manual order.
+  const handleDrop = async (dropIndex: number) => {
+    if (dragIndex === null || dragIndex === dropIndex) { setDragIndex(null); return; }
+    const ids = visibleBookings.map(b => b.id);
+    const [moved] = ids.splice(dragIndex, 1);
+    ids.splice(dropIndex, 0, moved);
+    setDragIndex(null);
+
+    const byId = new Map(bookings.map(b => [b.id, b]));
+    const visibleIdSet = new Set(visibleBookings.map(b => b.id));
+    let k = 0;
+    setBookings(bookings.map(b => visibleIdSet.has(b.id) ? byId.get(ids[k++])! : b));
+
+    try {
+      await fetch('/api/admin/bookings/reorder', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids }),
+      });
+      setSortField('sortOrder'); setSortOrder('asc');
+    } catch { toast.error('Could not save order'); }
   };
 
   const toggleSort = (field: string) => {
@@ -755,8 +891,13 @@ export default function Dashboard() {
   // in the current sort order, so the first member hit while walking that
   // order IS the group's most-recent job (default sort is createdAt desc).
   const visibleBookings = showPaid ? bookings : bookings.filter(b => !b.paid);
+  // Cold leads get pulled out of the main list into their own collapsible
+  // section below it — but only when browsing "All Status"; picking the
+  // "Cold Lead" filter explicitly should still show them inline as normal.
+  const coldBookings = statusFilter === 'all' ? visibleBookings.filter(b => b.status === 'cold') : [];
+  const mainBookings = statusFilter === 'all' ? visibleBookings.filter(b => b.status !== 'cold') : visibleBookings;
   const bookingsByGroup = new Map<string, Booking[]>();
-  for (const b of visibleBookings) {
+  for (const b of mainBookings) {
     if (!b.groupId) continue;
     const list = bookingsByGroup.get(b.groupId) ?? [];
     list.push(b);
@@ -765,7 +906,7 @@ export default function Dashboard() {
   type ListItem = { kind: 'booking'; booking: Booking } | { kind: 'group'; group: BookingGroup; members: Booking[] };
   const listItems: ListItem[] = [];
   const seenGroups = new Set<string>();
-  for (const b of visibleBookings) {
+  for (const b of mainBookings) {
     if (!b.groupId) { listItems.push({ kind: 'booking', booking: b }); continue; }
     if (seenGroups.has(b.groupId)) continue;
     seenGroups.add(b.groupId);
@@ -829,7 +970,7 @@ export default function Dashboard() {
                 )}
 
                 {stats && (
-                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
                     {STATUS_KEYS.map((key) => {
                       const cfg = STATUS_CONFIG[key];
                       return (
@@ -849,7 +990,7 @@ export default function Dashboard() {
 
                 {/* Action needed: fresh leads to call + money owed — the two lists that make you money */}
                 {!loading && (() => {
-                  const leads = bookings.filter(b => b.status === 'pending').sort((a, b) => a.createdAt.localeCompare(b.createdAt)).slice(0, 5);
+                  const leads = bookings.filter(b => b.status === 'pending' && !b.contactedAt).sort((a, b) => a.createdAt.localeCompare(b.createdAt)).slice(0, 5);
                   const owed = bookings.filter(b => b.status === 'completed' && !b.paid && typeof b.quoteAmount === 'number' && (b.quoteAmount ?? 0) > 0).slice(0, 5);
                   const dueSoonCount = recurring.filter(j => j.active && j.nextDate <= new Date(Date.now() + 14 * 86400000).toISOString().slice(0, 10)).length;
                   const ageDays = (iso: string) => Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
@@ -864,18 +1005,26 @@ export default function Dashboard() {
                           </h3>
                           <ul className="divide-y divide-white/5">
                             {leads.map(b => (
-                              <li key={b.id} className="flex items-center gap-3 py-2">
-                                <button onClick={() => openBooking(b.id)} className="min-w-0 flex-1 text-left cursor-pointer">
-                                  <div className="text-white text-sm font-medium truncate">{b.name}</div>
-                                  <div className="text-slate-500 text-xs truncate">{serviceText(b.service)}{b.suburb ? ` · ${b.suburb}` : ''}</div>
-                                </button>
-                                <span className={`flex-shrink-0 text-xs ${ageDays(b.createdAt) >= 2 ? 'text-amber-400 font-semibold' : 'text-slate-500'}`}>
-                                  {ageDays(b.createdAt) === 0 ? 'today' : `${ageDays(b.createdAt)}d`}
-                                </span>
-                                {b.phone && (
-                                  <a href={`tel:${b.phone}`} aria-label={`Call ${b.name}`} className="flex-shrink-0 w-9 h-9 rounded-lg bg-sky-400/10 text-sky-400 hover:bg-sky-400/20 flex items-center justify-center cursor-pointer">
-                                    <PhoneCall className="w-4 h-4" />
-                                  </a>
+                              <li key={b.id} className="py-2">
+                                <div className="flex items-center gap-3">
+                                  <button onClick={() => openBooking(b.id)} className="min-w-0 flex-1 text-left cursor-pointer">
+                                    <div className="text-white text-sm font-medium truncate">{b.name}</div>
+                                    <div className="text-slate-500 text-xs truncate">{serviceText(b.service)}{b.suburb ? ` · ${b.suburb}` : ''}</div>
+                                  </button>
+                                  <span className={`flex-shrink-0 text-xs ${ageDays(b.createdAt) >= 2 ? 'text-amber-400 font-semibold' : 'text-slate-500'}`}>
+                                    {ageDays(b.createdAt) === 0 ? 'today' : `${ageDays(b.createdAt)}d`}
+                                  </span>
+                                  {b.phone && (
+                                    <a href={`tel:${b.phone}`} aria-label={`Call ${b.name}`} className="flex-shrink-0 w-9 h-9 rounded-lg bg-sky-400/10 text-sky-400 hover:bg-sky-400/20 flex items-center justify-center cursor-pointer">
+                                      <PhoneCall className="w-4 h-4" />
+                                    </a>
+                                  )}
+                                </div>
+                                {/* Only website leads need this — manual adds were already "contacted" by definition */}
+                                {b.source === 'website' && (
+                                  <button onClick={() => markContacted(b)} className="mt-2 w-full inline-flex items-center justify-center gap-1.5 py-2 rounded-lg border border-emerald-400/30 bg-emerald-400/10 text-emerald-300 hover:bg-emerald-400/15 text-xs font-semibold cursor-pointer">
+                                    <PhoneCall className="w-3.5 h-3.5" /> Mark as Contacted
+                                  </button>
                                 )}
                               </li>
                             ))}
@@ -1061,7 +1210,7 @@ export default function Dashboard() {
 
                 <div className="flex items-center justify-between px-1">
                   <div className="text-slate-500 text-sm">
-                    {loading ? 'Loading...' : `${visibleBookings.length} booking${visibleBookings.length !== 1 ? 's' : ''}`}
+                    {loading ? 'Loading...' : `${mainBookings.length} booking${mainBookings.length !== 1 ? 's' : ''}`}
                   </div>
                   <button onClick={() => { setSelectMode(m => !m); setSelected(new Set()); }} className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold cursor-pointer transition-colors ${selectMode ? 'bg-sky-500 text-white' : 'glass border border-white/10 text-slate-300 hover:text-white'}`}>
                     <CheckSquare className="w-4 h-4" /> {selectMode ? 'Done' : 'Select'}
@@ -1071,17 +1220,30 @@ export default function Dashboard() {
                 {/* Bulk select list + action bar */}
                 {selectMode && (
                   <div className="space-y-2 pb-24">
-                    <button onClick={() => setSelected(new Set(visibleBookings.map(b => b.id)))} className="text-sky-400 text-xs font-semibold cursor-pointer">Select all ({visibleBookings.length})</button>
-                    {visibleBookings.map(b => {
+                    <div className="flex items-center gap-3">
+                      <button onClick={() => setSelected(new Set(visibleBookings.map(b => b.id)))} className="text-sky-400 text-xs font-semibold cursor-pointer">Select all ({visibleBookings.length})</button>
+                      <span className="text-slate-600 text-xs inline-flex items-center gap-1"><GripVertical className="w-3 h-3" /> Drag to reorder</span>
+                    </div>
+                    {visibleBookings.map((b, i) => {
                       const on = selected.has(b.id);
                       return (
-                        <button key={b.id} onClick={() => toggleSel(b.id)} className={`w-full flex items-center gap-3 p-3 rounded-xl border text-left cursor-pointer transition-colors ${on ? 'border-sky-400 bg-sky-400/10' : 'border-white/10 glass hover:border-white/20'}`}>
-                          {on ? <CheckSquare className="w-5 h-5 text-sky-400 flex-shrink-0" /> : <Square className="w-5 h-5 text-slate-500 flex-shrink-0" />}
-                          <div className="min-w-0 flex-1">
-                            <div className="text-white text-sm font-medium truncate">{b.name}</div>
-                            <div className="text-slate-500 text-xs truncate">{serviceText(b.service)} · {STATUS_CONFIG[b.status]?.label ?? b.status}{typeof b.quoteAmount === 'number' && b.quoteAmount > 0 ? ` · ${money(b.quoteAmount)}` : ''}</div>
-                          </div>
-                        </button>
+                        <div
+                          key={b.id}
+                          draggable
+                          onDragStart={() => setDragIndex(i)}
+                          onDragOver={e => e.preventDefault()}
+                          onDrop={() => handleDrop(i)}
+                          className={`w-full flex items-center gap-2 p-3 rounded-xl border text-left cursor-grab active:cursor-grabbing transition-colors ${on ? 'border-sky-400 bg-sky-400/10' : 'border-white/10 glass hover:border-white/20'} ${dragIndex === i ? 'opacity-50' : ''}`}
+                        >
+                          <GripVertical className="w-4 h-4 text-slate-600 flex-shrink-0" />
+                          <button onClick={() => toggleSel(b.id)} className="flex items-center gap-3 min-w-0 flex-1 cursor-pointer">
+                            {on ? <CheckSquare className="w-5 h-5 text-sky-400 flex-shrink-0" /> : <Square className="w-5 h-5 text-slate-500 flex-shrink-0" />}
+                            <div className="min-w-0 flex-1">
+                              <div className="text-white text-sm font-medium truncate">{b.name}</div>
+                              <div className="text-slate-500 text-xs truncate">{serviceText(b.service)} · {STATUS_CONFIG[b.status]?.label ?? b.status}{typeof b.quoteAmount === 'number' && b.quoteAmount > 0 ? ` · ${money(b.quoteAmount)}` : ''}</div>
+                            </div>
+                          </button>
+                        </div>
                       );
                     })}
                     {selected.size > 0 && (
@@ -1108,7 +1270,7 @@ export default function Dashboard() {
                 <div className="lg:hidden space-y-3">
                   {loading ? (
                     Array.from({ length: 4 }).map((_, i) => <div key={i} className="glass rounded-2xl border border-white/8 p-4 h-32 animate-pulse" />)
-                  ) : visibleBookings.length === 0 ? (
+                  ) : mainBookings.length === 0 ? (
                     <div className="glass rounded-2xl border border-white/8 p-10 text-center text-slate-600">
                       <Calendar className="w-8 h-8 mx-auto mb-3 opacity-30" /> No bookings found
                     </div>
@@ -1133,7 +1295,7 @@ export default function Dashboard() {
                     {[
                       { label: 'Customer', field: 'name' },
                       { label: 'Service', field: 'service' },
-                      { label: 'Date', field: 'preferredDate' },
+                      { label: 'Date Added', field: 'createdAt' },
                       { label: 'Status', field: 'status' },
                       { label: 'Quote', field: 'quoteAmount' },
                     ].map(col => (
@@ -1151,7 +1313,7 @@ export default function Dashboard() {
                         {Array.from({ length: 7 }).map((_, j) => <div key={j} className="h-4 bg-white/5 rounded" />)}
                       </div>
                     ))
-                  ) : visibleBookings.length === 0 ? (
+                  ) : mainBookings.length === 0 ? (
                     <div className="px-6 py-16 text-center text-slate-600">
                       <Calendar className="w-8 h-8 mx-auto mb-3 opacity-30" />
                       No bookings found
@@ -1173,6 +1335,16 @@ export default function Dashboard() {
                   )}
                 </div>
                 </>)}
+
+                {!selectMode && (
+                  <ColdLeadsSection
+                    bookings={coldBookings}
+                    open={coldOpen}
+                    onToggle={() => setColdOpen(o => !o)}
+                    onOpen={openBooking}
+                    onRevive={openRevive}
+                  />
+                )}
 
                 {!selectMode && <p className="text-slate-600 text-xs px-1">
                   Change status in the dropdown. Choosing <span className="text-violet-300">Quoted</span> asks for the amount. Click the pencil to add notes or edit a quote.
@@ -1379,8 +1551,118 @@ export default function Dashboard() {
         {delGroup && (
           <DeleteGroupModal group={delGroup} onClose={() => setDelGroup(null)} onDelete={removeGroup} />
         )}
+        {payInvoicePrompt && (
+          <PayInvoiceModal
+            booking={payInvoicePrompt.booking}
+            invoice={payInvoicePrompt.invoice}
+            onClose={() => setPayInvoicePrompt(null)}
+            onConfirm={confirmPayInvoice}
+          />
+        )}
+        {revive && (
+          <ReviveModal
+            booking={revive}
+            status={reviveStatus}
+            onChangeStatus={setReviveStatus}
+            onClose={() => setRevive(null)}
+            onSave={async () => { await saveBooking(revive.id, { status: reviveStatus }); setRevive(null); }}
+          />
+        )}
+        {staleMoved.length > 0 && (
+          <StaleMovedModal
+            bookings={staleMoved}
+            onOk={id => setStaleMoved(prev => prev.filter(b => b.id !== id))}
+            onUndo={async (b) => {
+              await saveBooking(b.id, { status: b.autoMovedFrom ?? 'pending', autoMoved: false, autoMovedAt: null, autoMovedFrom: null });
+              setStaleMoved(prev => prev.filter(x => x.id !== b.id));
+            }}
+          />
+        )}
       </AnimatePresence>
     </div>
+  );
+}
+
+// This job has a linked invoice — marking it paid here settles the invoice
+// too, so it asks how the customer actually paid (same choices as the
+// invoices list's "Mark paid" picker) instead of just flipping a flag.
+function PayInvoiceModal({ booking, invoice, onClose, onConfirm }: {
+  booking: Booking; invoice: Invoice; onClose: () => void; onConfirm: (method: PaymentMethod) => void;
+}) {
+  const METHODS: PaymentMethod[] = ['bank_transfer', 'cash', 'card', 'other'];
+  return (
+    <Overlay onClose={onClose}>
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="font-display text-lg font-bold text-white flex items-center gap-2"><Wallet className="w-5 h-5 text-emerald-400" /> Mark paid</h3>
+        <button onClick={onClose} className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/5 cursor-pointer"><X className="w-4 h-4" /></button>
+      </div>
+      <p className="text-slate-400 text-sm mb-4">
+        <span className="text-white font-semibold">{booking.name}</span> has invoice <span className="text-white font-semibold">{invoice.number}</span> ({money(invoice.total)}) attached. How did they pay? This marks both the invoice and the job paid.
+      </p>
+      <div className="grid grid-cols-2 gap-2">
+        {METHODS.map(m => (
+          <button key={m} onClick={() => onConfirm(m)} className="px-4 py-3 rounded-lg border border-emerald-400/30 bg-emerald-400/10 text-emerald-300 hover:bg-emerald-400/15 text-sm font-semibold cursor-pointer">
+            {PAYMENT_METHOD_LABEL[m]}
+          </button>
+        ))}
+      </div>
+      <button onClick={onClose} className="w-full mt-4 px-5 py-2.5 glass border border-white/10 text-slate-400 text-sm rounded-xl hover:text-white transition-all cursor-pointer">Cancel</button>
+    </Overlay>
+  );
+}
+
+// "Move back to active" — asks what status a cold lead should go back to,
+// since there's no single obvious answer (could be pending again, or
+// straight to confirmed if you already know they're back on).
+function ReviveModal({ booking, status, onChangeStatus, onClose, onSave }: {
+  booking: Booking; status: BookingStatus; onChangeStatus: (s: BookingStatus) => void; onClose: () => void; onSave: () => void;
+}) {
+  return (
+    <Overlay onClose={onClose}>
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="font-display text-lg font-bold text-white flex items-center gap-2"><Undo2 className="w-5 h-5 text-sky-400" /> Move back to active</h3>
+        <button onClick={onClose} className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/5 cursor-pointer"><X className="w-4 h-4" /></button>
+      </div>
+      <p className="text-slate-400 text-sm mb-3">What status should <span className="text-white font-semibold">{booking.name}</span> go back to?</p>
+      <select value={status} onChange={e => onChangeStatus(e.target.value as BookingStatus)} className="form-input">
+        {ACTIVE_STATUS_KEYS.map(s => <option key={s} value={s}>{STATUS_CONFIG[s].label}</option>)}
+      </select>
+      <div className="flex gap-3 mt-5">
+        <button onClick={onClose} className="px-5 py-2.5 glass border border-white/10 text-slate-400 text-sm rounded-xl hover:text-white cursor-pointer">Cancel</button>
+        <button onClick={onSave} className="flex-1 py-2.5 bg-sky-500 hover:bg-sky-400 text-white font-semibold rounded-xl cursor-pointer">Save</button>
+      </div>
+    </Overlay>
+  );
+}
+
+// One-time popup for whatever the 14-day stale-lead check just auto-moved to
+// Cold Lead on this page load — OK dismisses, Undo puts it straight back.
+function StaleMovedModal({ bookings, onOk, onUndo }: {
+  bookings: Booking[]; onOk: (id: string) => void; onUndo: (b: Booking) => void;
+}) {
+  return (
+    <Overlay onClose={() => bookings.forEach(b => onOk(b.id))}>
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="font-display text-lg font-bold text-white flex items-center gap-2"><Snowflake className="w-5 h-5 text-slate-400" /> Moved to Cold Lead</h3>
+      </div>
+      <p className="text-slate-400 text-sm mb-4">
+        {bookings.length === 1 ? 'This job has' : `These ${bookings.length} jobs have`} been pending for 14 days with no update, so {bookings.length === 1 ? 'it was' : 'they were'} automatically moved to Cold Lead.
+      </p>
+      <div className="space-y-2">
+        {bookings.map(b => (
+          <div key={b.id} className="glass rounded-xl border border-white/8 p-3">
+            <div className="text-white text-sm font-medium">{b.name}</div>
+            <div className="text-slate-500 text-xs mb-2">{serviceText(b.service)}{b.suburb ? ` · ${b.suburb}` : ''}</div>
+            <div className="flex gap-2">
+              <button onClick={() => onOk(b.id)} className="flex-1 px-3 py-1.5 rounded-lg glass border border-white/10 text-slate-300 text-xs font-semibold cursor-pointer">OK</button>
+              <button onClick={() => onUndo(b)} className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg border border-sky-400/30 bg-sky-400/10 text-sky-300 text-xs font-semibold cursor-pointer">
+                <Undo2 className="w-3.5 h-3.5" /> Undo
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </Overlay>
   );
 }
 

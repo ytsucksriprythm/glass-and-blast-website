@@ -24,7 +24,7 @@ const ACTIVITY_PATH = path.join(process.cwd(), 'data', 'activity-log.json');
 const INVOICE_VIEWS_PATH = path.join(process.cwd(), 'data', 'invoice-views.json');
 const ACTIVITY_MAX_ROWS = 2000; // local JSON store only — Neon has no cap
 
-export type BookingStatus = 'pending' | 'quoted' | 'confirmed' | 'completed' | 'cancelled';
+export type BookingStatus = 'pending' | 'quoted' | 'confirmed' | 'completed' | 'cancelled' | 'cold';
 export type ServiceType = 'window-washing' | 'pressure-washing' | 'both' | 'flyscreen-repair' | 'solar-panel-cleaning' | 'other';
 export type PropertyType = 'residential' | 'commercial';
 export type BookingSource = 'website' | 'manual';
@@ -62,6 +62,14 @@ export interface Booking {
   feedbackStars?: number | null;   // customer rating 1-5 (from the thank-you page)
   feedbackText?: string | null;    // written feedback (shown for 1-3 stars)
   feedbackAt?: string | null;      // when feedback was left
+  contactedAt?: string | null;     // website lead has been followed up — clears it from
+                                    // "Leads to call back" without needing a status change
+  sortOrder?: number | null;       // manual drag order (Bookings tab, select mode). null = unset
+  autoMoved?: boolean;             // true while the CURRENT status was set by the stale-lead
+                                    // job, not a person — cleared the moment anyone changes
+                                    // status manually (see withAutoMoveReset)
+  autoMovedAt?: string | null;     // when the auto-move happened
+  autoMovedFrom?: BookingStatus | null; // status it was auto-moved from, so "Undo" can restore it
   createdAt: string;
   updatedAt: string;
 }
@@ -205,6 +213,11 @@ function rowToBooking(r: any): Booking {
     feedbackStars: r.feedback_stars == null ? null : Number(r.feedback_stars),
     feedbackText: r.feedback_text ?? null,
     feedbackAt: r.feedback_at == null ? null : (typeof r.feedback_at === 'string' ? r.feedback_at : new Date(r.feedback_at).toISOString()),
+    contactedAt: r.contacted_at == null ? null : (typeof r.contacted_at === 'string' ? r.contacted_at : new Date(r.contacted_at).toISOString()),
+    sortOrder: r.sort_order == null ? null : Number(r.sort_order),
+    autoMoved: r.auto_moved === true || r.auto_moved === 1,
+    autoMovedAt: r.auto_moved_at == null ? null : (typeof r.auto_moved_at === 'string' ? r.auto_moved_at : new Date(r.auto_moved_at).toISOString()),
+    autoMovedFrom: r.auto_moved_from ?? null,
     createdAt: typeof r.created_at === 'string' ? r.created_at : new Date(r.created_at).toISOString(),
     updatedAt: typeof r.updated_at === 'string' ? r.updated_at : new Date(r.updated_at).toISOString(),
   };
@@ -256,6 +269,11 @@ async function ensureSchema(): Promise<void> {
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS feedback_stars INTEGER`;
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS feedback_text TEXT`;
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS feedback_at TIMESTAMPTZ`;
+      await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS contacted_at TIMESTAMPTZ`;
+      await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS sort_order NUMERIC`;
+      await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS auto_moved BOOLEAN NOT NULL DEFAULT false`;
+      await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS auto_moved_at TIMESTAMPTZ`;
+      await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS auto_moved_from TEXT`;
       // Backfill customer-link tokens for pre-existing rows.
       await sql`UPDATE bookings SET public_token = 'bk_' || substr(md5(random()::text || id), 1, 20) WHERE public_token IS NULL`;
       await sql`CREATE INDEX IF NOT EXISTS bookings_scheduled_idx ON bookings (scheduled_at)`;
@@ -567,6 +585,11 @@ export async function addBooking(data: NewBooking): Promise<Booking> {
     feedbackStars: null,
     feedbackText: null,
     feedbackAt: null,
+    contactedAt: null,
+    sortOrder: null,
+    autoMoved: false,
+    autoMovedAt: null,
+    autoMovedFrom: null,
     id: `BK-${Date.now()}`,
     status: data.status ?? 'pending',
     source: data.source ?? 'website',
@@ -669,12 +692,23 @@ function withAssignedAt(cur: Booking, updates: Partial<Booking>): Partial<Bookin
   return updates;
 }
 
+// A status set by a person (admin, guest, or bulk action) clears the "auto"
+// tag — it's no longer true that the system moved it there unattended.
+// checkStaleLeads() bypasses this by passing `autoMoved` explicitly alongside
+// `status`, so the tag survives the move that set it.
+function withAutoMoveReset(updates: Partial<Booking>): Partial<Booking> {
+  if ('status' in updates && !('autoMoved' in updates)) {
+    return { ...updates, autoMoved: false, autoMovedAt: null, autoMovedFrom: null };
+  }
+  return updates;
+}
+
 export async function updateBooking(id: string, rawUpdates: Partial<Booking>): Promise<Booking | null> {
   if (sql) {
     await ensureSchema();
     const cur = await getBookingById(id);
     if (!cur) return null;
-    const updates = withAssignedAt(cur, withPaidAt(cur, withCompletedAt(cur, rawUpdates)));
+    const updates = withAutoMoveReset(withAssignedAt(cur, withPaidAt(cur, withCompletedAt(cur, rawUpdates))));
     const m = { ...cur, ...updates };
     const rows = await sql`
       UPDATE bookings SET
@@ -706,6 +740,11 @@ export async function updateBooking(id: string, rawUpdates: Partial<Booking>): P
         feedback_stars = ${m.feedbackStars ?? null},
         feedback_text = ${m.feedbackText ?? null},
         feedback_at = ${m.feedbackAt ?? null},
+        contacted_at = ${m.contactedAt ?? null},
+        sort_order = ${m.sortOrder ?? null},
+        auto_moved = ${m.autoMoved ?? false},
+        auto_moved_at = ${m.autoMovedAt ?? null},
+        auto_moved_from = ${m.autoMovedFrom ?? null},
         updated_at = now()
       WHERE id = ${id}
       RETURNING *
@@ -717,10 +756,98 @@ export async function updateBooking(id: string, rawUpdates: Partial<Booking>): P
   const rows = readFile();
   const idx = rows.findIndex(b => b.id === id);
   if (idx === -1) return null;
-  const updates = withAssignedAt(rows[idx], withPaidAt(rows[idx], withCompletedAt(rows[idx], rawUpdates)));
+  const updates = withAutoMoveReset(withAssignedAt(rows[idx], withPaidAt(rows[idx], withCompletedAt(rows[idx], rawUpdates))));
   rows[idx] = { ...rows[idx], ...updates, updatedAt: new Date().toISOString() };
   writeFile(rows);
   return rows[idx];
+}
+
+// ─── Manual drag order + stale-lead auto-move (Bookings tab, select mode) ───
+
+// Persist a new manual order: ids in display order get sort_order 0..n-1.
+export async function bulkReorderBookings(ids: string[]): Promise<number> {
+  let n = 0;
+  for (let i = 0; i < ids.length; i++) { if (await updateBooking(ids[i], { sortOrder: i })) n++; }
+  return n;
+}
+
+const STALE_LEAD_DAYS = 14;
+
+// A "pending" job nobody has actioned in 14 days gets auto-moved to "cold"
+// so it drops out of the active list instead of quietly rotting at the top.
+// Runs on-demand (called once when the dashboard loads) rather than on a
+// cron, so "next time someone checks the site" is literally true. Returns
+// only the bookings THIS call just moved, which is exactly what the
+// dashboard needs to show the one-time "moved to cold" popup.
+export async function checkStaleLeads(): Promise<Booking[]> {
+  const all = await getBookings();
+  const cutoff = Date.now() - STALE_LEAD_DAYS * 24 * 60 * 60 * 1000;
+  const stale = all.filter(b => b.status === 'pending' && new Date(b.createdAt).getTime() <= cutoff);
+  const moved: Booking[] = [];
+  for (const b of stale) {
+    const updated = await updateBooking(b.id, {
+      status: 'cold', autoMoved: true, autoMovedAt: new Date().toISOString(), autoMovedFrom: b.status,
+    });
+    if (updated) {
+      moved.push(updated);
+      void logActivity('booking.auto_moved_cold', `${updated.name}: pending ${STALE_LEAD_DAYS}d with no update, auto-moved to Cold Lead`, { bookingId: updated.id }, 'system');
+    }
+  }
+  return moved;
+}
+
+// "Undo" on the stale-lead popup: put it back exactly where it was, no prompt.
+export async function undoAutoMove(id: string): Promise<Booking | null> {
+  const cur = await getBookingById(id);
+  if (!cur || !cur.autoMoved || !cur.autoMovedFrom) return null;
+  return updateBooking(id, { status: cur.autoMovedFrom, autoMoved: false, autoMovedAt: null, autoMovedFrom: null });
+}
+
+// ─── LARP mode (src/lib/larp.ts builds the fake rows, these just move them) ─
+
+// Inserts a fully pre-built Booking row as-is — unlike addBooking(), the
+// caller controls id/createdAt/status/etc, which is what backdating a
+// realistic LARP-mode job history needs.
+export async function insertRawBooking(booking: Booking): Promise<void> {
+  if (sql) {
+    await ensureSchema();
+    await sql`
+      INSERT INTO bookings (
+        id, name, email, phone, service, property_type, address, suburb, preferred_date, preferred_time,
+        notes, status, quote_amount, admin_notes, paid, source, assigned_guest_id, assigned_at,
+        scheduled_at, scheduled_end, recurring_id, lead_source, group_id, public_token,
+        completed_at, paid_at, created_at, updated_at
+      ) VALUES (
+        ${booking.id}, ${booking.name}, ${booking.email}, ${booking.phone}, ${booking.service}, ${booking.propertyType},
+        ${booking.address}, ${booking.suburb}, ${booking.preferredDate}, ${booking.preferredTime},
+        ${booking.notes}, ${booking.status}, ${booking.quoteAmount ?? null}, ${booking.adminNotes ?? ''}, ${booking.paid},
+        ${booking.source}, ${booking.assignedGuestId ?? null}, ${booking.assignedAt ?? null},
+        ${booking.scheduledAt ?? null}, ${booking.scheduledEnd ?? null}, ${booking.recurringId ?? null},
+        ${booking.leadSource ?? null}, ${booking.groupId ?? null}, ${booking.publicToken ?? null},
+        ${booking.completedAt ?? null}, ${booking.paidAt ?? null}, ${booking.createdAt}, ${booking.updatedAt}
+      )
+    `;
+    return;
+  }
+  const rows = readFile();
+  rows.push(booking);
+  writeFile(rows);
+}
+
+// Bulk-clean by id prefix — LARP-mode rows all share an id prefix, so turning
+// LARP mode off is exactly "delete everything with this prefix," and can
+// never touch a real booking (real ids are always `BK-<timestamp>`).
+export async function deleteBookingsByIdPrefix(prefix: string): Promise<number> {
+  if (sql) {
+    await ensureSchema();
+    const rows = await sql`DELETE FROM bookings WHERE id LIKE ${prefix + '%'} RETURNING id`;
+    return (rows as any[]).length;
+  }
+  const rows = readFile();
+  const kept = rows.filter(b => !b.id.startsWith(prefix));
+  const removed = rows.length - kept.length;
+  writeFile(kept);
+  return removed;
 }
 
 export async function deleteBooking(id: string): Promise<boolean> {
@@ -781,6 +908,7 @@ export async function getStats() {
     confirmed: bookings.filter(b => b.status === 'confirmed').length,
     completed: bookings.filter(b => b.status === 'completed').length,
     cancelled: bookings.filter(b => b.status === 'cancelled').length,
+    cold: bookings.filter(b => b.status === 'cold').length,
   };
 
   // Quote tracking: total $ value of every booking we've put a quote on.
@@ -806,6 +934,7 @@ export async function getStats() {
     confirmed: statusBreakdown.confirmed,
     completed: statusBreakdown.completed,
     cancelled: statusBreakdown.cancelled,
+    cold: statusBreakdown.cold,
     quotedCount: quotedBookings.length,
     quotedValue,
     paidValue,
@@ -1153,6 +1282,34 @@ export async function addRecurringJob(data: NewRecurringJob): Promise<RecurringJ
   return job;
 }
 
+// LARP mode: a pre-built plan, id and all — same idea as insertRawBooking.
+export async function insertRawRecurringJob(job: RecurringJob): Promise<void> {
+  if (sql) {
+    await ensureSchema();
+    await sql`
+      INSERT INTO recurring_jobs (id, name, phone, email, address, suburb, service, property_type, frequency, next_date, preferred_time, notes, discount, active, created_at, updated_at)
+      VALUES (${job.id}, ${job.name}, ${job.phone}, ${job.email}, ${job.address}, ${job.suburb}, ${job.service}, ${job.propertyType}, ${job.frequency}, ${job.nextDate}, ${job.preferredTime}, ${job.notes}, ${job.discount}, ${job.active}, ${job.createdAt}, ${job.updatedAt})
+    `;
+    return;
+  }
+  const rows = readRecurring();
+  rows.push(job);
+  writeRecurring(rows);
+}
+
+export async function deleteRecurringByIdPrefix(prefix: string): Promise<number> {
+  if (sql) {
+    await ensureSchema();
+    const rows = await sql`DELETE FROM recurring_jobs WHERE id LIKE ${prefix + '%'} RETURNING id`;
+    return (rows as any[]).length;
+  }
+  const rows = readRecurring();
+  const kept = rows.filter(j => !j.id.startsWith(prefix));
+  const removed = rows.length - kept.length;
+  writeRecurring(kept);
+  return removed;
+}
+
 export async function updateRecurringJob(id: string, updates: Partial<RecurringJob>): Promise<RecurringJob | null> {
   if (sql) {
     await ensureSchema();
@@ -1251,7 +1408,10 @@ export async function runRecurringDue(): Promise<{ job: RecurringJob; booking: B
   if (!(await getSettings()).recurringAutoBookEnabled) return [];
   const today = new Date().toISOString().slice(0, 10);
   const jobs = await getRecurringJobs();
-  const due = jobs.filter(j => j.active && j.nextDate <= today);
+  // Defense in depth: LARP-mode plans should never auto-book a real, untagged
+  // booking via the daily cron, no matter how far out their nextDate ended up
+  // or how long LARP mode is left on. See src/lib/larp.ts.
+  const due = jobs.filter(j => j.active && j.nextDate <= today && !j.id.startsWith('LARP-'));
   const created: { job: RecurringJob; booking: Booking }[] = [];
   for (const job of due) created.push(await createBookingFromPlan(job));
   return created;
@@ -1518,6 +1678,56 @@ export async function createInvoice(input: InvoiceInput): Promise<Invoice> {
   rows.push(invoice);
   writeInvoices(rows);
   return invoice;
+}
+
+// LARP mode: inserts a fully pre-built Invoice — bypasses nextInvoiceSeq()
+// entirely, so fake invoices can never consume or disturb the real GB####
+// sequence. Fake `number`s live in a deliberately far-off range (see
+// buildLarpInvoices in larp.ts) instead.
+export async function insertRawInvoice(invoice: Invoice): Promise<void> {
+  if (sql) {
+    await ensureSchema();
+    await sql`
+      INSERT INTO invoices (
+        id, number, seq, is_tax_invoice, status, payment_method,
+        from_name, from_trading_as, from_abn, from_address, from_email, from_phone, show_from_address,
+        bill_to_name, bill_to_lines,
+        client_show, client_name, client_trn, client_file_no, client_claim_ref,
+        invoice_date, service_date, due_date,
+        items, subtotal, total, notes,
+        pay_account_name, pay_bsb, pay_account_number,
+        token, booking_id, booking_ids, owner_guest_id,
+        created_at, updated_at, sent_at, paid_at, view_count, first_viewed_at, last_viewed_at
+      ) VALUES (
+        ${invoice.id}, ${invoice.number}, ${invoice.seq}, ${invoice.isTaxInvoice}, ${invoice.status}, ${invoice.paymentMethod},
+        ${invoice.fromName}, ${invoice.fromTradingAs}, ${invoice.fromAbn}, ${invoice.fromAddress}, ${invoice.fromEmail}, ${invoice.fromPhone}, ${invoice.showFromAddress},
+        ${invoice.billToName}, ${invoice.billToLines},
+        ${invoice.client.show}, ${invoice.client.clientName}, ${invoice.client.trn}, ${invoice.client.fileNo}, ${invoice.client.claimRef},
+        ${invoice.invoiceDate}, ${invoice.serviceDate}, ${invoice.dueDate},
+        ${JSON.stringify(invoice.items)}, ${invoice.subtotal}, ${invoice.total}, ${invoice.notes},
+        ${invoice.payAccountName}, ${invoice.payBsb}, ${invoice.payAccountNumber},
+        ${invoice.token}, ${invoice.bookingId}, ${JSON.stringify(invoice.bookingIds)}, ${invoice.ownerGuestId},
+        ${invoice.createdAt}, ${invoice.updatedAt}, ${invoice.sentAt}, ${invoice.paidAt}, ${invoice.viewCount}, ${invoice.firstViewedAt}, ${invoice.lastViewedAt}
+      )
+    `;
+    return;
+  }
+  const rows = readInvoices();
+  rows.push(invoice);
+  writeInvoices(rows);
+}
+
+export async function deleteInvoicesByIdPrefix(prefix: string): Promise<number> {
+  if (sql) {
+    await ensureSchema();
+    const rows = await sql`DELETE FROM invoices WHERE id LIKE ${prefix + '%'} RETURNING id`;
+    return (rows as any[]).length;
+  }
+  const rows = readInvoices();
+  const kept = rows.filter(i => !i.id.startsWith(prefix));
+  const removed = rows.length - kept.length;
+  writeInvoices(kept);
+  return removed;
 }
 
 // Stamp sentAt / paidAt the first time an invoice reaches that status, unless

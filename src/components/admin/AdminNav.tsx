@@ -8,6 +8,7 @@ import {
   LayoutDashboard, Calendar as CalendarIcon, CalendarClock, FileText, Repeat,
   BarChart3, Globe, Users, Settings as SettingsIcon, LogOut, Menu, X,
 } from 'lucide-react';
+import { APP_VERSION } from '@/lib/version';
 
 // Single source of truth for admin nav order: Overview, Bookings, Calendar,
 // Invoices, Recurring Plans, Business Stats, Site Stats, Guest Logins, Settings.
@@ -89,6 +90,7 @@ export function AdminSidebar({ active, items }: { active: AdminNavKey; items: Ad
         ))}
       </nav>
       <div className="border-t border-white/5 pt-4 space-y-2">
+        <div className="text-slate-600 text-[10px] text-center">v{APP_VERSION}</div>
         <a href="/" target="_blank" className="admin-sidebar-link block text-xs">← View website</a>
         <button onClick={logout} className="admin-sidebar-link w-full text-red-400 hover:text-red-300 hover:bg-red-400/5">
           <LogOut className="w-4 h-4" /> Sign Out

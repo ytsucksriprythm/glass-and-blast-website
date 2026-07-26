@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import toast from 'react-hot-toast';
 import {
   ArrowLeft, Settings as SettingsIcon, Save, ShieldAlert, CreditCard, Bell, Star,
-  CalendarClock, Globe, ScrollText, RefreshCw, FileEdit, Trash2, Plus, Pencil, X, Check, MapPin,
+  CalendarClock, Globe, ScrollText, RefreshCw, FileEdit, Trash2, Plus, Pencil, X, Check, MapPin, Sparkles,
 } from 'lucide-react';
 import type { AppSettings } from '@/lib/settings';
 import type { PaymentProfile, BusinessProfile } from '@/lib/invoice';
@@ -27,6 +27,8 @@ function Section({ title, icon: Icon, children }: { title: string; icon: React.C
 function L({ children }: { children: React.ReactNode }) {
   return <label className="block text-slate-400 text-xs font-medium mb-1">{children}</label>;
 }
+
+const money = (n: number) => `$${n.toLocaleString('en-AU', { maximumFractionDigits: 0 })}`;
 
 function Field({ label, value, onChange, placeholder, type = 'text' }: {
   label: string; value: string | number; onChange: (v: string) => void; placeholder?: string; type?: string;
@@ -321,6 +323,35 @@ export default function SettingsPage() {
   const set = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) =>
     setS(prev => prev ? { ...prev, [key]: value } : prev);
 
+  // LARP mode: an immediate action (not part of the Save-changes flow) — the
+  // button itself calls start/stop, which generate/remove the fake bookings
+  // server-side and flip larpModeActive there, so the button always reflects
+  // ground truth even after a reload.
+  const [larpBusy, setLarpBusy] = useState(false);
+  const toggleLarp = async () => {
+    if (!s) return;
+    setLarpBusy(true);
+    try {
+      if (s.larpModeActive) {
+        const res = await fetch('/api/admin/larp/stop', { method: 'POST' });
+        if (!res.ok) throw new Error();
+        const { bookings, invoices, recurring } = await res.json();
+        setS(prev => prev ? { ...prev, larpModeActive: false } : prev);
+        toast.success(`LARP mode off — removed ${bookings} jobs, ${invoices} invoices, ${recurring} recurring plans`);
+      } else {
+        const res = await fetch('/api/admin/larp/start', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ revenueTarget: s.larpRevenueTarget }),
+        });
+        if (!res.ok) throw new Error();
+        const { bookings, invoices, recurring } = await res.json();
+        setS(prev => prev ? { ...prev, larpModeActive: true } : prev);
+        toast.success(`Larping — ${bookings} jobs, ${invoices} invoices, ${recurring} recurring plans added`);
+      }
+    } catch { toast.error('LARP mode failed — try again'); }
+    finally { setLarpBusy(false); }
+  };
+
   const save = async () => {
     if (!s) return;
     setSaving(true);
@@ -348,9 +379,20 @@ export default function SettingsPage() {
             <ArrowLeft className="w-5 h-5" /> Dashboard
           </button>
           {role === 'admin' && (
-            <button onClick={save} disabled={saving || !s} className="ml-auto inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-white text-sm font-semibold cursor-pointer">
-              {saving ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <Save className="w-4 h-4" />} Save changes
-            </button>
+            <div className="ml-auto flex items-center gap-2">
+              <button
+                onClick={toggleLarp}
+                disabled={larpBusy || !s}
+                title={s?.larpModeActive ? 'Turn LARP mode off — removes the fake data' : 'Turn LARP mode on — fills the CRM with fake data'}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold cursor-pointer transition-colors disabled:opacity-50 ${s?.larpModeActive ? 'bg-fuchsia-500/20 border border-fuchsia-400/40 text-fuchsia-300' : 'glass border border-white/10 text-slate-300 hover:text-white'}`}
+              >
+                {larpBusy && <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />}
+                {larpBusy ? (s?.larpModeActive ? 'Ending…' : 'Larping…') : (s?.larpModeActive ? 'Larping' : 'Larp')}
+              </button>
+              <button onClick={save} disabled={saving || !s} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-white text-sm font-semibold cursor-pointer">
+                {saving ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <Save className="w-4 h-4" />} Save changes
+              </button>
+            </div>
           )}
         </header>
 
@@ -463,6 +505,33 @@ export default function SettingsPage() {
               <Section title="Public site" icon={Globe}>
                 <Toggle label="Accepting new bookings" sub="Off shows a 'not currently taking new bookings' message instead of the booking form." checked={s.acceptingNewBookings} onChange={v => set('acceptingNewBookings', v)} />
                 <Toggle label="Site visit tracking enabled" sub="Anonymous page-view tracking shown in Site Stats." checked={s.siteTrackingEnabled} onChange={v => set('siteTrackingEnabled', v)} />
+              </Section>
+
+              <Section title="LARP mode" icon={Sparkles}>
+                <p className="text-slate-500 text-xs -mt-1">
+                  Fills the CRM with realistic-looking fake bookings, revenue and a full calendar — for messing with mates.
+                  Use the <span className="text-fuchsia-300 font-semibold">Larp</span> button up top to switch it on or off.
+                  Nothing here is a real customer, and turning it off removes every fake job it added — nothing else.
+                </p>
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <L>Fake revenue target</L>
+                    <span className="text-white text-sm font-semibold">{money(s.larpRevenueTarget)}</span>
+                  </div>
+                  <input
+                    type="range" min={10000} max={1000000} step={10000}
+                    value={s.larpRevenueTarget}
+                    disabled={s.larpModeActive}
+                    onChange={e => set('larpRevenueTarget', Number(e.target.value))}
+                    className="w-full accent-fuchsia-500 disabled:opacity-50 cursor-pointer"
+                  />
+                  <div className="flex items-center justify-between text-slate-600 text-[11px] mt-1">
+                    <span>$10k</span><span>$1M</span>
+                  </div>
+                  {s.larpModeActive
+                    ? <p className="text-amber-400 text-xs mt-2">Turn LARP mode off to change the target.</p>
+                    : <p className="text-slate-600 text-xs mt-2">Higher targets mean a lot more jobs, not bigger individual invoices — kept realistic on purpose.</p>}
+                </div>
               </Section>
 
               <ActivityLog />

@@ -125,6 +125,7 @@ h1, h2, h3, h4, h5 {
 .badge-confirmed { @apply bg-sky-400/15   text-sky-400    border border-sky-400/20; }
 .badge-completed { @apply bg-emerald-400/15 text-emerald-400 border border-emerald-400/20; }
 .badge-cancelled { @apply bg-red-400/15   text-red-400    border border-red-400/20; }
+.badge-cold      { @apply bg-slate-400/15 text-slate-400  border border-slate-400/20; }
 
 /* ── App / PWA niceties (admin on iPhone home screen) ──────────────────────── */
 * { -webkit-tap-highlight-color: transparent; }
