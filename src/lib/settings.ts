@@ -51,6 +51,14 @@ export interface AppSettings {
   // gets generated.
   larpModeActive: boolean;
   larpRevenueTarget: number;
+  // Which categories of fake data the next "Larp" press generates. Each is
+  // independently toggleable in Settings; "Full Larper" there is a derived
+  // convenience that's on only when every one of these is on.
+  larpFakeNumbers: boolean;     // fake site-traffic (page views) for Site Stats
+  larpFakeBookings: boolean;    // the fake bookings themselves — master for the rest below
+  larpFakeColdLeads: boolean;   // some fake bookings land in Cold Lead status
+  larpFakeInvoices: boolean;    // an invoice generated per fake booking
+  larpFakeCalendar: boolean;    // fake bookings get a scheduledAt slot (fills the calendar)
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -81,4 +89,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
 
   larpModeActive: false,
   larpRevenueTarget: 250000,
+  larpFakeNumbers: true,
+  larpFakeBookings: true,
+  larpFakeColdLeads: true,
+  larpFakeInvoices: true,
+  larpFakeCalendar: true,
 };

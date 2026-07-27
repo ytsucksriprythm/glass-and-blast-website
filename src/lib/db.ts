@@ -974,13 +974,44 @@ export async function addPageView(data: NewPageView): Promise<void> {
   writePV(rows);
 }
 
+// LARP mode ("fake numbers"): a pre-built page view with a controlled
+// createdAt, for backdating fake traffic onto the same story arc as the fake
+// bookings. pageviews.id is a bigserial (no text id to tag by prefix), so
+// cleanup instead matches on visitor LIKE 'larp_%' — see deletePageViewsByVisitorPrefix.
+export async function insertRawPageView(row: PageView): Promise<void> {
+  if (sql) {
+    await ensureSchema();
+    await sql`INSERT INTO pageviews (path, referrer, visitor, created_at) VALUES (${row.path}, ${row.referrer}, ${row.visitor}, ${row.createdAt})`;
+    return;
+  }
+  const rows = readPV();
+  rows.push(row);
+  writePV(rows);
+}
+
+export async function deletePageViewsByVisitorPrefix(prefix: string): Promise<number> {
+  if (sql) {
+    await ensureSchema();
+    const rows = await sql`DELETE FROM pageviews WHERE visitor LIKE ${prefix + '%'} RETURNING visitor`;
+    return (rows as any[]).length;
+  }
+  const rows = readPV();
+  const kept = rows.filter(v => !v.visitor.startsWith(prefix));
+  const removed = rows.length - kept.length;
+  writePV(kept);
+  return removed;
+}
+
 function dayKey(d: Date): string {
   return d.toISOString().slice(0, 10);
 }
 
-export async function getSiteStats() {
-  // Pull the last 30 days of views, aggregate in JS (works for both stores).
-  const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+// Raw page views for the last `days` days, plus an all-time count. Factored
+// out of getSiteStats() so callers that need to filter the raw rows first
+// (e.g. excluding LARP-mode fake traffic — visitor prefix 'larp_') can do so
+// without re-implementing the query.
+export async function getPageViews(days = 30): Promise<{ views: PageView[]; allTime: number }> {
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
   let views: PageView[];
   let allTime = 0;
 
@@ -999,6 +1030,12 @@ export async function getSiteStats() {
     allTime = all.length;
     views = all.filter(v => new Date(v.createdAt) >= since);
   }
+  return { views, allTime };
+}
+
+export async function getSiteStats() {
+  // Pull the last 30 days of views, aggregate in JS (works for both stores).
+  const { views, allTime } = await getPageViews(30);
 
   const now = new Date();
   const todayKey = dayKey(now);

@@ -31,7 +31,9 @@ export async function PATCH(req: NextRequest) {
   (['squareCardPaymentsEnabled', 'notificationsEnabled', 'notifyStatusChange', 'notifyJobAssigned',
     'notifyCustomerMarkedPaid', 'notifySquarePaid', 'notifyNewBooking', 'customerFeedbackEnabled',
     'recurringAutoBookEnabled', 'acceptingNewBookings', 'siteTrackingEnabled',
-    'autofillBusinessInfo', 'autofillPaymentDetails', 'defaultShowAddressOnInvoice'] as (keyof AppSettings)[]).forEach(copyBool);
+    'autofillBusinessInfo', 'autofillPaymentDetails', 'defaultShowAddressOnInvoice',
+    'larpFakeNumbers', 'larpFakeBookings', 'larpFakeColdLeads', 'larpFakeInvoices', 'larpFakeCalendar',
+  ] as (keyof AppSettings)[]).forEach(copyBool);
 
   const changedKeys = Object.keys(updates);
   const updated = await updateSettings(updates);

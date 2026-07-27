@@ -21,8 +21,16 @@
 //   realistic (if extreme) version of "make us look rich."
 
 import crypto from 'crypto';
-import type { Booking, BookingStatus, LeadSource, RecurringJob, RecurringFrequency } from './db';
+import type { Booking, BookingStatus, LeadSource, RecurringJob, RecurringFrequency, PageView } from './db';
 import { type Invoice, type InvoiceLineItem, type InvoiceStatus, type PaymentMethod, BUSINESS_DEFAULTS, PAYMENT_DEFAULTS } from './invoice';
+
+// Which categories of fake data to generate — mirrors AppSettings'
+// larpFake* toggles. All default true so an empty options object still
+// behaves like the original "generate everything" LARP mode.
+export interface LarpOptions {
+  fakeColdLeads?: boolean;
+  fakeCalendar?: boolean;
+}
 
 export const LARP_ID_PREFIX = 'LARP-';
 export const LARP_MIN_REVENUE = 10000;
@@ -214,7 +222,44 @@ function makeName(usedNames: Set<string>, commercial: boolean, suburb: string): 
   return `${pick(FIRST_NAMES)} ${pick(LAST_NAMES)} ${nameSeq}`;
 }
 
-function makeLarpBooking(day: Date, today0: Date, histStart: Date, usedNames: Set<string>, index: number): Booking {
+// Shared day-by-day density curve — bookings and (fake) page views both ride
+// this same story arc so they stay consistent with each other: sparse
+// weekend-only from ~5 months back, ramping up from ~10 weeks ago, peaking
+// ~8 weeks ago and holding high since, then a future pipeline that tapers
+// off the further out it goes. All offsets are relative to "now", so this
+// stays coherent no matter when it's actually run.
+function buildDayWeights() {
+  const now = new Date();
+  const today0 = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const peakStart = addDays(today0, -55);
+  const rampStart = addDays(today0, -72);
+  const histStart = addDays(rampStart, -70);
+  const futureEnd = addDays(today0, 42);
+
+  const density = (d: Date): number => {
+    const isWeekend = d.getDay() === 0 || d.getDay() === 6;
+    if (d.getTime() < histStart.getTime()) return 0;
+    if (d.getTime() < rampStart.getTime()) return isWeekend ? 0.15 : 0;
+    if (d.getTime() < peakStart.getTime()) {
+      const frac = (d.getTime() - rampStart.getTime()) / (peakStart.getTime() - rampStart.getTime());
+      return 0.2 + frac * 0.8;
+    }
+    if (d.getTime() <= today0.getTime()) return 0.9 + Math.random() * 0.3;
+    const daysOut = (d.getTime() - today0.getTime()) / 86400000;
+    return Math.max(0, 1 - daysOut / 42) * 0.7;
+  };
+
+  const days: Date[] = [];
+  for (let d = histStart; d.getTime() <= futureEnd.getTime(); d = addDays(d, 1)) days.push(d);
+  const weights = days.map(density);
+  const totalWeight = weights.reduce((s, w) => s + w, 0) || 1;
+  return { days, weights, totalWeight, today0, histStart };
+}
+
+function makeLarpBooking(
+  day: Date, today0: Date, histStart: Date, usedNames: Set<string>, index: number,
+  fakeColdLeads: boolean, fakeCalendar: boolean,
+): Booking {
   const now = new Date().toISOString();
   const suburbInfo = weightedPick(SUBURBS);
   const commercial = Math.random() < 0.12;
@@ -230,12 +275,15 @@ function makeLarpBooking(day: Date, today0: Date, histStart: Date, usedNames: Se
   let scheduledEnd: string | null = null;
   let completedAt: string | null = null;
   let paidAt: string | null = null;
+  let autoMoved = false;
+  let autoMovedAt: string | null = null;
+  let autoMovedFrom: BookingStatus | null = null;
   let createdAtDate: Date;
 
   if (isFuture) {
     // Never "pending" — see file header. Mostly booked in, a few still just quoted.
     status = Math.random() < 0.88 ? 'confirmed' : 'quoted';
-    if (status === 'confirmed') {
+    if (status === 'confirmed' && fakeCalendar) {
       const start = businessHour(day);
       scheduledAt = start.toISOString();
       scheduledEnd = new Date(start.getTime() + (60 + Math.floor(Math.random() * 120)) * 60000).toISOString();
@@ -243,22 +291,38 @@ function makeLarpBooking(day: Date, today0: Date, histStart: Date, usedNames: Se
     const bookedDaysAgo = Math.floor(Math.random() * 20);
     createdAtDate = new Date(Math.max(addDays(today0, -bookedDaysAgo).getTime(), histStart.getTime()));
   } else {
-    const start = businessHour(day);
-    scheduledAt = start.toISOString();
-    scheduledEnd = new Date(start.getTime() + (60 + Math.floor(Math.random() * 120)) * 60000).toISOString();
+    const leadDays = 1 + Math.floor(Math.random() * 6);
+    createdAtDate = new Date(Math.max(addDays(day, -leadDays).getTime(), histStart.getTime()));
+
+    // A small slice of past leads went cold instead of ever being worked —
+    // tagged exactly like a real 14-day auto-move so it behaves identically
+    // (shows in the Cold Leads section with the same "Auto" badge).
+    const coldChance = fakeColdLeads ? 0.05 : 0;
     const r = Math.random();
-    if (r < 0.82) { status = 'completed'; paid = true; }
-    else if (r < 0.95) { status = 'completed'; paid = false; }
+    if (r < coldChance) {
+      status = 'cold';
+      autoMoved = true;
+      autoMovedFrom = 'pending';
+      autoMovedAt = new Date(Math.min(addDays(createdAtDate, 14).getTime(), today0.getTime())).toISOString();
+    } else if (r < coldChance + 0.80) { status = 'completed'; paid = true; }
+    else if (r < coldChance + 0.80 + 0.12) { status = 'completed'; paid = false; }
     else { status = 'cancelled'; }
+
+    if (status === 'completed' || status === 'cancelled') {
+      if (fakeCalendar) {
+        const start = businessHour(day);
+        scheduledAt = start.toISOString();
+        scheduledEnd = new Date(start.getTime() + (60 + Math.floor(Math.random() * 120)) * 60000).toISOString();
+      }
+    }
     if (status === 'completed') {
-      completedAt = new Date(start.getTime() + (2 + Math.random() * 4) * 3600000).toISOString();
+      const base = scheduledAt ? new Date(scheduledAt) : businessHour(day);
+      completedAt = new Date(base.getTime() + (2 + Math.random() * 4) * 3600000).toISOString();
       if (paid) {
         const paidDelayDays = Math.floor(Math.random() * 8);
         paidAt = new Date(Math.min(addDays(new Date(completedAt), paidDelayDays).getTime(), today0.getTime())).toISOString();
       }
     }
-    const leadDays = 1 + Math.floor(Math.random() * 6);
-    createdAtDate = new Date(Math.max(addDays(day, -leadDays).getTime(), histStart.getTime()));
   }
 
   const manual = !fromWebsite;
@@ -295,26 +359,19 @@ function makeLarpBooking(day: Date, today0: Date, histStart: Date, usedNames: Se
     feedbackAt: null,
     contactedAt: null,
     sortOrder: null,
-    autoMoved: false,
-    autoMovedAt: null,
-    autoMovedFrom: null,
+    autoMoved,
+    autoMovedAt,
+    autoMovedFrom,
     createdAt: createdAtDate.toISOString(),
     updatedAt: now,
   };
 }
 
-// Builds the full fake booking set for a given revenue target. Story arc:
-// sparse weekend-only jobs from ~5 months back, ramping up from ~10 weeks ago,
-// peaking ~8 weeks ago and holding high since, then a future pipeline that
-// tapers off the further out it goes (all offsets are relative to "now", so
-// this stays coherent no matter when it's actually run).
-export function buildLarpBookings(revenueTarget: number): Booking[] {
-  const now = new Date();
-  const today0 = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const peakStart = addDays(today0, -55);
-  const rampStart = addDays(today0, -72);
-  const histStart = addDays(rampStart, -70);
-  const futureEnd = addDays(today0, 42);
+// Builds the full fake booking set for a given revenue target.
+export function buildLarpBookings(revenueTarget: number, opts: LarpOptions = {}): Booking[] {
+  const fakeColdLeads = opts.fakeColdLeads ?? true;
+  const fakeCalendar = opts.fakeCalendar ?? true;
+  const { days, weights, totalWeight, today0, histStart } = buildDayWeights();
 
   // Divisor tuned empirically against the actual generated mix (most jobs paid,
   // some future/cancelled/unpaid diluting it) so the slider lands close to its
@@ -322,31 +379,13 @@ export function buildLarpBookings(revenueTarget: number): Booking[] {
   const target = Math.max(LARP_MIN_REVENUE, Math.min(LARP_MAX_REVENUE, revenueTarget));
   const totalJobs = Math.max(30, Math.min(1700, Math.round(target / 650)));
 
-  const density = (d: Date): number => {
-    const isWeekend = d.getDay() === 0 || d.getDay() === 6;
-    if (d.getTime() < histStart.getTime()) return 0;
-    if (d.getTime() < rampStart.getTime()) return isWeekend ? 0.15 : 0;
-    if (d.getTime() < peakStart.getTime()) {
-      const frac = (d.getTime() - rampStart.getTime()) / (peakStart.getTime() - rampStart.getTime());
-      return 0.2 + frac * 0.8;
-    }
-    if (d.getTime() <= today0.getTime()) return 0.9 + Math.random() * 0.3;
-    const daysOut = (d.getTime() - today0.getTime()) / 86400000;
-    return Math.max(0, 1 - daysOut / 42) * 0.7;
-  };
-
-  const days: Date[] = [];
-  for (let d = histStart; d.getTime() <= futureEnd.getTime(); d = addDays(d, 1)) days.push(d);
-  const weights = days.map(density);
-  const totalWeight = weights.reduce((s, w) => s + w, 0) || 1;
-
   const bookings: Booking[] = [];
   const usedNames = new Set<string>();
   let seq = 0;
   days.forEach((day, i) => {
     const expected = (weights[i] / totalWeight) * totalJobs;
     const count = Math.floor(expected) + (Math.random() < expected - Math.floor(expected) ? 1 : 0);
-    for (let j = 0; j < count; j++) bookings.push(makeLarpBooking(day, today0, histStart, usedNames, seq++));
+    for (let j = 0; j < count; j++) bookings.push(makeLarpBooking(day, today0, histStart, usedNames, seq++, fakeColdLeads, fakeCalendar));
   });
 
   return bookings;
@@ -469,4 +508,50 @@ export function buildLarpRecurringPlans(count = 8): RecurringJob[] {
     });
   }
   return plans;
+}
+
+// "Fake numbers" — site traffic for the Site Stats tab. Independent of the
+// bookings above (pageviews is its own table), but rides the same day-weight
+// curve so the story stays consistent: a traffic bump lines up with the
+// booking bump. Visitor ids are prefixed `larp_` — pageviews.id is a bigserial
+// (no text id to tag), so that prefix is what deleteLarpPageViews cleans up by.
+export const LARP_VISITOR_PREFIX = 'larp_';
+const PATH_POOL = [
+  '/', '/', '/', '/', '/faq', '/blog', '/privacy', '/terms',
+  '/blog/window-cleaning-cost-canberra', '/blog/how-often-should-you-clean-windows',
+  '/blog/pressure-washing-driveway-canberra', '/blog/professional-window-cleaning-vs-diy',
+  '/areas/gungahlin', '/areas/belconnen', '/areas/dickson', '/areas/ainslie',
+  '/services/commercial-window-cleaning-canberra', '/services/pressure-washing-canberra',
+];
+const REFERRER_POOL = ['google.com', 'google.com', 'facebook.com', 'instagram.com', 'bing.com', 'm.facebook.com'];
+
+export function buildLarpPageViews(revenueTarget: number): PageView[] {
+  const { days, weights, totalWeight, today0 } = buildDayWeights();
+  const target = Math.max(LARP_MIN_REVENUE, Math.min(LARP_MAX_REVENUE, revenueTarget));
+  const totalSessions = Math.max(40, Math.min(2500, Math.round(target / 300)));
+
+  const views: PageView[] = [];
+  days.forEach((day, i) => {
+    if (day.getTime() > today0.getTime()) return; // no future traffic
+    const expected = (weights[i] / totalWeight) * totalSessions;
+    const sessions = Math.floor(expected) + (Math.random() < expected - Math.floor(expected) ? 1 : 0);
+    for (let s = 0; s < sessions; s++) {
+      const visitor = `${LARP_VISITOR_PREFIX}${crypto.randomBytes(6).toString('hex')}`;
+      const referrer = Math.random() < 0.45 ? pick(REFERRER_POOL) : '';
+      const pagesInSession = 1 + Math.floor(Math.random() * 3);
+      const baseHour = 7 + Math.floor(Math.random() * 15);
+      const baseMinute = Math.floor(Math.random() * 60);
+      for (let p = 0; p < pagesInSession; p++) {
+        const dt = new Date(day);
+        dt.setHours(baseHour, baseMinute + p * 3, 0, 0);
+        views.push({
+          path: p === 0 ? pick(PATH_POOL) : pick(PATH_POOL),
+          referrer: p === 0 ? referrer : '',
+          visitor,
+          createdAt: dt.toISOString(),
+        });
+      }
+    }
+  });
+  return views;
 }

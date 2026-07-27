@@ -328,6 +328,15 @@ export default function SettingsPage() {
   // server-side and flip larpModeActive there, so the button always reflects
   // ground truth even after a reload.
   const [larpBusy, setLarpBusy] = useState(false);
+  // "Full Larper" is derived, not stored — always accurate, and turning off
+  // any single category below naturally shows it as unchecked. Clicking it
+  // is just a bulk setter for the five categories.
+  const fullLarper = !!s && s.larpFakeNumbers && s.larpFakeBookings && s.larpFakeColdLeads && s.larpFakeInvoices && s.larpFakeCalendar;
+  const toggleFullLarper = () => {
+    const next = !fullLarper;
+    (['larpFakeNumbers', 'larpFakeBookings', 'larpFakeColdLeads', 'larpFakeInvoices', 'larpFakeCalendar'] as const)
+      .forEach(k => set(k, next));
+  };
   const toggleLarp = async () => {
     if (!s) return;
     setLarpBusy(true);
@@ -335,18 +344,22 @@ export default function SettingsPage() {
       if (s.larpModeActive) {
         const res = await fetch('/api/admin/larp/stop', { method: 'POST' });
         if (!res.ok) throw new Error();
-        const { bookings, invoices, recurring } = await res.json();
+        const { bookings, invoices, recurring, pageViews } = await res.json();
         setS(prev => prev ? { ...prev, larpModeActive: false } : prev);
-        toast.success(`LARP mode off — removed ${bookings} jobs, ${invoices} invoices, ${recurring} recurring plans`);
+        toast.success(`LARP mode off — removed ${bookings} jobs, ${invoices} invoices, ${recurring} recurring plans, ${pageViews} page views`);
       } else {
         const res = await fetch('/api/admin/larp/start', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ revenueTarget: s.larpRevenueTarget }),
+          body: JSON.stringify({
+            revenueTarget: s.larpRevenueTarget,
+            fakeNumbers: s.larpFakeNumbers, fakeBookings: s.larpFakeBookings, fakeColdLeads: s.larpFakeColdLeads,
+            fakeInvoices: s.larpFakeInvoices, fakeCalendar: s.larpFakeCalendar,
+          }),
         });
         if (!res.ok) throw new Error();
-        const { bookings, invoices, recurring } = await res.json();
+        const { bookings, invoices, recurring, pageViews } = await res.json();
         setS(prev => prev ? { ...prev, larpModeActive: true } : prev);
-        toast.success(`Larping — ${bookings} jobs, ${invoices} invoices, ${recurring} recurring plans added`);
+        toast.success(`Larping — ${bookings} jobs, ${invoices} invoices, ${recurring} recurring plans, ${pageViews} page views added`);
       }
     } catch { toast.error('LARP mode failed — try again'); }
     finally { setLarpBusy(false); }
@@ -511,15 +524,21 @@ export default function SettingsPage() {
                 <p className="text-slate-500 text-xs -mt-1">
                   Fills the CRM with realistic-looking fake bookings, revenue and a full calendar — for messing with mates.
                   Use the <span className="text-fuchsia-300 font-semibold">Larp</span> button up top to switch it on or off.
-                  Nothing here is a real customer, and turning it off removes every fake job it added — nothing else.
+                  Nothing here is a real customer, and turning it off removes every fake thing it added — nothing else.
                 </p>
                 <div>
-                  <div className="flex items-center justify-between mb-1">
+                  <div className="flex items-center justify-between mb-1 gap-3">
                     <L>Fake revenue target</L>
-                    <span className="text-white text-sm font-semibold">{money(s.larpRevenueTarget)}</span>
+                    <input
+                      type="number" min={10000} max={1000000} step={1000}
+                      value={s.larpRevenueTarget}
+                      disabled={s.larpModeActive}
+                      onChange={e => set('larpRevenueTarget', Math.max(10000, Math.min(1000000, Number(e.target.value) || 10000)))}
+                      className="form-input text-sm w-28 text-right disabled:opacity-50"
+                    />
                   </div>
                   <input
-                    type="range" min={10000} max={1000000} step={10000}
+                    type="range" min={10000} max={1000000} step={1000}
                     value={s.larpRevenueTarget}
                     disabled={s.larpModeActive}
                     onChange={e => set('larpRevenueTarget', Number(e.target.value))}
@@ -531,6 +550,23 @@ export default function SettingsPage() {
                   {s.larpModeActive
                     ? <p className="text-amber-400 text-xs mt-2">Turn LARP mode off to change the target.</p>
                     : <p className="text-slate-600 text-xs mt-2">Higher targets mean a lot more jobs, not bigger individual invoices — kept realistic on purpose.</p>}
+                </div>
+
+                <div className="pt-3 mt-3 border-t border-white/5 space-y-1">
+                  <Toggle
+                    label="Full Larper"
+                    sub="On when every category below is on. Flip it to switch all five at once."
+                    checked={fullLarper}
+                    disabled={s.larpModeActive}
+                    onChange={toggleFullLarper}
+                  />
+                  <div className="pl-3 border-l border-white/10 ml-1 space-y-1">
+                    <Toggle label="Fake numbers" sub="Site traffic — page views, unique visitors — for the Site Stats tab." checked={s.larpFakeNumbers} disabled={s.larpModeActive} onChange={v => set('larpFakeNumbers', v)} />
+                    <Toggle label="Fake bookings" sub="The fake jobs themselves. Off means nothing below can generate either." checked={s.larpFakeBookings} disabled={s.larpModeActive} onChange={v => set('larpFakeBookings', v)} />
+                    <Toggle label="Fake cold leads" sub="Some fake jobs land in Cold Lead status, same as a real 14-day auto-move." checked={s.larpFakeColdLeads} disabled={s.larpModeActive || !s.larpFakeBookings} onChange={v => set('larpFakeColdLeads', v)} />
+                    <Toggle label="Fake invoices" sub="One invoice generated per fake job (numbered GB9000+, real numbering untouched)." checked={s.larpFakeInvoices} disabled={s.larpModeActive || !s.larpFakeBookings} onChange={v => set('larpFakeInvoices', v)} />
+                    <Toggle label="Fake calendar" sub="Fake jobs get a scheduled slot, filling out the calendar." checked={s.larpFakeCalendar} disabled={s.larpModeActive || !s.larpFakeBookings} onChange={v => set('larpFakeCalendar', v)} />
+                  </div>
                 </div>
               </Section>
 

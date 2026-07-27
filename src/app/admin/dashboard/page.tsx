@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
@@ -287,6 +287,10 @@ function CustomerPaidClaimBadge({ booking }: { booking: Booking }) {
   );
 }
 
+// A row in either the main list or the select-mode drag list: either a lone
+// booking, or a whole group collapsed into one entry.
+type ListItem = { kind: 'booking'; booking: Booking } | { kind: 'group'; group: BookingGroup; members: Booking[] };
+
 // Shared per-booking action handlers, threaded down to the row/card renderers
 // so the same markup works whether a booking is shown loose in the list or
 // nested inside an expanded group.
@@ -519,6 +523,261 @@ function ColdLeadsSection({ bookings, open, onToggle, onOpen, onRevive }: {
   );
 }
 
+// ─── Select-mode list (bulk select + drag-to-reorder) ────────────────────
+//
+// Deliberately its own component: all the drag gesture state (dragKey,
+// dropBeforeKey, fadingKey) lives HERE, not in the Dashboard page. A fast-moving
+// pointer can update dropBeforeKey dozens of times a second — if that state
+// lived in Dashboard, every one of those updates would re-render the entire
+// page (stat cards, charts, every tab's data). Colocating it here means a
+// drag only ever re-renders this list.
+//
+// Pointer Events, not HTML5 native drag — that API barely works on
+// touch/iPhone, which is where this PWA mostly lives. Grouped bookings drag
+// as a single unit, keyed by the group's id; a lone booking is keyed by its
+// own id (dragKeyOf). Row positions are measured ONCE at drag-start
+// (dragRectsRef) and the move handler is pure arithmetic against those
+// cached numbers — no DOM queries while actually dragging, which is what
+// keeps it smooth and immune to the "dead zone" elementFromPoint had
+// crossing back over a row's own starting slot.
+function SelectModeList({ items, selected, onToggleSel, onToggleGroupSel, onReorder }: {
+  items: ListItem[];
+  selected: Set<string>;
+  onToggleSel: (id: string) => void;
+  onToggleGroupSel: (members: Booking[]) => void;
+  onReorder: (ids: string[]) => void;
+}) {
+  const [dragKey, setDragKey] = useState<string | null>(null);
+  // Key of the row that just landed from a drop — stays set for 2s purely to
+  // switch that row's color transition to a slow duration, so the green
+  // highlight visibly fades out instead of vanishing the instant it's dropped.
+  const [fadingKey, setFadingKey] = useState<string | null>(null);
+  // Which item the dragged one would land BEFORE if dropped right now — null
+  // means "at the very end". Working in keys (not a raw index into the
+  // still-includes-the-dragged-item array) is what fixes the down-only bug
+  // below: an index has to be adjusted for "the dragged item is about to be
+  // removed," and that adjustment was silently a no-op for the very next row
+  // when moving down. A key naming "whichever item comes after the drop
+  // point" needs no such adjustment — it's correct however far you move.
+  const [dropBeforeKey, setDropBeforeKey] = useState<string | null>(null);
+  const dropBeforeKeyRef = useRef<string | null>(null);
+  const updateDropBeforeKey = (key: string | null) => { dropBeforeKeyRef.current = key; setDropBeforeKey(key); };
+  const dragRowElRef = useRef<HTMLDivElement | null>(null);
+  const dragStartYRef = useRef(0);
+  // Positions of every OTHER row, captured once at drag-start — deliberately
+  // excludes the dragged row itself, so this is already "post-removal"
+  // space and the drop math never needs an index adjustment at all.
+  const dragRectsRef = useRef<{ key: string; top: number; bottom: number }[]>([]);
+  const dragRowRegistryRef = useRef<Map<string, HTMLDivElement>>(new Map());
+  // A plain `ref={el => ...}` gets a brand-new function every render, which
+  // makes React null-out then reassign the DOM ref on every re-render — one
+  // more thing that can (rarely) race with a fast pointer mid-drag. Caching
+  // one stable callback per key removes that risk outright.
+  const refCallbacks = useRef<Map<string, (el: HTMLDivElement | null) => void>>(new Map());
+  const getRowRef = (key: string) => {
+    let fn = refCallbacks.current.get(key);
+    if (!fn) {
+      fn = el => { if (el) dragRowRegistryRef.current.set(key, el); else dragRowRegistryRef.current.delete(key); };
+      refCallbacks.current.set(key, fn);
+    }
+    return fn;
+  };
+  // The color-bearing inner <div> of each row, registered separately from the
+  // outer motion.div above — this is what the drop-fade animates directly.
+  const colorRowRegistryRef = useRef<Map<string, HTMLDivElement>>(new Map());
+  const colorRefCallbacks = useRef<Map<string, (el: HTMLDivElement | null) => void>>(new Map());
+  const getColorRowRef = (key: string) => {
+    let fn = colorRefCallbacks.current.get(key);
+    if (!fn) {
+      fn = el => { if (el) colorRowRegistryRef.current.set(key, el); else colorRowRegistryRef.current.delete(key); };
+      colorRefCallbacks.current.set(key, fn);
+    }
+    return fn;
+  };
+  // The drop fade is driven directly through the Web Animations API instead
+  // of a Tailwind transition class. A CSS transition only fires when the
+  // browser paints the "before" value on its own before the "after" value is
+  // applied — and that depends on exactly how the drop's DOM reorder, the
+  // framer-motion layout pass, and the React commit interleave, which turned
+  // out to differ by drag direction (reliable moving up, not moving down).
+  // Commanding the two colors explicitly here sidesteps that entirely: the
+  // animation doesn't care what else moves around it.
+  const fadeAnimRef = useRef<Map<string, Animation>>(new Map());
+  const runDropFade = (key: string, on: boolean) => {
+    const el = colorRowRegistryRef.current.get(key);
+    if (!el) return;
+    fadeAnimRef.current.get(key)?.cancel();
+    const anim = el.animate(
+      [
+        { borderColor: 'rgb(52, 211, 153)', backgroundColor: 'rgba(52, 211, 153, 0.15)' },
+        on
+          ? { borderColor: 'rgb(56, 189, 248)', backgroundColor: 'rgba(56, 189, 248, 0.1)' }
+          : { borderColor: 'rgba(255, 255, 255, 0.1)', backgroundColor: 'rgba(255, 255, 255, 0)' },
+      ],
+      { duration: 2000, easing: 'ease', fill: 'forwards' },
+    );
+    fadeAnimRef.current.set(key, anim);
+  };
+
+  const dragKeyOf = (item: ListItem) => item.kind === 'group' ? item.group.id : item.booking.id;
+
+  const startDrag = (key: string, e: React.PointerEvent) => {
+    e.preventDefault();
+    // Re-grabbing a row before its previous drop-fade finished would
+    // otherwise leave that animation's held color fighting the instant-green
+    // class change below.
+    fadeAnimRef.current.get(key)?.cancel();
+    fadeAnimRef.current.delete(key);
+    dragStartYRef.current = e.clientY;
+    const rects = Array.from(dragRowRegistryRef.current.entries())
+      .filter(([k]) => k !== key)
+      .map(([k, el]) => { const r = el.getBoundingClientRect(); return { key: k, top: r.top, bottom: r.bottom }; })
+      .sort((a, b) => a.top - b.top);
+    dragRectsRef.current = rects;
+    dragRowElRef.current = dragRowRegistryRef.current.get(key) ?? null;
+    // Starting position: whichever item currently follows this one (or the
+    // very end, if it's already last) — i.e. "no move yet".
+    const keys = items.map(dragKeyOf);
+    const myIdx = keys.indexOf(key);
+    updateDropBeforeKey(myIdx >= 0 && myIdx < keys.length - 1 ? keys[myIdx + 1] : null);
+    setDragKey(key);
+  };
+
+  // Pointer tracking for the currently-dragged row, active only while `dragKey` is set.
+  useEffect(() => {
+    if (!dragKey) return;
+    const onMove = (e: PointerEvent) => {
+      e.preventDefault();
+      // Imperative DOM mutation, not React state — the "follow the finger"
+      // motion never triggers a re-render.
+      if (dragRowElRef.current) dragRowElRef.current.style.transform = `translateY(${e.clientY - dragStartYRef.current}px)`;
+      const rects = dragRectsRef.current;
+      let targetKey: string | null = null;
+      for (let i = 0; i < rects.length; i++) {
+        if (e.clientY < (rects[i].top + rects[i].bottom) / 2) { targetKey = rects[i].key; break; }
+      }
+      if (targetKey !== dropBeforeKeyRef.current) updateDropBeforeKey(targetKey);
+    };
+    const onUp = () => {
+      if (dragRowElRef.current) { dragRowElRef.current.style.transform = ''; dragRowElRef.current = null; }
+      const targetKey = dropBeforeKeyRef.current;
+      const draggedItem = items.find(it => dragKeyOf(it) === dragKey);
+      if (draggedItem) {
+        const filtered = items.filter(it => dragKeyOf(it) !== dragKey);
+        const insertAt = targetKey === null ? filtered.length : Math.max(0, filtered.findIndex(it => dragKeyOf(it) === targetKey));
+        const reordered = [...filtered];
+        reordered.splice(insertAt, 0, draggedItem);
+        if (reordered.map(dragKeyOf).join() !== items.map(dragKeyOf).join()) {
+          onReorder(reordered.flatMap(item => item.kind === 'group' ? item.members.map(m => m.id) : [item.booking.id]));
+        }
+        const draggedOn = draggedItem.kind === 'group'
+          ? draggedItem.members.length > 0 && draggedItem.members.every(m => selected.has(m.id))
+          : selected.has(draggedItem.booking.id);
+        runDropFade(dragKey, draggedOn);
+      }
+      setFadingKey(dragKey);
+      setTimeout(() => setFadingKey(k => k === dragKey ? null : k), 2000);
+      setDragKey(null);
+      updateDropBeforeKey(null);
+    };
+    window.addEventListener('pointermove', onMove, { passive: false });
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+    return () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dragKey]);
+
+  return (
+    <>
+      {items.map((item) => {
+        const key = dragKeyOf(item);
+        const isGroup = item.kind === 'group';
+        const on = isGroup ? item.members.length > 0 && item.members.every(m => selected.has(m.id)) : selected.has(item.booking.id);
+        const isDragging = dragKey === key;
+        const isFading = fadingKey === key;
+        return (
+          <div key={key}>
+            {/* Green insertion line — sits between the two rows/groups the
+                held item will land between, tracks dropBeforeKey live while dragging. */}
+            {dragKey && dropBeforeKey === key && (
+              <div className="h-0.5 my-1 rounded-full bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.8)]" />
+            )}
+            <motion.div
+              // Only animated when nothing is actively being dragged AND nothing
+              // is mid-fade. It's off for the whole fade window (not just during
+              // the drag itself) because framer-motion's own FLIP transform on
+              // this element was still fighting the plain CSS color transition on
+              // the row below it — even split onto separate nodes — and only on
+              // rows moving to a later DOM position. Rather than chase that, the
+              // FLIP snap is simply skipped for a row that's fading out: the
+              // pointer-follow transform during drag already got it visually to
+              // the right spot, so no animation is lost, and the color fade never
+              // has a transform animation running alongside it to interfere with.
+              layout={!dragKey && !isFading}
+              transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
+              ref={getRowRef(key)}
+              style={isDragging ? { position: 'relative', zIndex: 50, pointerEvents: 'none' } : undefined}
+            >
+              <div
+                ref={getColorRowRef(key)}
+                style={isDragging ? { boxShadow: '0 8px 24px rgba(0,0,0,0.4)' } : undefined}
+                // The 2s fade after a drop is driven imperatively via
+                // runDropFade (Web Animations API), not this transition — it
+                // visually overrides these classes while it runs regardless
+                // of what duration is set here. This is just the instant
+                // on-grab green (duration-0) and the normal 150ms hover/select
+                // color change.
+                className={`w-full flex items-center gap-2 p-3 rounded-xl border transition-colors ${isDragging ? 'duration-0' : 'duration-150'} ${isDragging ? 'border-emerald-400 bg-emerald-400/15' : on ? 'border-sky-400 bg-sky-400/10' : 'border-white/10 glass hover:border-white/20'}`}
+              >
+                {/* Drag only starts from this handle — no negative-margin hit-area
+                    trick (that let this handle's expanded touch target overlap the
+                    select button next to it, so some taps hit the wrong one) — just
+                    generous real padding. touchAction:'none' stops the browser's
+                    own scroll gesture from starting here. */}
+                <span
+                  onPointerDown={e => startDrag(key, e)}
+                  style={{ touchAction: 'none' }}
+                  className="p-3 cursor-grab active:cursor-grabbing flex-shrink-0 touch-none"
+                >
+                  <GripVertical className="w-4 h-4 text-slate-600" />
+                </span>
+                {isGroup ? (
+                  <button onClick={() => onToggleGroupSel(item.members)} className="flex items-center gap-3 min-w-0 flex-1 cursor-pointer">
+                    {on ? <CheckSquare className="w-5 h-5 text-sky-400 flex-shrink-0" /> : <Square className="w-5 h-5 text-slate-500 flex-shrink-0" />}
+                    <Layers className="w-4 h-4 text-sky-400 flex-shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <div className="text-white text-sm font-medium truncate flex items-center gap-1.5">
+                        {item.group.title}
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-sky-400/15 text-sky-300 border border-sky-400/20 flex-shrink-0">Group</span>
+                      </div>
+                      <div className="text-slate-500 text-xs truncate">{item.group.jobCount} job{item.group.jobCount !== 1 ? 's' : ''} · {money(item.group.totalValue)}</div>
+                    </div>
+                  </button>
+                ) : (
+                  <button onClick={() => onToggleSel(item.booking.id)} className="flex items-center gap-3 min-w-0 flex-1 cursor-pointer">
+                    {on ? <CheckSquare className="w-5 h-5 text-sky-400 flex-shrink-0" /> : <Square className="w-5 h-5 text-slate-500 flex-shrink-0" />}
+                    <div className="min-w-0 flex-1">
+                      <div className="text-white text-sm font-medium truncate">{item.booking.name}</div>
+                      <div className="text-slate-500 text-xs truncate">{serviceText(item.booking.service)} · {STATUS_CONFIG[item.booking.status]?.label ?? item.booking.status}{typeof item.booking.quoteAmount === 'number' && item.booking.quoteAmount > 0 ? ` · ${money(item.booking.quoteAmount)}` : ''}</div>
+                    </div>
+                  </button>
+                )}
+              </div>
+            </motion.div>
+          </div>
+        );
+      })}
+      {dragKey && dropBeforeKey === null && (
+        <div className="h-0.5 my-1 rounded-full bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.8)]" />
+      )}
+    </>
+  );
+}
+
 // ─── Bottom tab bar (mobile / installed app) ─────────────────────────────
 
 type TabKey = 'overview' | 'bookings' | 'business' | 'site';
@@ -627,9 +886,6 @@ export default function Dashboard() {
   const [revive, setRevive] = useState<Booking | null>(null);
   const [reviveStatus, setReviveStatus] = useState<BookingStatus>('pending');
   const openRevive = (b: Booking) => { setRevive(b); setReviveStatus('pending'); };
-
-  // Drag-to-reorder in select mode
-  const [dragIndex, setDragIndex] = useState<number | null>(null);
 
   // Jobs the 14-day stale-lead check JUST auto-moved to Cold Lead this load —
   // shown as a one-time "moved to Cold Lead" popup with Undo.
@@ -806,27 +1062,25 @@ export default function Dashboard() {
     } catch { toast.error('Delete failed'); }
   };
 
-  // Drag-and-drop reorder (select mode). Reorders just the currently-visible
-  // subset in place, then persists sort_order for exactly those ids and
-  // switches the list to display by that manual order.
-  const handleDrop = async (dropIndex: number) => {
-    if (dragIndex === null || dragIndex === dropIndex) { setDragIndex(null); return; }
-    const ids = visibleBookings.map(b => b.id);
-    const [moved] = ids.splice(dragIndex, 1);
-    ids.splice(dropIndex, 0, moved);
-    setDragIndex(null);
-
-    const byId = new Map(bookings.map(b => [b.id, b]));
-    const visibleIdSet = new Set(visibleBookings.map(b => b.id));
-    let k = 0;
-    setBookings(bookings.map(b => visibleIdSet.has(b.id) ? byId.get(ids[k++])! : b));
-
+  // Drag-and-drop reorder (select mode) — the actual gesture handling lives
+  // in SelectModeList (isolated so a fast-moving drag only re-renders that
+  // small component, not this whole page). This is just the data-side:
+  // persist the new sort_order, then fold the reordered ids back into
+  // `bookings` so the list reflects it without waiting on a refetch.
+  const persistOrder = async (ids: string[]) => {
     try {
       await fetch('/api/admin/bookings/reorder', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids }),
       });
       setSortField('sortOrder'); setSortOrder('asc');
     } catch { toast.error('Could not save order'); }
+  };
+  const onReorderDragItems = (ids: string[]) => {
+    const byId = new Map(bookings.map(b => [b.id, b]));
+    const visibleIdSet = new Set(visibleBookings.map(b => b.id));
+    let k = 0;
+    setBookings(bookings.map(b => visibleIdSet.has(b.id) ? byId.get(ids[k++])! : b));
+    persistOrder(ids);
   };
 
   const toggleSort = (field: string) => {
@@ -903,7 +1157,6 @@ export default function Dashboard() {
     list.push(b);
     bookingsByGroup.set(b.groupId, list);
   }
-  type ListItem = { kind: 'booking'; booking: Booking } | { kind: 'group'; group: BookingGroup; members: Booking[] };
   const listItems: ListItem[] = [];
   const seenGroups = new Set<string>();
   for (const b of mainBookings) {
@@ -914,6 +1167,36 @@ export default function Dashboard() {
     if (!group) { listItems.push({ kind: 'booking', booking: b }); continue; }
     listItems.push({ kind: 'group', group, members: bookingsByGroup.get(b.groupId) ?? [] });
   }
+
+  // Same collapse, but over the full select-mode set (visibleBookings, which
+  // — unlike mainBookings — still includes cold leads, so they can be
+  // selected/dragged too) — a grouped booking drags as its whole group.
+  const dragItems: ListItem[] = (() => {
+    const byGroup = new Map<string, Booking[]>();
+    for (const b of visibleBookings) {
+      if (!b.groupId) continue;
+      const list = byGroup.get(b.groupId) ?? [];
+      list.push(b); byGroup.set(b.groupId, list);
+    }
+    const items: ListItem[] = [];
+    const seen = new Set<string>();
+    for (const b of visibleBookings) {
+      if (!b.groupId) { items.push({ kind: 'booking', booking: b }); continue; }
+      if (seen.has(b.groupId)) continue;
+      seen.add(b.groupId);
+      const group = groups.find(g => g.id === b.groupId);
+      if (!group) { items.push({ kind: 'booking', booking: b }); continue; }
+      items.push({ kind: 'group', group, members: byGroup.get(b.groupId) ?? [] });
+    }
+    return items;
+  })();
+  const toggleGroupSel = (members: Booking[]) => setSelected(s => {
+    const n = new Set(s);
+    const allOn = members.every(m => n.has(m.id));
+    members.forEach(m => allOn ? n.delete(m.id) : n.add(m.id));
+    return n;
+  });
+
   const rowActions: BookingRowActions = {
     guestName, onOpen: openBooking, onInlineStatus, onTogglePaid,
     onManage: setManage, onRemove: removeBooking,
@@ -1224,28 +1507,13 @@ export default function Dashboard() {
                       <button onClick={() => setSelected(new Set(visibleBookings.map(b => b.id)))} className="text-sky-400 text-xs font-semibold cursor-pointer">Select all ({visibleBookings.length})</button>
                       <span className="text-slate-600 text-xs inline-flex items-center gap-1"><GripVertical className="w-3 h-3" /> Drag to reorder</span>
                     </div>
-                    {visibleBookings.map((b, i) => {
-                      const on = selected.has(b.id);
-                      return (
-                        <div
-                          key={b.id}
-                          draggable
-                          onDragStart={() => setDragIndex(i)}
-                          onDragOver={e => e.preventDefault()}
-                          onDrop={() => handleDrop(i)}
-                          className={`w-full flex items-center gap-2 p-3 rounded-xl border text-left cursor-grab active:cursor-grabbing transition-colors ${on ? 'border-sky-400 bg-sky-400/10' : 'border-white/10 glass hover:border-white/20'} ${dragIndex === i ? 'opacity-50' : ''}`}
-                        >
-                          <GripVertical className="w-4 h-4 text-slate-600 flex-shrink-0" />
-                          <button onClick={() => toggleSel(b.id)} className="flex items-center gap-3 min-w-0 flex-1 cursor-pointer">
-                            {on ? <CheckSquare className="w-5 h-5 text-sky-400 flex-shrink-0" /> : <Square className="w-5 h-5 text-slate-500 flex-shrink-0" />}
-                            <div className="min-w-0 flex-1">
-                              <div className="text-white text-sm font-medium truncate">{b.name}</div>
-                              <div className="text-slate-500 text-xs truncate">{serviceText(b.service)} · {STATUS_CONFIG[b.status]?.label ?? b.status}{typeof b.quoteAmount === 'number' && b.quoteAmount > 0 ? ` · ${money(b.quoteAmount)}` : ''}</div>
-                            </div>
-                          </button>
-                        </div>
-                      );
-                    })}
+                    <SelectModeList
+                      items={dragItems}
+                      selected={selected}
+                      onToggleSel={toggleSel}
+                      onToggleGroupSel={toggleGroupSel}
+                      onReorder={onReorderDragItems}
+                    />
                     {selected.size > 0 && (
                       <div className="fixed bottom-0 inset-x-0 lg:left-64 z-40 bg-navy-800/95 backdrop-blur border-t border-white/10 p-3 safe-bottom">
                         <div className="max-w-3xl mx-auto flex items-center gap-2 flex-wrap">
