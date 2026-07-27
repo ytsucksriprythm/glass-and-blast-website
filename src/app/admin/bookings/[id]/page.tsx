@@ -12,6 +12,7 @@ import {
 import type { Booking, BookingStatus, BookingPhoto, PhotoType } from '@/lib/db';
 import type { Invoice } from '@/lib/invoice';
 import { AddressLink } from '@/components/AddressLink';
+import { FlagButton, FlagModal } from '@/components/admin/JobFlag';
 
 type GuestProfile = { id: string; name: string; active: boolean; createdAt: string };
 
@@ -215,6 +216,9 @@ export default function BookingView() {
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [showLink, setShowLink] = useState(false);
 
+  // Flag — mark something's gone wrong on this job, with a note
+  const [showFlag, setShowFlag] = useState(false);
+
   // Customer thank-you link
   const [custToken, setCustToken] = useState<string>('');
   useEffect(() => { if (b?.publicToken) setCustToken(b.publicToken); }, [b?.publicToken]);
@@ -339,6 +343,35 @@ export default function BookingView() {
     } catch { toast.error('Could not update'); }
   };
 
+  const flagSave = async (note: string) => {
+    if (!b) return;
+    try {
+      const res = await fetch(`/api/admin/bookings/${b.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ flagNote: note, flaggedAt: b.flaggedAt ?? new Date().toISOString() }),
+      });
+      if (!res.ok) throw new Error();
+      const updated: Booking = await res.json();
+      setB(updated); setForm(toForm(updated));
+      setShowFlag(false);
+      toast.success('Job flagged');
+    } catch { toast.error('Could not save flag'); }
+  };
+  const flagClear = async () => {
+    if (!b) return;
+    try {
+      const res = await fetch(`/api/admin/bookings/${b.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ flagNote: null, flaggedAt: null }),
+      });
+      if (!res.ok) throw new Error();
+      const updated: Booking = await res.json();
+      setB(updated); setForm(toForm(updated));
+      setShowFlag(false);
+      toast.success('Flag cleared');
+    } catch { toast.error('Could not clear flag'); }
+  };
+
   const startEdit = () => { if (b) setForm(toForm(b)); setEdit(true); };
   const cancel = () => { if (b) setForm(toForm(b)); setEdit(false); };
 
@@ -411,6 +444,9 @@ export default function BookingView() {
           </button>
         )}
         <div className="flex items-center gap-3">
+          {state === 'ok' && b && !edit && (
+            <FlagButton booking={b} onClick={() => setShowFlag(true)} />
+          )}
           {state === 'ok' && !edit && (
             <button onClick={startEdit} aria-label="Edit booking" className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/15 text-slate-200 hover:text-white hover:border-sky-400/40 text-sm cursor-pointer">
               <Edit3 className="w-4 h-4" /> Edit
@@ -445,6 +481,20 @@ export default function BookingView() {
                 {STATUS_LABEL[b.status] ?? b.status}
               </span>
             </div>
+
+            {b.flaggedAt && (
+              <button
+                onClick={() => setShowFlag(true)}
+                className="mb-5 w-full flex items-start gap-2.5 rounded-lg border border-red-400/40 bg-red-500/10 px-4 py-3.5 text-left cursor-pointer hover:bg-red-500/15 transition-colors"
+              >
+                <AlertTriangle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />
+                <div className="text-sm">
+                  <div className="text-red-300 font-semibold">Flagged — something&apos;s gone wrong</div>
+                  {b.flagNote && <div className="text-red-200/90 mt-0.5 whitespace-pre-wrap break-words">{b.flagNote}</div>}
+                  <div className="text-red-300/70 text-xs mt-1">{longDate(b.flaggedAt)} · tap to edit or clear</div>
+                </div>
+              </button>
+            )}
 
             {b.source === 'website' && b.status === 'pending' && !b.contactedAt && (
               <button onClick={markContacted} className="mb-5 w-full inline-flex items-center justify-center gap-2 px-4 py-3.5 rounded-lg border border-emerald-400/30 bg-emerald-400/10 text-emerald-300 hover:bg-emerald-400/15 text-base font-semibold transition-colors cursor-pointer">
@@ -735,6 +785,16 @@ export default function BookingView() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* ── Flag a problem ────────────────────────────────────────── */}
+      {showFlag && b && (
+        <FlagModal
+          booking={b}
+          onClose={() => setShowFlag(false)}
+          onSave={flagSave}
+          onClear={flagClear}
+        />
       )}
 
       {/* ── Link an existing invoice ──────────────────────────────── */}

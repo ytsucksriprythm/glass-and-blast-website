@@ -23,6 +23,7 @@ import type { Booking, BookingStatus, RecurringJob, BookingGroup } from '@/lib/d
 import { type Invoice, type PaymentMethod, PAYMENT_METHOD_LABEL } from '@/lib/invoice';
 import { AdminSidebar, AdminMobileNav, AdminMoreSheet, useMoreSheet, adminNavItems } from '@/components/admin/AdminNav';
 import { AddressLink } from '@/components/AddressLink';
+import { FlagButton, FlagBadge, FlagModal, flagHighlightClass } from '@/components/admin/JobFlag';
 
 // ─── Types ────────────────────────────────────────────────────────────────
 
@@ -301,15 +302,16 @@ type BookingRowActions = {
   onTogglePaid: (b: Booking) => void;
   onManage: (b: Booking) => void;
   onRemove: (id: string) => void;
+  onFlag: (b: Booking) => void;
 };
 
 // One booking, mobile-card layout (phone-first list + inside expanded groups).
 function BookingCard({ b, actions }: { b: Booking; actions: BookingRowActions }) {
-  const { guestName, onOpen, onInlineStatus, onTogglePaid, onManage, onRemove } = actions;
+  const { guestName, onOpen, onInlineStatus, onTogglePaid, onManage, onRemove, onFlag } = actions;
   return (
     <div
       onClick={() => onOpen(b.id)}
-      className="glass rounded-2xl border border-white/8 p-4 cursor-pointer hover:border-white/20 hover:bg-white/[0.03] active:bg-white/[0.05] transition-colors"
+      className={`glass rounded-2xl border p-4 cursor-pointer hover:border-white/20 hover:bg-white/[0.03] active:bg-white/[0.05] transition-colors ${flagHighlightClass(b) || 'border-white/8'}`}
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
@@ -318,6 +320,7 @@ function BookingCard({ b, actions }: { b: Booking; actions: BookingRowActions })
             {b.source === 'manual' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-400/15 text-violet-300 border border-violet-400/20">Added</span>}
             <AssignBadge guestId={b.assignedGuestId} name={guestName(b.assignedGuestId)} />
             <CustomerPaidClaimBadge booking={b} />
+            <FlagBadge booking={b} />
           </div>
           <a href={`tel:${b.phone}`} onClick={e => e.stopPropagation()} className="text-sky-400 text-sm cursor-pointer">{b.phone}</a>
           <div className="text-slate-500 text-xs mt-0.5">{serviceText(b.service)}{b.propertyType === 'commercial' ? ' · Commercial' : ''}</div>
@@ -362,6 +365,7 @@ function BookingCard({ b, actions }: { b: Booking; actions: BookingRowActions })
           <Link href={`/admin/calendar?schedule=${b.id}`} className={`p-2.5 rounded-lg glass border border-white/10 cursor-pointer ${b.scheduledAt ? 'text-emerald-300' : 'text-sky-300'}`} title={b.scheduledAt ? `Scheduled: ${scheduledLabel(b.scheduledAt)}` : 'Add to calendar'}>
             <CalendarClock className="w-4 h-4" />
           </Link>
+          <FlagButton booking={b} onClick={() => onFlag(b)} />
           <button onClick={() => onRemove(b.id)} className="p-2.5 rounded-lg glass border border-white/10 text-red-400 cursor-pointer" title="Delete">
             <Trash2 className="w-4 h-4" />
           </button>
@@ -373,9 +377,9 @@ function BookingCard({ b, actions }: { b: Booking; actions: BookingRowActions })
 
 // One booking, desktop-table row layout.
 function BookingRow({ b, actions }: { b: Booking; actions: BookingRowActions }) {
-  const { guestName, onOpen, onInlineStatus, onTogglePaid, onManage, onRemove } = actions;
+  const { guestName, onOpen, onInlineStatus, onTogglePaid, onManage, onRemove, onFlag } = actions;
   return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} onClick={() => onOpen(b.id)} className="group grid grid-cols-[1.3fr_1fr_1fr_1fr_1fr_3rem_auto] gap-4 px-6 py-4 border-b border-white/5 hover:bg-white/[0.04] transition-colors items-center cursor-pointer">
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} onClick={() => onOpen(b.id)} className={`group grid grid-cols-[1.3fr_1fr_1fr_1fr_1fr_3rem_auto] gap-4 px-6 py-4 border-b hover:bg-white/[0.04] transition-colors items-center cursor-pointer ${flagHighlightClass(b) || 'border-white/5'}`}>
       {/* Customer — whole row opens the booking */}
       <div className="min-w-0">
         <div className="text-white group-hover:text-sky-400 transition-colors text-sm font-medium flex items-center gap-2 flex-wrap">
@@ -383,6 +387,7 @@ function BookingRow({ b, actions }: { b: Booking; actions: BookingRowActions }) 
           {b.source === 'manual' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-400/15 text-violet-300 border border-violet-400/20">Added</span>}
           <AssignBadge guestId={b.assignedGuestId} name={guestName(b.assignedGuestId)} />
           <CustomerPaidClaimBadge booking={b} />
+          <FlagBadge booking={b} />
         </div>
         <div className="text-slate-500 text-xs">{b.phone}</div>
         <div className="text-slate-600 text-xs truncate">{b.suburb}{b.address ? ` · ${b.address}` : ''}</div>
@@ -433,6 +438,7 @@ function BookingRow({ b, actions }: { b: Booking; actions: BookingRowActions }) 
         <Link href={`/admin/calendar?schedule=${b.id}`} className={`p-1.5 rounded-lg hover:bg-sky-400/10 transition-all cursor-pointer ${b.scheduledAt ? 'text-emerald-300' : 'text-slate-500 hover:text-sky-300'}`} title={b.scheduledAt ? `Scheduled: ${scheduledLabel(b.scheduledAt)}` : 'Add to calendar'}>
           <CalendarClock className="w-3.5 h-3.5" />
         </Link>
+        <FlagButton booking={b} onClick={() => onFlag(b)} size="sm" />
         <button onClick={() => onRemove(b.id)} className="p-1.5 rounded-lg text-slate-500 hover:text-red-400 hover:bg-red-400/10 transition-all cursor-pointer" title="Delete">
           <Trash2 className="w-3.5 h-3.5" />
         </button>
@@ -868,6 +874,7 @@ export default function Dashboard() {
   // Modals
   const [manage, setManage] = useState<Booking | null>(null);
   const [showAdd, setShowAdd] = useState(false);
+  const [flagTarget, setFlagTarget] = useState<Booking | null>(null);
 
   // Bulk select + grouping
   const [selectMode, setSelectMode] = useState(false);
@@ -1051,6 +1058,15 @@ export default function Dashboard() {
     } catch { toast.error('Save failed'); }
   };
 
+  const flagSave = async (b: Booking, note: string) => {
+    await saveBooking(b.id, { flagNote: note, flaggedAt: b.flaggedAt ?? new Date().toISOString() });
+    setFlagTarget(null);
+  };
+  const flagClear = async (b: Booking) => {
+    await saveBooking(b.id, { flagNote: null, flaggedAt: null });
+    setFlagTarget(null);
+  };
+
   const removeBooking = async (id: string) => {
     const target = bookings.find(x => x.id === id);
     if (!confirm(`Delete the booking for ${target?.name ?? 'this customer'}? This cannot be undone.`)) return;
@@ -1107,6 +1123,7 @@ export default function Dashboard() {
         if (b.email) lines.push(`   Email: ${b.email}`);
         if (b.notes) lines.push(`   Customer note: ${b.notes}`);
         if (b.adminNotes) lines.push(`   Admin note: ${b.adminNotes}`);
+        if (b.flaggedAt) lines.push(`   ⚠ FLAGGED: ${b.flagNote ?? ''}`);
         lines.push(`   Source: ${b.source} | Created: ${new Date(b.createdAt).toLocaleDateString('en-AU')}`);
         return lines.join('\n');
       });
@@ -1199,7 +1216,7 @@ export default function Dashboard() {
 
   const rowActions: BookingRowActions = {
     guestName, onOpen: openBooking, onInlineStatus, onTogglePaid,
-    onManage: setManage, onRemove: removeBooking,
+    onManage: setManage, onRemove: removeBooking, onFlag: setFlagTarget,
   };
 
   return (
@@ -1805,6 +1822,14 @@ export default function Dashboard() {
             booking={manage}
             onClose={() => setManage(null)}
             onSave={async (patch) => { await saveBooking(manage.id, patch); setManage(null); }}
+          />
+        )}
+        {flagTarget && (
+          <FlagModal
+            booking={flagTarget}
+            onClose={() => setFlagTarget(null)}
+            onSave={(note) => flagSave(flagTarget, note)}
+            onClear={() => flagClear(flagTarget)}
           />
         )}
         {showAdd && (

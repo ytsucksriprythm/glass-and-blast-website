@@ -70,6 +70,8 @@ export interface Booking {
                                     // status manually (see withAutoMoveReset)
   autoMovedAt?: string | null;     // when the auto-move happened
   autoMovedFrom?: BookingStatus | null; // status it was auto-moved from, so "Undo" can restore it
+  flaggedAt?: string | null;       // set when something's gone wrong on this job; null = not flagged
+  flagNote?: string | null;        // description of what went wrong
   createdAt: string;
   updatedAt: string;
 }
@@ -218,6 +220,8 @@ function rowToBooking(r: any): Booking {
     autoMoved: r.auto_moved === true || r.auto_moved === 1,
     autoMovedAt: r.auto_moved_at == null ? null : (typeof r.auto_moved_at === 'string' ? r.auto_moved_at : new Date(r.auto_moved_at).toISOString()),
     autoMovedFrom: r.auto_moved_from ?? null,
+    flaggedAt: r.flagged_at == null ? null : (typeof r.flagged_at === 'string' ? r.flagged_at : new Date(r.flagged_at).toISOString()),
+    flagNote: r.flag_note ?? null,
     createdAt: typeof r.created_at === 'string' ? r.created_at : new Date(r.created_at).toISOString(),
     updatedAt: typeof r.updated_at === 'string' ? r.updated_at : new Date(r.updated_at).toISOString(),
   };
@@ -274,6 +278,8 @@ async function ensureSchema(): Promise<void> {
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS auto_moved BOOLEAN NOT NULL DEFAULT false`;
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS auto_moved_at TIMESTAMPTZ`;
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS auto_moved_from TEXT`;
+      await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS flagged_at TIMESTAMPTZ`;
+      await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS flag_note TEXT`;
       // Backfill customer-link tokens for pre-existing rows.
       await sql`UPDATE bookings SET public_token = 'bk_' || substr(md5(random()::text || id), 1, 20) WHERE public_token IS NULL`;
       await sql`CREATE INDEX IF NOT EXISTS bookings_scheduled_idx ON bookings (scheduled_at)`;
@@ -590,6 +596,8 @@ export async function addBooking(data: NewBooking): Promise<Booking> {
     autoMoved: false,
     autoMovedAt: null,
     autoMovedFrom: null,
+    flaggedAt: null,
+    flagNote: null,
     id: `BK-${Date.now()}`,
     status: data.status ?? 'pending',
     source: data.source ?? 'website',
@@ -745,6 +753,8 @@ export async function updateBooking(id: string, rawUpdates: Partial<Booking>): P
         auto_moved = ${m.autoMoved ?? false},
         auto_moved_at = ${m.autoMovedAt ?? null},
         auto_moved_from = ${m.autoMovedFrom ?? null},
+        flagged_at = ${m.flaggedAt ?? null},
+        flag_note = ${m.flagNote ?? null},
         updated_at = now()
       WHERE id = ${id}
       RETURNING *

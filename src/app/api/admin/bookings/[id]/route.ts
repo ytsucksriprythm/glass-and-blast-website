@@ -6,7 +6,9 @@ import type { Booking } from '@/lib/db';
 
 // Fields a guest is allowed to touch on a job that was sent to them. Notably
 // absent: assignedGuestId (they can't reassign) and quoteAmount/adminNotes.
-const GUEST_EDITABLE: (keyof Booking)[] = ['status', 'paid', 'paidAt', 'completedAt', 'notes'];
+// flagNote/flaggedAt ARE included — a subcontractor on-site is often the first
+// to know something's gone wrong, so they can raise it the same way admin does.
+const GUEST_EDITABLE: (keyof Booking)[] = ['status', 'paid', 'paidAt', 'completedAt', 'notes', 'flagNote', 'flaggedAt'];
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const ctx = await getActiveContext();
