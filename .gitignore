@@ -33,3 +33,6 @@ TRANSFER.md
 
 # local dev photo uploads (Vercel Blob in prod)
 /public/uploads
+
+.vercel
+.env*

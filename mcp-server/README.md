@@ -36,35 +36,109 @@ time you want to check that directly.
 
 ## Setup
 
-**Transport: Streamable HTTP, not stdio.** The build of Claude Desktop this
-was built against only supports adding custom connectors by URL ("Add custom
-connector" → "Remote MCP server URL") — there's no field for a local command
-to spawn. So this server runs as a small local HTTP server on
-`127.0.0.1:8420` instead of the more common stdio-spawned-by-the-client
-pattern. It's bound to localhost only, with the SDK's built-in DNS-rebinding
-protection, so nothing outside this machine can reach it.
+**Transport: stdio, via Settings → Developer → Local MCP servers.** Claude
+Desktop has *two* separate places that look like they'd work here, and only
+one actually does:
+
+- **Settings → Connectors → "Add custom connector"** — takes a **remote**
+  URL only. This is the account-level, cloud-synced connectors framework:
+  the URL is validated and called **from Anthropic's own servers** (so your
+  connector works from any of your devices), not from the Claude Desktop app
+  running on your PC. A `127.0.0.1` URL entered here can never work — from
+  Anthropic's datacenter, `127.0.0.1` means *their* server, not yours, so the
+  request fails instantly and never even reaches your machine (confirmed by
+  running the server with request logging: clicking "Add" produced zero
+  network activity — not even a TCP connection attempt).
+- **Settings → Developer → Local MCP servers** — this is the classic
+  mechanism: Claude Desktop itself spawns your command as a child process and
+  talks to it over stdio. Since the app on *your* machine does the spawning,
+  it can obviously reach anything on your machine. This is the one to use.
 
 1. **Install dependencies** (once, from the repo root):
    ```
    npm install
    ```
-2. **Make sure `.env.local` has a working `DATABASE_URL`** (or
-   `DATABASE_URL_UNPOOLED`) — the server reads production Neon data through
-   the same `.env.local` the Next.js app uses. It loads that file itself, so
-   you don't need to duplicate the connection string anywhere else.
-3. **Start the server** and leave it running in a terminal whenever you want
-   to use it from Claude Desktop:
+2. **Create `mcp-server/.env`** with the production Neon connection string —
+   deliberately a *separate* file from the repo root's `.env.local`, whose
+   `DATABASE_URL` is left blank on purpose so a plain `npm run dev` never
+   touches production. This connector is the opposite: always production,
+   always read-only.
    ```
-   npm run mcp
+   DATABASE_URL_UNPOOLED=postgresql://...
    ```
-   It prints the connector URL: `http://127.0.0.1:8420/mcp`
-4. **In Claude Desktop**, open Settings → Connectors → **Add custom
-   connector**, name it (e.g. `glass-and-blast`), and paste that URL into
-   the "Remote MCP server URL" field. Click Add.
-5. It should immediately show as connected, with the 10 tools above
-   available in chat — no restart needed. If the server isn't running when
-   Claude tries to use it, the tool calls will just fail; start it again
-   with `npm run mcp`.
+   Get the connection string from **Neon's own console** (console.neon.tech
+   → your project → **Connect** → toggle "Connection pooling" **off** to get
+   the unpooled/direct string, which is what `db.ts` prefers). Not from
+   Vercel — `DATABASE_URL`/`DATABASE_URL_UNPOOLED` are marked **Sensitive**
+   in this Vercel project, which makes them permanently unretrievable via
+   `vercel env pull` or the dashboard once set that way; Neon is still the
+   source of truth and always shows it.
+3. **Add it to Claude Desktop's local MCP config.** In the app: Settings →
+   Developer → Local MCP servers → **Edit Config**. That opens (or creates)
+   `claude_desktop_config.json` — add an entry to `mcpServers` (adjust every
+   path if your checkout isn't at `C:\claude\window clean`, and confirm
+   `node.exe`'s path with `where node`):
+   ```json
+   {
+     "mcpServers": {
+       "glass-and-blast": {
+         "command": "C:\\Program Files\\nodejs\\node.exe",
+         "args": [
+           "-r",
+           "C:\\claude\\window clean\\node_modules\\dotenv\\config.js",
+           "C:\\claude\\window clean\\node_modules\\tsx\\dist\\cli.mjs",
+           "C:\\claude\\window clean\\mcp-server\\index.ts"
+         ],
+         "cwd": "C:\\claude\\window clean",
+         "env": {
+           "DOTENV_CONFIG_PATH": "C:\\claude\\window clean\\mcp-server\\.env",
+           "DOTENV_CONFIG_QUIET": "true"
+         }
+       }
+     }
+   }
+   ```
+   Why it's not simpler than this (all three were real failures hit while
+   building this, in order):
+   - **Absolute `node.exe` path, not bare `"node"`.** If Desktop's `env`
+     field replaces rather than merges the child's environment, a bare
+     `"node"` has no `PATH` to resolve against and fails to spawn at all.
+   - **The `-r <absolute path to dotenv/config.js>` preload, plus explicit
+     `cwd`.** Without it, whether `.env` loads at all depends on JS
+     import/module-hoisting order inside `index.ts`, which isn't reliably
+     "the dotenv call runs before `db.ts` reads `process.env`" — it silently
+     wasn't, the one time this shipped without the preload. And without
+     `cwd`, Desktop spawns this with no working directory set, which
+     Windows defaults to `C:\WINDOWS\System32` — harmless on its own, but if
+     env loading *also* fails, `db.ts`'s local-JSON-store fallback tries to
+     `mkdir` a `data` folder there and crashes with `EPERM`.
+   - **`DOTENV_CONFIG_QUIET: "true"`.** dotenv prints an "injected env from
+     .env" tip line to **stdout** by default — which for a stdio MCP server
+     *is* the JSON-RPC wire. That stray line corrupts the very first
+     message and shows up in Claude Desktop as "Unexpected token '◇' ...
+     is not valid JSON".
+   (Note for this specific install: it's a Microsoft Store / MSIX package,
+   so Windows redirects `%APPDATA%\Claude\claude_desktop_config.json` to
+   `%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude\claude_desktop_config.json`
+   — the in-app "Edit Config" button handles this correctly; if editing by
+   hand, use the redirected path.)
+4. **Restart Claude Desktop** (fully quit from the tray, not just close the
+   window) so it picks up the new config and spawns the server. It should
+   show up under Developer → Local MCP servers with the 10 tools above
+   available in chat. No need to run anything manually — the app starts and
+   stops the process itself, alongside its own lifecycle.
+
+### Expect the first tool call after a restart to be slow
+
+`db.ts`'s schema-migration check (`ensureSchema()` — a few dozen sequential
+`CREATE TABLE`/`ALTER TABLE IF NOT EXISTS` statements) is memoized per
+process, not persisted anywhere — so a freshly-spawned MCP server process
+pays that cost exactly once. `index.ts` fires it in the background right
+after connecting (not blocking the connection itself), and every query has
+a couple of automatic retries, so in practice this resolves itself — but the
+very first tool call after a Desktop restart can still take 10–20+ seconds
+before it settles down; every call after that is well under a second. This
+is expected, not a sign anything's broken.
 
 ## Notes
 

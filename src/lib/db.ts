@@ -228,7 +228,12 @@ function rowToBooking(r: any): Booking {
 }
 
 let schemaReady: Promise<void> | null = null;
-async function ensureSchema(): Promise<void> {
+// Exported so a long-lived caller that isn't a per-request server (e.g. the
+// MCP connector, spawned fresh per Claude Desktop session) can pay this
+// cost once at startup, unbounded by the per-query 8s withTimeout() below —
+// the first real query in a process's lifetime otherwise risks timing out
+// on schema setup alone before it ever reaches the actual SELECT.
+export async function ensureSchema(): Promise<void> {
   if (!sql) return;
   if (!schemaReady) {
     schemaReady = (async () => {
