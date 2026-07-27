@@ -36,6 +36,14 @@ time you want to check that directly.
 
 ## Setup
 
+**Transport: Streamable HTTP, not stdio.** The build of Claude Desktop this
+was built against only supports adding custom connectors by URL ("Add custom
+connector" → "Remote MCP server URL") — there's no field for a local command
+to spawn. So this server runs as a small local HTTP server on
+`127.0.0.1:8420` instead of the more common stdio-spawned-by-the-client
+pattern. It's bound to localhost only, with the SDK's built-in DNS-rebinding
+protection, so nothing outside this machine can reach it.
+
 1. **Install dependencies** (once, from the repo root):
    ```
    npm install
@@ -44,26 +52,19 @@ time you want to check that directly.
    `DATABASE_URL_UNPOOLED`) — the server reads production Neon data through
    the same `.env.local` the Next.js app uses. It loads that file itself, so
    you don't need to duplicate the connection string anywhere else.
-3. **Add the server to Claude Desktop's config.** On Windows that file is at
-   `%APPDATA%\Claude\claude_desktop_config.json`. Add (or merge) this entry —
-   adjust the path if your checkout isn't at `C:\claude\window clean`:
-
-   ```json
-   {
-     "mcpServers": {
-       "glass-and-blast": {
-         "command": "node",
-         "args": [
-           "C:\\claude\\window clean\\node_modules\\tsx\\dist\\cli.mjs",
-           "C:\\claude\\window clean\\mcp-server\\index.ts"
-         ]
-       }
-     }
-   }
+3. **Start the server** and leave it running in a terminal whenever you want
+   to use it from Claude Desktop:
    ```
-4. **Restart Claude Desktop.** It should show "glass-and-blast" as a
-   connected MCP server (hammer/plug icon), with the 10 tools above
-   available in chat.
+   npm run mcp
+   ```
+   It prints the connector URL: `http://127.0.0.1:8420/mcp`
+4. **In Claude Desktop**, open Settings → Connectors → **Add custom
+   connector**, name it (e.g. `glass-and-blast`), and paste that URL into
+   the "Remote MCP server URL" field. Click Add.
+5. It should immediately show as connected, with the 10 tools above
+   available in chat — no restart needed. If the server isn't running when
+   Claude tries to use it, the tool calls will just fail; start it again
+   with `npm run mcp`.
 
 ## Notes
 
