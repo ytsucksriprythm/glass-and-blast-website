@@ -17,8 +17,14 @@
 //   Lead" popup with fake customers in it.
 // - At very high revenue targets, job COUNT scales up rather than individual
 //   job prices — a two-person window cleaning business doing $1M/yr from
-//   $150-3000 jobs means a lot of jobs, not a few enormous ones. That's the
+//   $150-2600 jobs means a lot of jobs, not a few enormous ones. That's the
 //   realistic (if extreme) version of "make us look rich."
+// - Price is driven by SERVICE first, suburb tier second (see jobValue) —
+//   window cleaning is the bulk of the volume and usually $400-800 (a $1000+
+//   job is a genuine outlier); flyscreen repairs are few and far between and
+//   low-ticket ($150-350); pressure washing is uncommon but high-ticket,
+//   starting around $1000. Tier/commercial only nudge the price within a
+//   service's own realistic band, never override it.
 
 import crypto from 'crypto';
 import type { Booking, BookingStatus, LeadSource, RecurringJob, RecurringFrequency, PageView } from './db';
@@ -95,11 +101,15 @@ const SUBURBS: { name: string; tier: Tier; weight: number }[] = [
   { name: 'Theodore', tier: 'value', weight: 2 },
 ];
 
-const TIER_RANGE: Record<Tier, [number, number]> = {
-  premium: [1300, 2800],
-  upper: [850, 1750],
-  mid: [500, 1050],
-  value: [180, 600],
+// No longer an absolute $ range — the SERVICE sets that now (see jobValue).
+// This is just a multiplier on top of a service's own price band: bigger,
+// pricier homes in premium suburbs mean more glass or more paving, so they
+// nudge the price up within that band rather than replacing it.
+const TIER_MULTIPLIER: Record<Tier, [number, number]> = {
+  premium: [1.1, 1.3],
+  upper: [1.0, 1.15],
+  mid: [0.9, 1.05],
+  value: [0.8, 0.95],
 };
 
 // Deliberately not a mono-culture list — mixes Anglo, Indian, Vietnamese,
@@ -172,12 +182,46 @@ function invoiceServiceLabel(service: string): string {
   return service.split(',').map(s => INVOICE_SERVICE_LABEL[s] ?? s).join(' + ') || 'Cleaning Service';
 }
 
-function jobValue(tier: Tier, commercial: boolean): number {
-  const [lo, hi] = TIER_RANGE[tier];
-  let v = triangular(lo, hi);
-  if (commercial) v *= 1.15 + Math.random() * 0.25;
-  v = Math.max(150, Math.min(3000, v));
-  return Math.round(v / 5) * 5;
+// Per-service pricing — this is what actually sets the ticket size now.
+// Tier/commercial apply as a multiplier on top of a service's own band, then
+// each service clamps to its own realistic floor/ceiling so a premium-suburb
+// commercial multiplier can never push a flyscreen repair into window-cleaning
+// money (or vice versa).
+function jobValue(service: string, tier: Tier, commercial: boolean): number {
+  const [mLo, mHi] = TIER_MULTIPLIER[tier];
+  const mult = mLo + Math.random() * (mHi - mLo);
+  const commercialMult = commercial ? 1.1 + Math.random() * 0.2 : 1;
+
+  switch (service) {
+    case 'flyscreen-repair': {
+      // Priced per screen, not per suburb — no tier scaling. A commercial
+      // job might just have a few more screens, hence the small bump.
+      const v = triangular(150, 350) * (commercial ? 1 + Math.random() * 0.2 : 1);
+      return Math.round(Math.min(350, Math.max(150, v)) / 5) * 5;
+    }
+    case 'pressure-washing': {
+      // Uncommon, high-ticket — driveways/big paved areas start around $1000.
+      const v = triangular(1000, 2600) * mult * commercialMult;
+      return Math.round(Math.min(3200, Math.max(1000, v)) / 5) * 5;
+    }
+    case 'window-washing,pressure-washing': {
+      // Bundled job: a window clean plus a (slightly bundle-discounted) pressure wash.
+      const v = (triangular(300, 800) + triangular(1000, 2400) * 0.85) * mult * commercialMult;
+      return Math.round(Math.min(4000, Math.max(1000, v)) / 5) * 5;
+    }
+    case 'solar-panel-cleaning': {
+      // Not specced by the business owner — kept modest, near a smaller window job.
+      const v = triangular(150, 450) * mult * commercialMult;
+      return Math.round(Math.min(700, Math.max(120, v)) / 5) * 5;
+    }
+    default: { // window-washing — the bulk of the business.
+      // Usually $400-800 (triangular clusters toward the middle of its range);
+      // a $1000+ job is a genuine outlier — a big or multi-storey place.
+      const base = Math.random() < 0.92 ? triangular(250, 800) : triangular(900, 2000);
+      const v = base * mult * commercialMult;
+      return Math.round(Math.min(2000, Math.max(200, v)) / 5) * 5;
+    }
+  }
 }
 
 function fakeAddress(): string {
@@ -192,12 +236,14 @@ function fakeEmail(first: string, last: string): string {
   const suffix = Math.random() < 0.3 ? String(Math.floor(Math.random() * 99)) : '';
   return `${first.toLowerCase()}.${last.toLowerCase()}${suffix}@${pick(EMAIL_PROVIDERS)}`;
 }
+// Window cleaning is the bulk of the business; pressure washing is uncommon
+// (high-ticket when it happens); flyscreen repairs are few and far between.
 function pickService(): string {
   const r = Math.random();
-  if (r < 0.55) return 'window-washing';
-  if (r < 0.72) return 'pressure-washing';
-  if (r < 0.82) return 'window-washing,pressure-washing';
-  if (r < 0.93) return 'solar-panel-cleaning';
+  if (r < 0.66) return 'window-washing';
+  if (r < 0.76) return 'pressure-washing';
+  if (r < 0.83) return 'window-washing,pressure-washing';
+  if (r < 0.95) return 'solar-panel-cleaning';
   return 'flyscreen-repair';
 }
 function businessHour(day: Date): Date {
@@ -264,7 +310,8 @@ function makeLarpBooking(
   const suburbInfo = weightedPick(SUBURBS);
   const commercial = Math.random() < 0.12;
   const isFuture = day.getTime() > today0.getTime();
-  const value = jobValue(suburbInfo.tier, commercial);
+  const service = pickService();
+  const value = jobValue(service, suburbInfo.tier, commercial);
   const name = makeName(usedNames, commercial, suburbInfo.name);
   const [first, last] = commercial ? ['', ''] : name.split(' ');
   const fromWebsite = Math.random() < 0.72;
@@ -331,7 +378,7 @@ function makeLarpBooking(
     name,
     email: commercial ? '' : fakeEmail(first, last),
     phone: fakePhone(),
-    service: pickService() as Booking['service'],
+    service: service as Booking['service'],
     propertyType: commercial ? 'commercial' : 'residential',
     address: fakeAddress(),
     suburb: suburbInfo.name,
