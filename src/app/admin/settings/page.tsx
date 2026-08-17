@@ -1,17 +1,20 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import toast from 'react-hot-toast';
+import { upload } from '@vercel/blob/client';
 import {
   ArrowLeft, Settings as SettingsIcon, Save, ShieldAlert, CreditCard, Bell, Star,
   CalendarClock, Globe, ScrollText, RefreshCw, FileEdit, Trash2, Plus, Pencil, X, Check, MapPin, Sparkles,
+  FolderOpen, UploadCloud, Copy, ExternalLink, FileVideo, FileImage, File as FileIcon,
 } from 'lucide-react';
 import type { AppSettings } from '@/lib/settings';
 import type { PaymentProfile, BusinessProfile } from '@/lib/invoice';
 import { ACTIVITY_TYPE_LABEL, type ActivityEntry } from '@/lib/activity';
 import { APP_VERSION } from '@/lib/version';
 import { AdminSidebar, AdminMobileNav, AdminMoreSheet, useMoreSheet, adminNavItems } from '@/components/admin/AdminNav';
+import type { MediaItem } from '@/lib/media';
 
 function Section({ title, icon: Icon, children }: { title: string; icon: React.ComponentType<{ className?: string }>; children: React.ReactNode }) {
   return (
@@ -198,6 +201,146 @@ const ACTOR_STYLE = (actor: string) => {
   if (actor.startsWith('guest:')) return 'bg-violet-400/15 text-violet-300 border-violet-400/25';
   return 'bg-slate-400/15 text-slate-300 border-slate-400/25';
 };
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+function fileIconFor(filename: string) {
+  const ext = filename.split('.').pop()?.toLowerCase() || '';
+  if (['mp4', 'mov', 'webm', 'm4v'].includes(ext)) return FileVideo;
+  if (['jpg', 'jpeg', 'png', 'webp', 'gif', 'svg'].includes(ext)) return FileImage;
+  return FileIcon;
+}
+
+// Public file host: ad videos, downloadable assets, anything the owner wants
+// a plain shareable URL for (Meta ads, a link to send someone). Files here
+// are NOT behind a password — the URL itself is the only thing gatekeeping
+// them, same as any other Vercel Blob public file. Upload goes straight from
+// the browser to Blob storage (bypassing our server) so large video files
+// don't hit a request-size limit.
+function MediaLibrary() {
+  const [items, setItems] = useState<MediaItem[] | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [uploads, setUploads] = useState<{ name: string; pct: number }[]>([]);
+  const [deletingUrl, setDeletingUrl] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch('/api/admin/media');
+      if (res.ok) setItems(await res.json());
+      else toast.error('Failed to load media library');
+    } finally { setLoading(false); }
+  };
+  useEffect(() => { load(); }, []);
+
+  const onFilesChosen = async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    const list = Array.from(files);
+    setUploads(list.map(f => ({ name: f.name, pct: 0 })));
+    for (const file of list) {
+      const safe = file.name.trim().replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/-+/g, '-');
+      const pathname = `media/${Date.now()}-${Math.random().toString(36).slice(2, 7)}-${safe}`;
+      try {
+        await upload(pathname, file, {
+          access: 'public',
+          handleUploadUrl: '/api/admin/media/upload',
+          onUploadProgress: ({ percentage }) => {
+            setUploads(u => u.map(x => x.name === file.name ? { ...x, pct: percentage } : x));
+          },
+        });
+        toast.success(`Uploaded ${file.name}`);
+      } catch (err) {
+        toast.error(`Failed to upload ${file.name}: ${err instanceof Error ? err.message : 'error'}`);
+      }
+    }
+    setUploads([]);
+    if (inputRef.current) inputRef.current.value = '';
+    load();
+  };
+
+  const copyUrl = (url: string) => {
+    navigator.clipboard.writeText(url).then(
+      () => toast.success('Link copied'),
+      () => toast.error('Could not copy — long-press the link to copy manually'),
+    );
+  };
+
+  const deleteItem = async (item: MediaItem) => {
+    if (!window.confirm(`Delete "${item.filename}"? This removes the public link — anywhere it's already shared will break.`)) return;
+    setDeletingUrl(item.url);
+    try {
+      const res = await fetch(`/api/admin/media?url=${encodeURIComponent(item.url)}`, { method: 'DELETE' });
+      if (res.ok) { setItems(prev => prev?.filter(x => x.url !== item.url) ?? null); toast.success('Deleted'); }
+      else toast.error('Delete failed');
+    } finally { setDeletingUrl(null); }
+  };
+
+  return (
+    <Section title="Media library" icon={FolderOpen}>
+      <p className="text-slate-500 text-xs -mt-1">
+        Upload ad videos, images or other files here to get a plain public URL — no admin login needed to open it.
+        Use it for Meta ads, sending a link, or embedding elsewhere.
+      </p>
+
+      <input ref={inputRef} type="file" multiple className="hidden" onChange={e => onFilesChosen(e.target.files)} />
+      <button
+        onClick={() => inputRef.current?.click()}
+        disabled={uploads.length > 0}
+        className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-white text-sm font-semibold cursor-pointer"
+      >
+        <UploadCloud className="w-4 h-4" /> Upload files
+      </button>
+
+      {uploads.length > 0 && (
+        <div className="space-y-2">
+          {uploads.map(u => (
+            <div key={u.name} className="text-xs">
+              <div className="flex items-center justify-between text-slate-400 mb-1">
+                <span className="truncate">{u.name}</span>
+                <span>{Math.round(u.pct)}%</span>
+              </div>
+              <div className="h-1.5 rounded-full bg-white/10 overflow-hidden">
+                <div className="h-full bg-sky-400 transition-all" style={{ width: `${u.pct}%` }} />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="space-y-2">
+        {loading && !items ? (
+          <div className="text-center text-slate-600 text-xs py-6">Loading…</div>
+        ) : !items || items.length === 0 ? (
+          <div className="text-center text-slate-600 text-xs py-6">No files uploaded yet.</div>
+        ) : items.map(item => {
+          const Icon = fileIconFor(item.filename);
+          return (
+            <div key={item.url} className="rounded-lg border border-white/10 bg-white/[0.02] p-3 flex items-start gap-3">
+              <span className="flex-shrink-0 w-9 h-9 rounded-lg bg-sky-400/10 border border-sky-400/20 flex items-center justify-center">
+                <Icon className="w-4 h-4 text-sky-400" />
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="text-white text-sm font-medium truncate" title={item.filename}>{item.filename}</div>
+                <div className="text-slate-500 text-xs mt-0.5">{formatBytes(item.size)} · {timeAgo(item.uploadedAt)}</div>
+              </div>
+              <div className="flex-shrink-0 flex items-center gap-2">
+                <button onClick={() => copyUrl(item.url)} title="Copy link" className="text-slate-500 hover:text-sky-400 cursor-pointer"><Copy className="w-4 h-4" /></button>
+                <a href={item.url} target="_blank" rel="noopener noreferrer" title="Open" className="text-slate-500 hover:text-sky-400 cursor-pointer"><ExternalLink className="w-4 h-4" /></a>
+                <button onClick={() => deleteItem(item)} disabled={deletingUrl === item.url} title="Delete" className="text-slate-500 hover:text-red-400 cursor-pointer disabled:opacity-50"><Trash2 className="w-4 h-4" /></button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </Section>
+  );
+}
 
 function ActivityLog() {
   const [entries, setEntries] = useState<ActivityEntry[] | null>(null);
@@ -569,6 +712,8 @@ export default function SettingsPage() {
                   </div>
                 </div>
               </Section>
+
+              <MediaLibrary />
 
               <ActivityLog />
 
