@@ -3,6 +3,7 @@
 import { useEffect, useRef } from 'react';
 import { usePathname } from 'next/navigation';
 import { sendBeaconOrFetch } from '@/lib/beacon';
+import { captureFirstTouchAttribution } from '@/lib/attribution';
 
 function newViewId(): string {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID();
@@ -20,6 +21,10 @@ export default function PageTracker() {
   const viewIdRef = useRef<string | null>(null);
   const maxScrollRef = useRef(0);
   const mountTimeRef = useRef(0);
+
+  // First-touch attribution: captured once per browser (not per page/route
+  // change) — see src/lib/attribution.ts.
+  useEffect(() => { captureFirstTouchAttribution(); }, []);
 
   useEffect(() => {
     if (!pathname || pathname.startsWith('/admin')) return;

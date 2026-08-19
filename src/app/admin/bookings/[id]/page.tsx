@@ -7,7 +7,7 @@ import toast from 'react-hot-toast';
 import {
   ArrowLeft, Phone, Mail, MapPin, CalendarDays, DollarSign, StickyNote,
   User, Wallet, Clock, Edit3, Check, X, CalendarClock,
-  Camera, Trash2, Repeat, FileText, Send, Link2, ExternalLink, Plus, Copy, Star, AlertTriangle,
+  Camera, Trash2, Repeat, FileText, Send, Link2, ExternalLink, Plus, Copy, Star, AlertTriangle, Compass,
 } from 'lucide-react';
 import type { Booking, BookingStatus, BookingPhoto, PhotoType } from '@/lib/db';
 import type { Invoice } from '@/lib/invoice';
@@ -382,6 +382,7 @@ export default function BookingView() {
       const patch: Record<string, unknown> = {
         name: form.name, phone: form.phone, email: form.email, service: form.service,
         propertyType: form.propertyType, address: form.address, suburb: form.suburb,
+        attributionSource: form.attributionSource?.trim() ? form.attributionSource.trim() : null,
         preferredDate: form.preferredDate, preferredTime: form.preferredTime,
         status: form.status, paid: form.paid, notes: form.notes, adminNotes: form.adminNotes,
         quoteAmount: form.quoteAmount.trim() === '' ? null : Number(form.quoteAmount.replace(/[^0-9.]/g, '')),
@@ -516,6 +517,7 @@ export default function BookingView() {
             <div className="rounded-lg border border-white/10 bg-navy-800 px-4">
               {b.phone && <Row icon={Phone} label="Phone"><a href={`tel:${b.phone}`} className="text-sky-400">{b.phone}</a></Row>}
               {b.email && <Row icon={Mail} label="Email"><a href={`mailto:${b.email}`} className="text-sky-400 break-all">{b.email}</a></Row>}
+              {b.attributionSource && <Row icon={Compass} label="Found us via">{b.attributionSource}</Row>}
               <Row icon={User} label="Service">{serviceText(b.service)}{b.propertyType === 'commercial' ? ' · Commercial' : ''}</Row>
               {(b.address || b.suburb) && <Row icon={MapPin} label="Address"><AddressLink address={[b.address, b.suburb].filter(Boolean).join(', ')} /></Row>}
               {(b.preferredDate || b.preferredTime) && <Row icon={CalendarDays} label="Preferred time">{[b.preferredDate, b.preferredTime].filter(Boolean).join(' ')}</Row>}
@@ -656,6 +658,7 @@ export default function BookingView() {
               <div><FieldLabel>Name</FieldLabel><input className="form-input" value={form.name} onChange={e => set('name', e.target.value)} /></div>
               <div><FieldLabel>Phone</FieldLabel><input className="form-input" type="tel" value={form.phone} onChange={e => set('phone', e.target.value)} /></div>
               <div><FieldLabel>Email</FieldLabel><input className="form-input" type="email" value={form.email} onChange={e => set('email', e.target.value)} /></div>
+              <div><FieldLabel>Found us via</FieldLabel><input className="form-input" placeholder="Auto-detected, e.g. Facebook (bio link)" value={form.attributionSource ?? ''} onChange={e => set('attributionSource', e.target.value)} /></div>
               <div><FieldLabel>Suburb</FieldLabel><input className="form-input" value={form.suburb} onChange={e => set('suburb', e.target.value)} /></div>
               <div className="sm:col-span-2"><FieldLabel>Address</FieldLabel><input className="form-input" value={form.address} onChange={e => set('address', e.target.value)} /></div>
             </div>

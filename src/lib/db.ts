@@ -59,6 +59,8 @@ export interface Booking {
   scheduledEnd?: string | null;    // slot end (ISO). null = default duration from scheduledAt
   recurringId?: string | null;     // recurring plan that generated this booking (customer history)
   leadSource?: LeadSource | null;  // "how did we get this job?" (manual adds)
+  attributionSource?: string | null; // auto-captured for website bookings: "Facebook (bio link)",
+                                      // "Google Maps", "Google (search)", "Direct", etc. — see src/lib/attribution.ts
   groupId?: string | null;         // booking group this job belongs to
   publicToken?: string | null;     // unguessable token for the customer thank-you page
   feedbackStars?: number | null;   // customer rating 1-5 (from the thank-you page)
@@ -231,6 +233,7 @@ function rowToBooking(r: any): Booking {
     scheduledEnd: r.scheduled_end == null ? null : (typeof r.scheduled_end === 'string' ? r.scheduled_end : new Date(r.scheduled_end).toISOString()),
     recurringId: r.recurring_id ?? null,
     leadSource: r.lead_source ?? null,
+    attributionSource: r.attribution_source ?? null,
     groupId: r.group_id ?? null,
     publicToken: r.public_token ?? null,
     feedbackStars: r.feedback_stars == null ? null : Number(r.feedback_stars),
@@ -306,6 +309,7 @@ export async function ensureSchema(): Promise<void> {
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS auto_moved_from TEXT`;
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS flagged_at TIMESTAMPTZ`;
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS flag_note TEXT`;
+      await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS attribution_source TEXT`;
       // Backfill customer-link tokens for pre-existing rows.
       await sql`UPDATE bookings SET public_token = 'bk_' || substr(md5(random()::text || id), 1, 20) WHERE public_token IS NULL`;
       await sql`CREATE INDEX IF NOT EXISTS bookings_scheduled_idx ON bookings (scheduled_at)`;
@@ -632,6 +636,7 @@ export async function addBooking(data: NewBooking): Promise<Booking> {
     scheduledEnd: data.scheduledEnd ?? null,
     recurringId: data.recurringId ?? null,
     leadSource: data.leadSource ?? null,
+    attributionSource: data.attributionSource ?? null,
     groupId: data.groupId ?? null,
     publicToken: `bk_${crypto.randomBytes(12).toString('hex')}`,
     feedbackStars: null,
@@ -654,8 +659,8 @@ export async function addBooking(data: NewBooking): Promise<Booking> {
   if (sql) {
     await ensureSchema();
     await sql`
-      INSERT INTO bookings (id, name, email, phone, service, property_type, address, suburb, preferred_date, preferred_time, notes, status, quote_amount, admin_notes, paid, source, assigned_guest_id, assigned_at, scheduled_at, scheduled_end, recurring_id, lead_source, group_id, public_token)
-      VALUES (${booking.id}, ${booking.name}, ${booking.email}, ${booking.phone}, ${booking.service}, ${booking.propertyType}, ${booking.address}, ${booking.suburb}, ${booking.preferredDate}, ${booking.preferredTime}, ${booking.notes}, ${booking.status}, ${booking.quoteAmount}, ${booking.adminNotes}, ${booking.paid}, ${booking.source}, ${booking.assignedGuestId}, ${booking.assignedAt}, ${booking.scheduledAt}, ${booking.scheduledEnd}, ${booking.recurringId}, ${booking.leadSource}, ${booking.groupId}, ${booking.publicToken})
+      INSERT INTO bookings (id, name, email, phone, service, property_type, address, suburb, preferred_date, preferred_time, notes, status, quote_amount, admin_notes, paid, source, assigned_guest_id, assigned_at, scheduled_at, scheduled_end, recurring_id, lead_source, attribution_source, group_id, public_token)
+      VALUES (${booking.id}, ${booking.name}, ${booking.email}, ${booking.phone}, ${booking.service}, ${booking.propertyType}, ${booking.address}, ${booking.suburb}, ${booking.preferredDate}, ${booking.preferredTime}, ${booking.notes}, ${booking.status}, ${booking.quoteAmount}, ${booking.adminNotes}, ${booking.paid}, ${booking.source}, ${booking.assignedGuestId}, ${booking.assignedAt}, ${booking.scheduledAt}, ${booking.scheduledEnd}, ${booking.recurringId}, ${booking.leadSource}, ${booking.attributionSource}, ${booking.groupId}, ${booking.publicToken})
     `;
     return booking;
   }
@@ -789,6 +794,7 @@ export async function updateBooking(id: string, rawUpdates: Partial<Booking>): P
         scheduled_end = ${m.scheduledEnd ?? null},
         recurring_id = ${m.recurringId ?? null},
         lead_source = ${m.leadSource ?? null},
+        attribution_source = ${m.attributionSource ?? null},
         group_id = ${m.groupId ?? null},
         public_token = ${m.publicToken ?? null},
         feedback_stars = ${m.feedbackStars ?? null},
@@ -871,7 +877,7 @@ export async function insertRawBooking(booking: Booking): Promise<void> {
       INSERT INTO bookings (
         id, name, email, phone, service, property_type, address, suburb, preferred_date, preferred_time,
         notes, status, quote_amount, admin_notes, paid, source, assigned_guest_id, assigned_at,
-        scheduled_at, scheduled_end, recurring_id, lead_source, group_id, public_token,
+        scheduled_at, scheduled_end, recurring_id, lead_source, attribution_source, group_id, public_token,
         completed_at, paid_at, created_at, updated_at
       ) VALUES (
         ${booking.id}, ${booking.name}, ${booking.email}, ${booking.phone}, ${booking.service}, ${booking.propertyType},
@@ -879,7 +885,7 @@ export async function insertRawBooking(booking: Booking): Promise<void> {
         ${booking.notes}, ${booking.status}, ${booking.quoteAmount ?? null}, ${booking.adminNotes ?? ''}, ${booking.paid},
         ${booking.source}, ${booking.assignedGuestId ?? null}, ${booking.assignedAt ?? null},
         ${booking.scheduledAt ?? null}, ${booking.scheduledEnd ?? null}, ${booking.recurringId ?? null},
-        ${booking.leadSource ?? null}, ${booking.groupId ?? null}, ${booking.publicToken ?? null},
+        ${booking.leadSource ?? null}, ${booking.attributionSource ?? null}, ${booking.groupId ?? null}, ${booking.publicToken ?? null},
         ${booking.completedAt ?? null}, ${booking.paidAt ?? null}, ${booking.createdAt}, ${booking.updatedAt}
       )
     `;

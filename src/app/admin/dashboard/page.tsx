@@ -13,7 +13,7 @@ import {
   ArrowUpRight, ArrowDownRight, Edit3, Check, Plus, X, StickyNote, BadgeCheck, Wallet,
   Globe, Eye, Users, Link2, MapPin, Target, ClipboardCopy, CalendarDays, CalendarClock, ArrowRight,
   Repeat, PhoneCall, FileText, Send, CheckSquare, Square, Layers, AlertTriangle,
-  Snowflake, Undo2, GripVertical, MoveDown, Timer, ListChecks,
+  Snowflake, Undo2, GripVertical, MoveDown, Timer, ListChecks, Compass,
 } from 'lucide-react';
 import Image from 'next/image';
 import Link from 'next/link';
@@ -1738,6 +1738,26 @@ export default function Dashboard() {
                         return (
                           <div className="space-y-3">
                             {data.filter(d => d.value > 0).sort((a, b) => b.value - a.value).map((d, i) => (
+                              <SourceRow key={d.label} label={d.label} value={d.value} total={total} color={PIE_COLORS[i % PIE_COLORS.length]} />
+                            ))}
+                          </div>
+                        );
+                      })()}
+                    </div>
+
+                    {/* Auto-captured for website bookings — see src/lib/attribution.ts */}
+                    <div className="glass rounded-2xl border border-white/8 p-6">
+                      <h3 className="font-display font-semibold text-white mb-1 flex items-center gap-2"><Compass className="w-4 h-4 text-sky-400" /> Website booking sources</h3>
+                      <p className="text-slate-600 text-xs mb-4">How website bookings found us — Facebook/Instagram bio links and Google Maps only show up distinctly if those links are UTM-tagged.</p>
+                      {(() => {
+                        const counts: Record<string, number> = {};
+                        bookings.forEach(b => { if (b.source === 'website' && b.attributionSource) counts[b.attributionSource] = (counts[b.attributionSource] ?? 0) + 1; });
+                        const data = Object.entries(counts).map(([label, value]) => ({ label, value }));
+                        const total = data.reduce((s, d) => s + d.value, 0);
+                        if (total === 0) return <div className="text-slate-600 text-sm py-6 text-center">No website bookings with source data yet.</div>;
+                        return (
+                          <div className="space-y-3">
+                            {data.sort((a, b) => b.value - a.value).map((d, i) => (
                               <SourceRow key={d.label} label={d.label} value={d.value} total={total} color={PIE_COLORS[i % PIE_COLORS.length]} />
                             ))}
                           </div>

@@ -210,6 +210,13 @@ function buildBusinessStats(bookings: Booking[], invoices: Invoice[]) {
     : null;
   const overdueInvoices = invoices.filter(isInvoiceOverdue);
 
+  // Auto-captured for website bookings only (manual adds use leadSource
+  // instead — see src/lib/attribution.ts).
+  const attributionCounts: Record<string, number> = {};
+  bookings.forEach(b => { if (b.source === 'website' && b.attributionSource) attributionCounts[b.attributionSource] = (attributionCounts[b.attributionSource] ?? 0) + 1; });
+  const websiteBookingSources = Object.entries(attributionCounts).sort((a, b) => b[1] - a[1])
+    .map(([source, count]) => ({ source, count }));
+
   return {
     total,
     completed,
@@ -225,6 +232,7 @@ function buildBusinessStats(bookings: Booking[], invoices: Invoice[]) {
       website: bookings.filter(b => (b.source ?? 'website') === 'website').length,
       manual: bookings.filter(b => b.source === 'manual').length,
     },
+    websiteBookingSources,
   };
 }
 
@@ -273,6 +281,8 @@ function bookingSummary(b: Booking) {
     service: b.service, propertyType: b.propertyType,
     status: b.status, quoteAmount: b.quoteAmount ?? null, paid: b.paid,
     preferredDate: b.preferredDate, preferredTime: b.preferredTime,
+    leadSource: b.leadSource ?? null, // manual-add attribution, e.g. "Real estate agent"
+    attributionSource: b.attributionSource ?? null, // auto-captured for website bookings, e.g. "Facebook (bio link)"
     scheduledAt: b.scheduledAt ?? null,
     contactedAt: b.contactedAt ?? null,
     assignedGuestId: b.assignedGuestId ?? null,
@@ -365,7 +375,11 @@ server.registerTool(
   'get_business_stats',
   {
     title: 'Get business stats',
-    description: 'Business performance stats matching the admin Business Stats tab (conversion rate, avg quote, top suburbs, debtor days, overdue invoices) computed from real data only.',
+    description:
+      'Business performance stats matching the admin Business Stats tab (conversion rate, avg quote, top suburbs, debtor days, ' +
+      'overdue invoices) computed from real data only. websiteBookingSources breaks down website bookings by how the visitor ' +
+      'found the site (Facebook bio link, Google Maps, Google search, Direct, etc. — see attributionSource on individual bookings ' +
+      'too); leadsBySource is the coarser website-vs-manual split.',
     inputSchema: {},
   },
   async (): Promise<CallToolResult> => {

@@ -12,6 +12,7 @@ import {
 import Reviews from '@/components/Reviews';
 import { sendBeaconOrFetch } from '@/lib/beacon';
 import { BOOKING_FUNNEL_STEPS, type BookingFunnelStep } from '@/lib/analytics';
+import { readFirstTouchAttribution } from '@/lib/attribution';
 
 // ─── Constants ─────────────────────────────────────────────────────────────
 
@@ -846,7 +847,10 @@ function Book() {
   const submit = async () => {
     setLoading(true);
     try {
-      const res = await fetch('/api/bookings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) });
+      const res = await fetch('/api/bookings', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...form, attribution: readFirstTouchAttribution() }),
+      });
       if (!res.ok) throw new Error('Failed');
       setSubmitted(true);
       funnelSentRef.current = true; // submitted beats "left without submitting" — don't also flush that
