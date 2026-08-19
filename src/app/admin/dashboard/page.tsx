@@ -13,7 +13,7 @@ import {
   ArrowUpRight, ArrowDownRight, Edit3, Check, Plus, X, StickyNote, BadgeCheck, Wallet,
   Globe, Eye, Users, Link2, MapPin, Target, ClipboardCopy, CalendarDays, CalendarClock, ArrowRight,
   Repeat, PhoneCall, FileText, Send, CheckSquare, Square, Layers, AlertTriangle,
-  Snowflake, Undo2, GripVertical,
+  Snowflake, Undo2, GripVertical, MoveDown,
 } from 'lucide-react';
 import Image from 'next/image';
 import Link from 'next/link';
@@ -54,8 +54,10 @@ interface SiteStats {
   allTimeViews: number; views30d: number; today: number; last7: number;
   uniqueVisitors: number; directShare: number;
   byDay: { day: string; views: number }[];
-  topPages: { path: string; views: number }[];
+  topPages: { path: string; views: number; avgScrollPercent: number | null; scrollSamples: number }[];
   topReferrers: { source: string; views: number }[];
+  scrollBuckets: { label: string; count: number }[];
+  scrollSampleCount: number;
 }
 
 
@@ -1773,12 +1775,25 @@ export default function Dashboard() {
 
                     <div className="grid lg:grid-cols-2 gap-6">
                       <div className="glass rounded-2xl border border-white/8 p-6">
-                        <h3 className="font-display font-semibold text-white mb-4 flex items-center gap-2"><Eye className="w-4 h-4 text-sky-400" /> Top Pages</h3>
-                        <div className="space-y-2">
+                        <h3 className="font-display font-semibold text-white mb-1 flex items-center gap-2"><Eye className="w-4 h-4 text-sky-400" /> Top Pages</h3>
+                        <p className="text-slate-600 text-xs mb-4">Scroll % is how far down the page people got on average before leaving.</p>
+                        <div className="space-y-3">
                           {siteStats.topPages.map(p => (
-                            <div key={p.path} className="flex items-center justify-between text-sm gap-3">
-                              <span className="text-slate-300 truncate">{p.path}</span>
-                              <span className="text-white font-semibold whitespace-nowrap">{p.views}</span>
+                            <div key={p.path}>
+                              <div className="flex items-center justify-between text-sm gap-3 mb-1">
+                                <span className="text-slate-300 truncate">{p.path}</span>
+                                <span className="flex items-center gap-2 whitespace-nowrap">
+                                  {p.avgScrollPercent !== null && (
+                                    <span className="text-slate-500 text-xs">{p.avgScrollPercent}% scroll</span>
+                                  )}
+                                  <span className="text-white font-semibold">{p.views}</span>
+                                </span>
+                              </div>
+                              {p.avgScrollPercent !== null && (
+                                <div className="h-1.5 rounded-full bg-white/5 overflow-hidden">
+                                  <div className="h-full bg-sky-400/70" style={{ width: `${p.avgScrollPercent}%` }} />
+                                </div>
+                              )}
                             </div>
                           ))}
                         </div>
@@ -1801,8 +1816,33 @@ export default function Dashboard() {
                       </div>
                     </div>
 
+                    <div className="glass rounded-2xl border border-white/8 p-6">
+                      <h3 className="font-display font-semibold text-white mb-1 flex items-center gap-2"><MoveDown className="w-4 h-4 text-sky-400" /> Scroll Depth — All Pages</h3>
+                      {siteStats.scrollSampleCount === 0 ? (
+                        <p className="text-slate-600 text-sm py-4 text-center">No scroll data yet — appears once visitors leave a page after it's loaded.</p>
+                      ) : (
+                        <>
+                          <p className="text-slate-600 text-xs mb-4">How far down the page visitors got before leaving, across {siteStats.scrollSampleCount} recorded {siteStats.scrollSampleCount === 1 ? 'visit' : 'visits'} (last 30 days).</p>
+                          <div className="space-y-2">
+                            {siteStats.scrollBuckets.map(b => {
+                              const pct = siteStats.scrollSampleCount ? Math.round((b.count / siteStats.scrollSampleCount) * 100) : 0;
+                              return (
+                                <div key={b.label} className="flex items-center gap-3 text-sm">
+                                  <span className="text-slate-400 w-16 flex-shrink-0">{b.label}</span>
+                                  <div className="flex-1 h-2.5 rounded-full bg-white/5 overflow-hidden">
+                                    <div className="h-full bg-indigo-400/70" style={{ width: `${pct}%` }} />
+                                  </div>
+                                  <span className="text-white font-semibold w-16 flex-shrink-0 text-right">{b.count} ({pct}%)</span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </>
+                      )}
+                    </div>
+
                     <p className="text-slate-600 text-xs px-1">
-                      Privacy-friendly: visitors counted via a daily hash, no raw IPs stored. Admin pages excluded. Charts cover the last 30 days.
+                      Privacy-friendly: visitors counted via a daily hash, no raw IPs stored, scroll depth carries no personal data. Admin pages excluded. Charts cover the last 30 days.
                     </p>
                   </>
                 )}

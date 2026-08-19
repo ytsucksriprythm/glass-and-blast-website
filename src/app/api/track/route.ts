@@ -6,7 +6,7 @@ import { addPageView, getSettings } from '@/lib/db';
 // page — a tracking failure must not affect the visitor.
 export async function POST(req: NextRequest) {
   try {
-    const { path, referrer } = await req.json();
+    const { path, referrer, viewId } = await req.json();
     if (typeof path !== 'string' || !path) {
       return NextResponse.json({ ok: false }, { status: 400 });
     }
@@ -23,7 +23,10 @@ export async function POST(req: NextRequest) {
     const visitor = createHash('sha256').update(`${ip}|${ua}|${day}`).digest('hex').slice(0, 16);
 
     const ref = typeof referrer === 'string' ? referrer.slice(0, 300) : '';
-    await addPageView({ path: path.slice(0, 300), referrer: ref, visitor });
+    // Ties this row to the later scroll-depth beacon (see /api/track/scroll)
+    // — just an opaque id the client made up, not tied to any identity.
+    const vid = typeof viewId === 'string' && viewId ? viewId.slice(0, 100) : null;
+    await addPageView({ path: path.slice(0, 300), referrer: ref, visitor, viewId: vid });
 
     return NextResponse.json({ ok: true });
   } catch {

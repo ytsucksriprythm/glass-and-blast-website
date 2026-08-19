@@ -107,6 +107,13 @@ export interface PageView {
   path: string;
   referrer: string;
   visitor: string;
+  // viewId correlates this row with a later "how far did they scroll" beacon
+  // sent when the visitor leaves the page — sent separately from the initial
+  // view (which fires on arrival) since we don't know the final depth yet.
+  // Both are optional so LARP's fake page views (which never scroll) and any
+  // pre-migration rows still type-check with no data.
+  viewId?: string | null;
+  maxScrollPercent?: number | null;
   createdAt: string;
 }
 export type NewPageView = Omit<PageView, 'createdAt'>;
@@ -317,6 +324,13 @@ export async function ensureSchema(): Promise<void> {
           created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
         )
       `;
+      // Scroll-depth tracking: view_id correlates a row with the later
+      // "how far they got" beacon; max_scroll_percent stays NULL until that
+      // beacon arrives (a bounce before the listener attaches is honestly
+      // "no data", not a false 0%).
+      await sql`ALTER TABLE pageviews ADD COLUMN IF NOT EXISTS view_id TEXT`;
+      await sql`ALTER TABLE pageviews ADD COLUMN IF NOT EXISTS max_scroll_percent INTEGER`;
+      await sql`CREATE INDEX IF NOT EXISTS pageviews_view_id_idx ON pageviews (view_id)`;
       await sql`CREATE INDEX IF NOT EXISTS pageviews_created_idx ON pageviews (created_at)`;
       // Job photos
       await sql`
@@ -981,12 +995,37 @@ function writePV(rows: PageView[]): void {
 export async function addPageView(data: NewPageView): Promise<void> {
   if (sql) {
     await ensureSchema();
-    await sql`INSERT INTO pageviews (path, referrer, visitor) VALUES (${data.path}, ${data.referrer}, ${data.visitor})`;
+    await sql`INSERT INTO pageviews (path, referrer, visitor, view_id) VALUES (${data.path}, ${data.referrer}, ${data.visitor}, ${data.viewId ?? null})`;
     return;
   }
   const rows = readPV();
   rows.push({ ...data, createdAt: new Date().toISOString() });
   writePV(rows);
+}
+
+// Best-effort update from the "how far did they scroll before leaving"
+// beacon — arrives after the initial view row already exists (sometimes long
+// after, sometimes never, if the tab was killed outright). Never throws:
+// this must not be able to break the page it's reporting on.
+export async function updatePageViewScroll(viewId: string, percent: number): Promise<void> {
+  const clamped = Math.max(0, Math.min(100, Math.round(percent)));
+  try {
+    if (sql) {
+      await ensureSchema();
+      await sql`UPDATE pageviews SET max_scroll_percent = GREATEST(COALESCE(max_scroll_percent, 0), ${clamped}) WHERE view_id = ${viewId}`;
+      return;
+    }
+    const rows = readPV();
+    for (let i = rows.length - 1; i >= 0; i--) {
+      if (rows[i].viewId === viewId) {
+        rows[i].maxScrollPercent = Math.max(rows[i].maxScrollPercent ?? 0, clamped);
+        break;
+      }
+    }
+    writePV(rows);
+  } catch (err) {
+    console.error('[track] updatePageViewScroll failed:', err);
+  }
 }
 
 // LARP mode ("fake numbers"): a pre-built page view with a controlled
@@ -996,7 +1035,7 @@ export async function addPageView(data: NewPageView): Promise<void> {
 export async function insertRawPageView(row: PageView): Promise<void> {
   if (sql) {
     await ensureSchema();
-    await sql`INSERT INTO pageviews (path, referrer, visitor, created_at) VALUES (${row.path}, ${row.referrer}, ${row.visitor}, ${row.createdAt})`;
+    await sql`INSERT INTO pageviews (path, referrer, visitor, created_at, view_id) VALUES (${row.path}, ${row.referrer}, ${row.visitor}, ${row.createdAt}, ${row.viewId ?? null})`;
     return;
   }
   const rows = readPV();
@@ -1033,9 +1072,10 @@ export async function getPageViews(days = 30): Promise<{ views: PageView[]; allT
   if (sql) {
     await ensureSchema();
     const rows = await withTimeout((async () =>
-      sql`SELECT path, referrer, visitor, created_at FROM pageviews WHERE created_at >= ${since.toISOString()} ORDER BY created_at DESC`)());
+      sql`SELECT path, referrer, visitor, created_at, max_scroll_percent FROM pageviews WHERE created_at >= ${since.toISOString()} ORDER BY created_at DESC`)());
     views = (rows as any[]).map(r => ({
       path: r.path, referrer: r.referrer ?? '', visitor: r.visitor ?? '',
+      maxScrollPercent: r.max_scroll_percent == null ? null : Number(r.max_scroll_percent),
       createdAt: typeof r.created_at === 'string' ? r.created_at : new Date(r.created_at).toISOString(),
     }));
     const c = await sql`SELECT count(*)::int AS n FROM pageviews`;
@@ -1072,9 +1112,35 @@ export async function getSiteStats() {
   // Top pages
   const pageCounts: Record<string, number> = {};
   views.forEach(v => { pageCounts[v.path] = (pageCounts[v.path] ?? 0) + 1; });
+
+  // Scroll depth: how far down the page people got before leaving. Only
+  // views that actually reported a beacon count (a bounce before the JS
+  // listener attaches, or a killed tab, means no data — that's honestly
+  // different from "left at 0%", so it's excluded rather than counted as 0).
+  const withScroll = views.filter((v): v is PageView & { maxScrollPercent: number } => typeof v.maxScrollPercent === 'number');
+  const scrollByPage: Record<string, { sum: number; count: number }> = {};
+  withScroll.forEach(v => {
+    const e = scrollByPage[v.path] ?? (scrollByPage[v.path] = { sum: 0, count: 0 });
+    e.sum += v.maxScrollPercent;
+    e.count += 1;
+  });
+  const scrollBuckets = [
+    { label: '0–25%', min: 0, max: 25 },
+    { label: '26–50%', min: 26, max: 50 },
+    { label: '51–75%', min: 51, max: 75 },
+    { label: '76–100%', min: 76, max: 100 },
+  ].map(b => ({
+    label: b.label,
+    count: withScroll.filter(v => v.maxScrollPercent >= b.min && v.maxScrollPercent <= b.max).length,
+  }));
+
   const topPages = Object.entries(pageCounts)
     .sort((a, b) => b[1] - a[1]).slice(0, 8)
-    .map(([path, views]) => ({ path, views }));
+    .map(([path, views]) => ({
+      path, views,
+      avgScrollPercent: scrollByPage[path] ? Math.round(scrollByPage[path].sum / scrollByPage[path].count) : null,
+      scrollSamples: scrollByPage[path]?.count ?? 0,
+    }));
 
   // Top referrers (external only)
   const refCounts: Record<string, number> = {};
@@ -1098,6 +1164,8 @@ export async function getSiteStats() {
     byDay,
     topPages,
     topReferrers,
+    scrollBuckets,
+    scrollSampleCount: withScroll.length,
     directShare: views.length ? Math.round(((views.length - Object.values(refCounts).reduce((a, b) => a + b, 0)) / views.length) * 100) : 0,
   };
 }
