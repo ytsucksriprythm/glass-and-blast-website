@@ -5,4 +5,4 @@
 // from what Vercel's own Deployments tab shows. WORKFLOW: bump this by
 // exactly 1 every time you `git push` to main (each push = one Vercel
 // deploy = one version) as part of the same commit being pushed.
-export const APP_VERSION = 33;
+export const APP_VERSION = 34;

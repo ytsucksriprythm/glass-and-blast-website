@@ -231,6 +231,7 @@ function buildBusinessStats(bookings: Booking[], invoices: Invoice[]) {
     leadsBySource: {
       website: bookings.filter(b => (b.source ?? 'website') === 'website').length,
       manual: bookings.filter(b => b.source === 'manual').length,
+      facebookLeadAd: bookings.filter(b => b.source === 'facebook-lead-ad').length,
     },
     websiteBookingSources,
   };
@@ -379,7 +380,7 @@ server.registerTool(
       'Business performance stats matching the admin Business Stats tab (conversion rate, avg quote, top suburbs, debtor days, ' +
       'overdue invoices) computed from real data only. websiteBookingSources breaks down website bookings by how the visitor ' +
       'found the site (Facebook bio link, Google Maps, Google search, Direct, etc. — see attributionSource on individual bookings ' +
-      'too); leadsBySource is the coarser website-vs-manual split.',
+      'too); leadsBySource is the coarser website-vs-manual-vs-facebookLeadAd split.',
     inputSchema: {},
   },
   async (): Promise<CallToolResult> => {

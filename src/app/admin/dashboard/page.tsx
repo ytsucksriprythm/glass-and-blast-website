@@ -13,7 +13,7 @@ import {
   ArrowUpRight, ArrowDownRight, Edit3, Check, Plus, X, StickyNote, BadgeCheck, Wallet,
   Globe, Eye, Users, Link2, MapPin, Target, ClipboardCopy, CalendarDays, CalendarClock, ArrowRight,
   Repeat, PhoneCall, FileText, Send, CheckSquare, Square, Layers, AlertTriangle,
-  Snowflake, Undo2, GripVertical, MoveDown, Timer, ListChecks, Compass,
+  Snowflake, Undo2, GripVertical, MoveDown, Timer, ListChecks, Compass, Facebook,
 } from 'lucide-react';
 import Image from 'next/image';
 import Link from 'next/link';
@@ -42,7 +42,7 @@ interface Stats {
 interface BusinessStats {
   total: number; completed: number; conversionRate: number; avgQuote: number;
   paidValue: number; owedValue: number; quotedCount: number;
-  leadsBySource: { website: number; manual: number };
+  leadsBySource: { website: number; manual: number; facebookLeadAd: number };
   revByMonth: { month: string; revenue: number }[];
   topSuburbs: { suburb: string; count: number }[];
   serviceBreakdown: { name: string; value: number }[];
@@ -331,6 +331,7 @@ function BookingCard({ b, actions }: { b: Booking; actions: BookingRowActions })
           <div className="text-white font-semibold flex items-center gap-2 flex-wrap">
             {b.name}
             {b.source === 'manual' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-400/15 text-violet-300 border border-violet-400/20">Added</span>}
+            {b.source === 'facebook-lead-ad' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-sky-400/15 text-sky-300 border border-sky-400/20 inline-flex items-center gap-1"><Facebook className="w-2.5 h-2.5" />FB Lead</span>}
             <AssignBadge guestId={b.assignedGuestId} name={guestName(b.assignedGuestId)} />
             <CustomerPaidClaimBadge booking={b} />
             <FlagBadge booking={b} />
@@ -398,6 +399,7 @@ function BookingRow({ b, actions }: { b: Booking; actions: BookingRowActions }) 
         <div className="text-white group-hover:text-sky-400 transition-colors text-sm font-medium flex items-center gap-2 flex-wrap">
           {b.name}
           {b.source === 'manual' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-400/15 text-violet-300 border border-violet-400/20">Added</span>}
+          {b.source === 'facebook-lead-ad' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-sky-400/15 text-sky-300 border border-sky-400/20 inline-flex items-center gap-1"><Facebook className="w-2.5 h-2.5" />FB Lead</span>}
           <AssignBadge guestId={b.assignedGuestId} name={guestName(b.assignedGuestId)} />
           <CustomerPaidClaimBadge booking={b} />
           <FlagBadge booking={b} />
@@ -1702,6 +1704,7 @@ export default function Dashboard() {
                         <div className="space-y-3">
                           <SourceRow label="Website" value={bizStats.leadsBySource.website} total={bizStats.total} color="#38BDF8" />
                           <SourceRow label="Added manually" value={bizStats.leadsBySource.manual} total={bizStats.total} color="#A78BFA" />
+                          <SourceRow label="Facebook lead ad" value={bizStats.leadsBySource.facebookLeadAd} total={bizStats.total} color="#60A5FA" />
                         </div>
                         <h3 className="font-display font-semibold text-white mb-4 mt-6">Service Mix</h3>
                         <div className="space-y-3">
@@ -2151,7 +2154,7 @@ function ManageModal({ booking, onClose, onSave }: {
 
       {/* Customer summary */}
       <div className="rounded-xl bg-white/5 border border-white/8 p-4 mb-5 text-sm space-y-1">
-        <div className="text-white font-semibold">{booking.name} {booking.source === 'manual' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-400/15 text-violet-300">Added</span>}</div>
+        <div className="text-white font-semibold">{booking.name} {booking.source === 'manual' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-400/15 text-violet-300">Added</span>}{booking.source === 'facebook-lead-ad' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-sky-400/15 text-sky-300 inline-flex items-center gap-1"><Facebook className="w-2.5 h-2.5" />FB Lead</span>}</div>
         <div className="text-slate-400">{booking.phone}{booking.email ? ` · ${booking.email}` : ''}</div>
         <div className="text-slate-400">{serviceText(booking.service)} · <span className="capitalize">{booking.propertyType}</span></div>
         {(booking.address || booking.suburb) && <div className="text-slate-500"><AddressLink address={[booking.address, booking.suburb].filter(Boolean).join(', ')} className="text-slate-500" /></div>}

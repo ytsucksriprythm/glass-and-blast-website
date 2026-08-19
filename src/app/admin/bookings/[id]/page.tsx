@@ -7,12 +7,14 @@ import toast from 'react-hot-toast';
 import {
   ArrowLeft, Phone, Mail, MapPin, CalendarDays, DollarSign, StickyNote,
   User, Wallet, Clock, Edit3, Check, X, CalendarClock,
-  Camera, Trash2, Repeat, FileText, Send, Link2, ExternalLink, Plus, Copy, Star, AlertTriangle, Compass,
+  Camera, Trash2, Repeat, FileText, FileSignature, Send, Link2, ExternalLink, Plus, Copy, Share as ShareIcon, Star, AlertTriangle, Compass,
 } from 'lucide-react';
 import type { Booking, BookingStatus, BookingPhoto, PhotoType } from '@/lib/db';
 import type { Invoice } from '@/lib/invoice';
+import { type Quote, money as quoteMoney, buildQuoteText } from '@/lib/quote';
 import { AddressLink } from '@/components/AddressLink';
 import { FlagButton, FlagModal } from '@/components/admin/JobFlag';
+import QuoteModal from '@/components/QuoteModal';
 
 type GuestProfile = { id: string; name: string; active: boolean; createdAt: string };
 
@@ -33,6 +35,7 @@ const toLocalInput = (iso: string | null) => {
 };
 const fromLocalInput = (v: string) => (v ? new Date(v).toISOString() : null);
 const INVOICE_STATUS_LABEL: Record<string, string> = { draft: 'Draft', sent: 'Sent', paid: 'Paid', cancelled: 'Cancelled' };
+const QUOTE_STATUS_LABEL: Record<string, string> = { draft: 'Draft', sent: 'Sent' };
 
 const SERVICE_LABELS: Record<string, string> = {
   'window-washing': 'Window Washing',
@@ -216,6 +219,11 @@ export default function BookingView() {
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [showLink, setShowLink] = useState(false);
 
+  // Quotes — generating one also drives this booking's quoteAmount/status (see syncQuoteAmountToBooking in db.ts)
+  const [quotes, setQuotes] = useState<Quote[]>([]);
+  const [showQuoteModal, setShowQuoteModal] = useState(false);
+  const [editingQuote, setEditingQuote] = useState<Quote | null>(null);
+
   // Flag — mark something's gone wrong on this job, with a note
   const [showFlag, setShowFlag] = useState(false);
 
@@ -239,6 +247,36 @@ export default function BookingView() {
       const res = await fetch('/api/admin/invoices');
       if (res.ok) setInvoices(await res.json());
     } catch { /* no invoices — fine */ }
+  };
+  const loadQuotes = async () => {
+    try {
+      const res = await fetch(`/api/admin/quotes?bookingId=${id}`);
+      if (res.ok) setQuotes(await res.json());
+    } catch { /* no quotes — fine */ }
+  };
+  // A quote's Copy/Share buttons update this booking's quoteAmount/status
+  // server-side (see syncQuoteAmountToBooking) — re-fetch the booking too so
+  // the read-only Quote row picks it up without a full page reload.
+  const refreshBooking = async () => {
+    try {
+      const res = await fetch(`/api/admin/bookings/${id}`);
+      if (res.ok) { const updated: Booking = await res.json(); setB(updated); setForm(toForm(updated)); }
+    } catch { /* stays stale until next reload — fine */ }
+  };
+  const onQuoteSaved = (q: Quote) => {
+    setQuotes(prev => prev.some(x => x.id === q.id) ? prev.map(x => x.id === q.id ? q : x) : [q, ...prev]);
+    refreshBooking();
+  };
+  const shareQuote = async (q: Quote) => {
+    const url = `${window.location.origin}/quote/${q.token}`;
+    const title = `Quote ${q.number} — ${q.fromTradingAs}`;
+    const nav = navigator as Navigator & { share?: (d: ShareData) => Promise<void> };
+    if (nav.share) { try { await nav.share({ title, text: title, url }); } catch { /* dismissed */ } }
+    else { try { await navigator.clipboard.writeText(url); toast.success('Link copied'); } catch { toast.error('Copy failed'); } }
+  };
+  const copyQuote = async (q: Quote) => {
+    try { await navigator.clipboard.writeText(buildQuoteText(q)); toast.success('Quote text copied'); }
+    catch { toast.error('Copy failed'); }
   };
 
   // Remember the page we were opened from (passed as ?from=…) so Back returns
@@ -269,6 +307,9 @@ export default function BookingView() {
 
   // Invoices, to show which are linked to this booking.
   useEffect(() => { loadInvoices(); }, []);
+
+  // Quotes for this booking.
+  useEffect(() => { loadQuotes(); }, [id]);
 
   // Guest logins, for the "Send to" selector.
   useEffect(() => {
@@ -475,7 +516,7 @@ export default function BookingView() {
               <div className="min-w-0">
                 <h1 className="font-display text-2xl font-bold text-white break-words">{b.name}</h1>
                 <div className="text-slate-500 text-xs mt-1">
-                  {b.source === 'manual' ? 'Added manually' : 'From website'} · {new Date(b.createdAt).toLocaleDateString('en-AU')}
+                  {b.source === 'manual' ? 'Added manually' : b.source === 'facebook-lead-ad' ? 'Facebook lead ad' : 'From website'} · {new Date(b.createdAt).toLocaleDateString('en-AU')}
                 </div>
               </div>
               <span className={`inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold flex-shrink-0 badge-${b.status}`}>
@@ -577,6 +618,35 @@ export default function BookingView() {
             )}
 
             <PhotoGallery bookingId={b.id} />
+
+            {/* Quotes — generating one drives this booking's quoteAmount/status */}
+            <div className="mt-4 rounded-lg border border-white/10 bg-navy-800 p-4">
+              <div className="flex items-center justify-between mb-3">
+                <div className="text-slate-500 text-xs flex items-center gap-1.5"><FileSignature className="w-3.5 h-3.5" /> Quotes</div>
+                <button onClick={() => { setEditingQuote(null); setShowQuoteModal(true); }} className="inline-flex items-center gap-1 text-sky-400 hover:text-sky-300 text-xs font-semibold cursor-pointer">
+                  <Plus className="w-3.5 h-3.5" /> New quote
+                </button>
+              </div>
+              {quotes.length === 0 ? (
+                <div className="text-slate-500 text-sm">No quotes yet. Generating one also updates this booking&apos;s quote amount and status.</div>
+              ) : (
+                <div className="space-y-2">
+                  {quotes.map(q => (
+                    <div key={q.id} className="rounded-lg border border-white/10 px-3 py-2">
+                      <div className="flex items-center gap-2">
+                        <button onClick={() => { setEditingQuote(q); setShowQuoteModal(true); }} className="min-w-0 flex-1 text-left cursor-pointer">
+                          <div className="text-white text-sm font-medium">{q.number} · {quoteMoney(q.amount)}</div>
+                          <div className="text-slate-500 text-xs">{QUOTE_STATUS_LABEL[q.status] ?? q.status} · {new Date(q.quoteDate).toLocaleDateString('en-AU')}</div>
+                        </button>
+                        <button onClick={() => copyQuote(q)} title="Copy quote text" className="p-2 rounded-lg border border-white/10 text-slate-300 hover:border-sky-400/40 cursor-pointer"><Copy className="w-4 h-4" /></button>
+                        <button onClick={() => shareQuote(q)} title="Share quote link" className="p-2 rounded-lg border border-white/10 text-slate-300 hover:border-sky-400/40 cursor-pointer"><ShareIcon className="w-4 h-4" /></button>
+                        <a href={`/quote/${q.token}`} target="_blank" rel="noopener noreferrer" title="Open" className="p-2 rounded-lg border border-white/10 text-sky-300 hover:border-sky-400/40 cursor-pointer"><ExternalLink className="w-4 h-4" /></a>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
 
             {/* Linked invoices — payment status flows from invoice → booking */}
             <div className="mt-4 rounded-lg border border-white/10 bg-navy-800 p-4">
@@ -788,6 +858,17 @@ export default function BookingView() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* ── Quote maker ───────────────────────────────────────────── */}
+      {showQuoteModal && b && (
+        <QuoteModal
+          bookingId={b.id}
+          booking={b}
+          initial={editingQuote}
+          onClose={() => setShowQuoteModal(false)}
+          onSaved={onQuoteSaved}
+        />
       )}
 
       {/* ── Flag a problem ────────────────────────────────────────── */}

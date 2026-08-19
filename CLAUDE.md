@@ -44,10 +44,24 @@ interface Booking {
   adminNotes: string;  // private
   paid: boolean;
   completedAt: ISO string | null;  // auto-stamped on status→completed
-  source: website|manual;
+  source: website|manual|facebook-lead-ad;
+  externalLeadId: string | null;  // Meta lead id (or a row-content hash), dedupes repeated sheet polls (facebook-lead-ad only)
   createdAt, updatedAt: ISO string;
 }
 ```
+
+### Meta (Facebook/Instagram) Lead Ads → Bookings
+Instant/Quick Form leads never touch the website (no page visit, so UTM attribution can't catch them). Rather than a direct Meta Graph API webhook (needs a Facebook Developer App + App Review), leads flow through Meta's built-in **Lead Ads → Google Sheets** CRM connector (Ads Manager → Instant Forms → Connect CRM → Google Sheets) — no Meta App Review needed at all, at the cost of polling instead of instant delivery.
+- **Flow:** customer submits a Lead Ad form → Meta appends a row to the connected Google Sheet → `/api/cron/meta-leads-sheet` (Vercel Cron, see `vercel.json`) reads every tab in the sheet via a Google service account → any row not already imported becomes a `Booking` (`source: 'facebook-lead-ad'`, `status: 'pending'`)
+- **Multiple forms:** Meta writes one tab per connected lead form (trialing several forms = several tabs). Tabs are discovered live via `listSheetTabs()` — no config needed when a new form/tab is added
+- **Auth to Google:** `src/lib/googleSheets.ts` — hand-rolled service-account JWT → OAuth token exchange → Sheets API v4 read/write, no `googleapis` dependency. **The Sheet must be shared with the service account as Editor** (not just Viewer) — the status write-back below needs write access
+- **Field mapping:** `src/lib/metaLeads.ts` matches each tab's header row by normalized (alphanumeric-only) name (`full_name`/`name`, `email`, `phone_number`/`phone`, `address`/`street_address`/a combined column like `property_address_/_suburb`, `city`/`suburb`, `id`) plus a service keyword match (window/pressure/solar/flyscreen); anything unmatched (custom form questions) is preserved verbatim in `notes` so nothing is lost
+- **Dedup:** `externalLeadId` has a partial unique index — re-running the poll over rows already imported is a no-op. Falls back to a hash of the row if the sheet has no `id` column (and status write-back is skipped for those, since there's no reliable way to relocate the row)
+- **Status write-back (site → Sheet, one-way only):** changing a booking's status in admin writes it into a "Site Status" column in the sheet (`syncBookingStatusToSheet()` in `metaLeads.ts`, triggered from the booking PATCH route) — reference only. This does **not** reach Meta's own `lead_status` column or its ad-delivery optimization; Meta's Connect-CRM → Sheets export is one-way (Meta → Sheet). Real bidirectional sync would need Meta's separate Conversions API for Lead Ads
+- **Notifications:** owner email/push fire as normal; the customer "Booking Confirmed" email is skipped for this source (a lead isn't a confirmed date/time yet)
+- **Admin UI:** blue "FB Lead" badge (bookings list, manage modal), "Facebook lead ad" (detail page, Business Stats → Leads by Source), manual "Sync now" button in Settings → Facebook lead sync
+- **Schedule:** Vercel Cron currently runs it once/day (`vercel.json`, `0 22 * * *`) — matches the free Hobby plan's cron frequency limit. For faster turnaround, ping `https://glassandblast.com.au/api/cron/meta-leads-sheet?secret=$CRON_SECRET` from a free external scheduler (e.g. cron-job.org) every few minutes instead — the route already accepts the secret either way (header or query param)
+- **Required env vars (not yet set anywhere):** `GOOGLE_SERVICE_ACCOUNT_JSON` (full service-account key JSON, one line), `META_LEADS_SHEET_ID`, optionally `META_LEADS_SHEET_RANGE` (default `A:Z`, applied to every tab) — `CRON_SECRET` already exists (shared with `/api/cron/recurring`). See Next Steps for the Meta/Google-side setup this needs before it goes live
 
 ### Calendar (Google Calendar iCal Feed)
 - **Flow:** Secret iCal URL → fetched server-side via `/api/admin/calendar` → parsed by `src/lib/calendar.ts`
@@ -103,8 +117,11 @@ ADMIN_SECRET=glass-blast-admin-secret-2025
 GOOGLE_CALENDAR_ICS_URL=https://calendar.google.com/calendar/ical/[...]/basic.ics
 NTFY_TOPIC=...
 DATABASE_URL=... (Vercel Neon integration sets this)
+CRON_SECRET=... (shared by all Vercel Cron routes — recurring jobs + Meta leads sheet sync)
+GOOGLE_SERVICE_ACCOUNT_JSON=... (full service-account key JSON, one line — Meta leads sheet sync)
+META_LEADS_SHEET_ID=... (from the Google Sheet's URL — Meta leads sheet sync)
 ```
-**MISSING on Vercel Production:** `GOOGLE_CALENDAR_ICS_URL` — calendar feed won't load live until added to Vercel env vars.
+**MISSING on Vercel Production:** `GOOGLE_CALENDAR_ICS_URL` — calendar feed won't load live until added to Vercel env vars. `GOOGLE_SERVICE_ACCOUNT_JSON` / `META_LEADS_SHEET_ID` aren't set up anywhere yet — see Next Steps.
 
 ---
 
@@ -162,3 +179,10 @@ Cropped gray UI bars (phone UI):
 2. Monitor calendar feed latency (should update within 60s of Google Calendar change)
 3. Test booking-to-calendar matching on live data (event titles must contain name or address)
 4. Consider: automated SMS/email on booking state changes (optional future)
+5. **Meta Lead Ads → Google Sheets → Bookings — code is done, needs setup on the Meta/Google side:**
+   - In Ads Manager: Instant Forms → your lead form → **Connect CRM** → **Google Sheets**, authorize, let it create the destination sheet. Naming form questions "Street Address"/"City" (not just "Address") gets them auto-mapped into the booking's address/suburb fields
+   - In Google Cloud Console: new project (or reuse one) → enable the **Google Sheets API** → create a **Service Account** → generate a JSON key
+   - Copy the **service account's email** and share the Sheet with it as **Editor** (Sheet → Share) — Viewer isn't enough, the status write-back needs write access
+   - Set `GOOGLE_SERVICE_ACCOUNT_JSON` (the full key JSON, as one line) and `META_LEADS_SHEET_ID` (from the Sheet's URL) in `.env.local` and Vercel Production env vars — `CRON_SECRET` should already be set (shared with the recurring-jobs cron)
+   - Send a test lead (Ads Manager → Lead form library → Preview → test submission), confirm the row lands in the Sheet, then hit Settings → Facebook lead sync → **Sync now** in `/admin/settings` and confirm a booking with the blue "FB Lead" badge appears in `/admin/dashboard`
+   - Once confirmed working, decide on cadence: leave the once/day Vercel Cron (`vercel.json`), or point a free external scheduler (cron-job.org) at `/api/cron/meta-leads-sheet?secret=$CRON_SECRET` every few minutes for faster pickup

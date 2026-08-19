@@ -5,14 +5,14 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import {
-  LayoutDashboard, Calendar as CalendarIcon, CalendarClock, FileText, Repeat,
+  LayoutDashboard, Calendar as CalendarIcon, CalendarClock, FileSignature, FileText, Repeat,
   BarChart3, Globe, Users, Settings as SettingsIcon, LogOut, Menu, X,
 } from 'lucide-react';
 import { APP_VERSION } from '@/lib/version';
 
 // Single source of truth for admin nav order: Overview, Bookings, Calendar,
-// Invoices, Recurring Plans, Business Stats, Site Stats, Guest Logins, Settings.
-export type AdminNavKey = 'overview' | 'bookings' | 'calendar' | 'invoices' | 'recurring' | 'business' | 'site' | 'guests' | 'settings';
+// Quotes, Invoices, Recurring Plans, Business Stats, Site Stats, Guest Logins, Settings.
+export type AdminNavKey = 'overview' | 'bookings' | 'calendar' | 'quotes' | 'invoices' | 'recurring' | 'business' | 'site' | 'guests' | 'settings';
 
 export type AdminNavItem = {
   key: AdminNavKey;
@@ -21,6 +21,8 @@ export type AdminNavItem = {
   href?: string;        // navigate here
   onClick?: () => void; // or run this instead (in-page tab switch, no navigation)
   badge?: number;
+  warn?: string;        // shows a small "!" marker next to the tab — hover/tap for this text.
+                         // Use for "not ready yet" style cautions, not numeric counts (see badge).
 };
 
 // Build the 8 nav items in the fixed order above. Pass `onTab` when rendered
@@ -40,6 +42,7 @@ export function adminNavItems(opts: {
     { key: 'overview', label: 'Overview', icon: LayoutDashboard, ...tabItem('overview') },
     { key: 'bookings', label: 'Bookings', icon: CalendarIcon, badge: pending, ...tabItem('bookings') },
     { key: 'calendar', label: 'Calendar', icon: CalendarClock, href: '/admin/calendar' },
+    { key: 'quotes', label: 'Quotes', icon: FileSignature, href: '/admin/quotes', warn: 'New — not checked for ACT legal compliance yet. Don’t send a real quote off this until it’s been reviewed.' },
     { key: 'invoices', label: 'Invoices', icon: FileText, href: '/admin/invoices' },
     { key: 'recurring', label: 'Recurring Plans', icon: Repeat, href: '/admin/recurring' },
     { key: 'business', label: 'Business Stats', icon: BarChart3, ...tabItem('business') },
@@ -67,12 +70,17 @@ function NavLink({ item, active, className }: { item: AdminNavItem; active: bool
           {item.badge}
         </span>
       )}
+      {!item.badge && item.warn && (
+        <span title={item.warn} className="ml-auto w-5 h-5 bg-amber-400 text-navy-900 text-xs rounded-full flex items-center justify-center font-extrabold">
+          !
+        </span>
+      )}
     </>
   );
   const cls = `${className} ${active ? 'active' : ''}`;
   return item.onClick
-    ? <button onClick={item.onClick} className={cls}>{content}</button>
-    : <Link href={item.href!} className={cls}>{content}</Link>;
+    ? <button onClick={item.onClick} className={cls} title={item.warn}>{content}</button>
+    : <Link href={item.href!} className={cls} title={item.warn}>{content}</Link>;
 }
 
 // ─── Desktop sidebar — persistent on lg+, never goes fullscreen ────────────
@@ -155,6 +163,7 @@ export function AdminMoreSheet({ open, onClose, active, items }: { open: boolean
               <>
                 <Icon className="w-5 h-5 flex-shrink-0" /> {item.label}
                 {!!item.badge && <span className="ml-auto w-5 h-5 bg-amber-400/20 text-amber-400 text-xs rounded-full flex items-center justify-center font-bold">{item.badge}</span>}
+                {!item.badge && item.warn && <span title={item.warn} className="ml-auto w-5 h-5 bg-amber-400 text-navy-900 text-xs rounded-full flex items-center justify-center font-extrabold">!</span>}
               </>
             );
             return item.onClick ? (

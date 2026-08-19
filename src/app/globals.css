@@ -154,4 +154,7 @@ html { -webkit-text-size-adjust: 100%; }
   .invoice-page { background: #ffffff !important; padding: 0 !important; }
   .invoice-page .rounded-xl { box-shadow: none !important; }
   .invoice-sheet { box-shadow: none !important; max-width: 100% !important; }
+  .quote-page { background: #ffffff !important; padding: 0 !important; }
+  .quote-page .rounded-xl { box-shadow: none !important; }
+  .quote-sheet { box-shadow: none !important; max-width: 100% !important; }
 }

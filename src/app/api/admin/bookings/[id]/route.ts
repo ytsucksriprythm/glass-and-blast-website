@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { updateBooking, deleteBooking, getBookingById, getGuestById, logActivity } from '@/lib/db';
 import { getActiveContext } from '@/lib/auth';
 import { notifyStatusChange, notifyJobAssigned } from '@/lib/notify';
+import { syncBookingStatusToSheet } from '@/lib/metaLeads';
 import type { Booking } from '@/lib/db';
 
 // Fields a guest is allowed to touch on a job that was sent to them. Notably
@@ -55,6 +56,9 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   if (booking.status !== before.status) {
     void notifyStatusChange(booking, before.status, booking.status, actor);
     void logActivity('booking.status_changed', `${booking.name}: ${before.status} -> ${booking.status}`, { bookingId: id, from: before.status, to: booking.status }, ctx.role === 'admin' ? 'admin' : `guest:${ctx.guestId}`);
+    // Mirror into the source Google Sheet's "Site Status" column (facebook-lead-ad
+    // only) — reference only, doesn't feed back into Meta itself. See metaLeads.ts.
+    syncBookingStatusToSheet(booking).catch(err => console.error('Sheet status sync failed:', err));
   }
   if (booking.assignedGuestId && booking.assignedGuestId !== before.assignedGuestId) {
     const guest = await getGuestById(booking.assignedGuestId);

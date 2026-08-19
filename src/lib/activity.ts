@@ -52,6 +52,11 @@ export const ACTIVITY_TYPE_LABEL: Record<string, string> = {
   'larp.stopped': 'LARP mode turned off',
   'media.uploaded': 'File uploaded to media library',
   'media.deleted': 'File deleted from media library',
+  'vault.created': 'Vault item saved',
+  'vault.deleted': 'Vault item deleted',
+  'quote.created': 'Quote created',
+  'quote.status_changed': 'Quote status changed',
+  'quote.deleted': 'Quote deleted',
 };
 
 // Lightweight User-Agent classification — no dependency needed for this.

@@ -8,6 +8,8 @@ import {
   SEED_PAYMENT_PROFILES, SEED_BUSINESS_PROFILES, computeTotals, isInvoiceOverdue, debtorDays,
 } from './invoice';
 import { type AppSettings, DEFAULT_SETTINGS } from './settings';
+import { type VaultItem } from './vault';
+import { type Quote, type QuoteInput, type QuoteStatus, QUOTE_PREFIX, QUOTE_START_SEQ } from './quote';
 import { type ActivityEntry, type InvoiceViewSession } from './activity';
 import { computePageEngagement, computeScrollBuckets, computeSiteWideTimeStats, computeBookingFunnel } from './analytics';
 
@@ -24,12 +26,14 @@ const GROUP_PATH = path.join(process.cwd(), 'data', 'booking-groups.json');
 const SETTINGS_PATH = path.join(process.cwd(), 'data', 'settings.json');
 const ACTIVITY_PATH = path.join(process.cwd(), 'data', 'activity-log.json');
 const INVOICE_VIEWS_PATH = path.join(process.cwd(), 'data', 'invoice-views.json');
+const VAULT_PATH = path.join(process.cwd(), 'data', 'vault.json');
+const QUOTES_PATH = path.join(process.cwd(), 'data', 'quotes.json');
 const ACTIVITY_MAX_ROWS = 2000; // local JSON store only — Neon has no cap
 
 export type BookingStatus = 'pending' | 'quoted' | 'confirmed' | 'completed' | 'cancelled' | 'cold';
 export type ServiceType = 'window-washing' | 'pressure-washing' | 'both' | 'flyscreen-repair' | 'solar-panel-cleaning' | 'other';
 export type PropertyType = 'residential' | 'commercial';
-export type BookingSource = 'website' | 'manual';
+export type BookingSource = 'website' | 'manual' | 'facebook-lead-ad';
 
 export interface Booking {
   id: string;
@@ -62,6 +66,7 @@ export interface Booking {
   attributionSource?: string | null; // auto-captured for website bookings: "Facebook (bio link)",
                                       // "Google Maps", "Google (search)", "Direct", etc. — see src/lib/attribution.ts
   groupId?: string | null;         // booking group this job belongs to
+  externalLeadId?: string | null;  // Meta leadgen_id (facebook-lead-ad source) — dedupes webhook retries
   publicToken?: string | null;     // unguessable token for the customer thank-you page
   feedbackStars?: number | null;   // customer rating 1-5 (from the thank-you page)
   feedbackText?: string | null;    // written feedback (shown for 1-3 stars)
@@ -235,6 +240,7 @@ function rowToBooking(r: any): Booking {
     leadSource: r.lead_source ?? null,
     attributionSource: r.attribution_source ?? null,
     groupId: r.group_id ?? null,
+    externalLeadId: r.external_lead_id ?? null,
     publicToken: r.public_token ?? null,
     feedbackStars: r.feedback_stars == null ? null : Number(r.feedback_stars),
     feedbackText: r.feedback_text ?? null,
@@ -310,10 +316,15 @@ export async function ensureSchema(): Promise<void> {
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS flagged_at TIMESTAMPTZ`;
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS flag_note TEXT`;
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS attribution_source TEXT`;
+      await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS external_lead_id TEXT`;
       // Backfill customer-link tokens for pre-existing rows.
       await sql`UPDATE bookings SET public_token = 'bk_' || substr(md5(random()::text || id), 1, 20) WHERE public_token IS NULL`;
       await sql`CREATE INDEX IF NOT EXISTS bookings_scheduled_idx ON bookings (scheduled_at)`;
       await sql`CREATE INDEX IF NOT EXISTS bookings_token_idx ON bookings (public_token)`;
+      // Partial unique index — only enforced when set, so it never conflicts with the
+      // many bookings that have no external lead. Stops Meta's webhook retries (it
+      // resends on anything but a fast 200) from creating duplicate bookings.
+      await sql`CREATE UNIQUE INDEX IF NOT EXISTS bookings_external_lead_idx ON bookings (external_lead_id) WHERE external_lead_id IS NOT NULL`;
       // Booking groups (batch a set of jobs under a title)
       await sql`
         CREATE TABLE IF NOT EXISTS booking_groups (
@@ -466,6 +477,44 @@ export async function ensureSchema(): Promise<void> {
       await sql`CREATE TABLE IF NOT EXISTS invoice_counter (id TEXT PRIMARY KEY, last_seq INTEGER NOT NULL)`;
       // Seed so the first generated invoice is GB{INVOICE_START_SEQ}.
       await sql`INSERT INTO invoice_counter (id, last_seq) VALUES (${INVOICE_PREFIX}, ${INVOICE_START_SEQ - 1}) ON CONFLICT (id) DO NOTHING`;
+      // Quotes — simpler cousin of invoices: one lump-sum amount (no itemized
+      // line items), admin-only, no view tracking, no Square/payment block.
+      // See src/lib/quote.ts.
+      await sql`
+        CREATE TABLE IF NOT EXISTS quotes (
+          id                 TEXT PRIMARY KEY,
+          number             TEXT NOT NULL,
+          seq                INTEGER NOT NULL,
+          status             TEXT NOT NULL DEFAULT 'draft',
+          booking_id         TEXT NOT NULL,
+          services           TEXT NOT NULL DEFAULT '[]',
+          extras             TEXT NOT NULL DEFAULT '[]',
+          other_text         TEXT NOT NULL DEFAULT '',
+          amount             NUMERIC NOT NULL DEFAULT 0,
+          property_type      TEXT NOT NULL DEFAULT 'residential',
+          bill_to_name       TEXT NOT NULL DEFAULT '',
+          bill_to_address    TEXT NOT NULL DEFAULT '',
+          from_name          TEXT NOT NULL DEFAULT '',
+          from_trading_as    TEXT NOT NULL DEFAULT '',
+          from_abn           TEXT NOT NULL DEFAULT '',
+          from_address       TEXT NOT NULL DEFAULT '',
+          from_email         TEXT NOT NULL DEFAULT '',
+          from_phone         TEXT NOT NULL DEFAULT '',
+          quote_date         TEXT NOT NULL DEFAULT '',
+          valid_until        TEXT NOT NULL DEFAULT '',
+          notes              TEXT NOT NULL DEFAULT '',
+          terms_text         TEXT NOT NULL DEFAULT '',
+          token              TEXT NOT NULL,
+          created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+          updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+          sent_at            TIMESTAMPTZ
+        )
+      `;
+      await sql`CREATE UNIQUE INDEX IF NOT EXISTS quotes_token_idx ON quotes (token)`;
+      await sql`CREATE UNIQUE INDEX IF NOT EXISTS quotes_number_idx ON quotes (number)`;
+      await sql`CREATE INDEX IF NOT EXISTS quotes_booking_idx ON quotes (booking_id)`;
+      await sql`CREATE TABLE IF NOT EXISTS quote_counter (id TEXT PRIMARY KEY, last_seq INTEGER NOT NULL)`;
+      await sql`INSERT INTO quote_counter (id, last_seq) VALUES (${QUOTE_PREFIX}, ${QUOTE_START_SEQ - 1}) ON CONFLICT (id) DO NOTHING`;
       // Selectable payment profiles for invoices
       await sql`
         CREATE TABLE IF NOT EXISTS payment_profiles (
@@ -552,6 +601,19 @@ export async function ensureSchema(): Promise<void> {
         )
       `;
       await sql`CREATE INDEX IF NOT EXISTS invoice_views_invoice_idx ON invoice_views (invoice_id)`;
+      // Vault — a personal clipboard for things the owner wants to copy
+      // again later (the ntfy.sh topic/subscribe URL, a webhook secret, a CLI
+      // command, whatever). Free-form label/value/notes, no schema beyond
+      // that. See "Vault" section in Settings, src/lib/vault.ts.
+      await sql`
+        CREATE TABLE IF NOT EXISTS vault_items (
+          id         TEXT PRIMARY KEY,
+          label      TEXT NOT NULL,
+          value      TEXT NOT NULL DEFAULT '',
+          notes      TEXT NOT NULL DEFAULT '',
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+      `;
     })();
   }
   return schemaReady;
@@ -638,6 +700,7 @@ export async function addBooking(data: NewBooking): Promise<Booking> {
     leadSource: data.leadSource ?? null,
     attributionSource: data.attributionSource ?? null,
     groupId: data.groupId ?? null,
+    externalLeadId: data.externalLeadId ?? null,
     publicToken: `bk_${crypto.randomBytes(12).toString('hex')}`,
     feedbackStars: null,
     feedbackText: null,
@@ -659,8 +722,8 @@ export async function addBooking(data: NewBooking): Promise<Booking> {
   if (sql) {
     await ensureSchema();
     await sql`
-      INSERT INTO bookings (id, name, email, phone, service, property_type, address, suburb, preferred_date, preferred_time, notes, status, quote_amount, admin_notes, paid, source, assigned_guest_id, assigned_at, scheduled_at, scheduled_end, recurring_id, lead_source, attribution_source, group_id, public_token)
-      VALUES (${booking.id}, ${booking.name}, ${booking.email}, ${booking.phone}, ${booking.service}, ${booking.propertyType}, ${booking.address}, ${booking.suburb}, ${booking.preferredDate}, ${booking.preferredTime}, ${booking.notes}, ${booking.status}, ${booking.quoteAmount}, ${booking.adminNotes}, ${booking.paid}, ${booking.source}, ${booking.assignedGuestId}, ${booking.assignedAt}, ${booking.scheduledAt}, ${booking.scheduledEnd}, ${booking.recurringId}, ${booking.leadSource}, ${booking.attributionSource}, ${booking.groupId}, ${booking.publicToken})
+      INSERT INTO bookings (id, name, email, phone, service, property_type, address, suburb, preferred_date, preferred_time, notes, status, quote_amount, admin_notes, paid, source, assigned_guest_id, assigned_at, scheduled_at, scheduled_end, recurring_id, lead_source, attribution_source, group_id, external_lead_id, public_token)
+      VALUES (${booking.id}, ${booking.name}, ${booking.email}, ${booking.phone}, ${booking.service}, ${booking.propertyType}, ${booking.address}, ${booking.suburb}, ${booking.preferredDate}, ${booking.preferredTime}, ${booking.notes}, ${booking.status}, ${booking.quoteAmount}, ${booking.adminNotes}, ${booking.paid}, ${booking.source}, ${booking.assignedGuestId}, ${booking.assignedAt}, ${booking.scheduledAt}, ${booking.scheduledEnd}, ${booking.recurringId}, ${booking.leadSource}, ${booking.attributionSource}, ${booking.groupId}, ${booking.externalLeadId}, ${booking.publicToken})
     `;
     return booking;
   }
@@ -669,6 +732,19 @@ export async function addBooking(data: NewBooking): Promise<Booking> {
   rows.push(booking);
   writeFile(rows);
   return booking;
+}
+
+// Meta's leadgen webhook retries on anything but a fast 2xx — this lets the
+// webhook handler recognize a lead it already turned into a booking and skip
+// creating a duplicate.
+export async function getBookingByExternalLeadId(externalLeadId: string): Promise<Booking | null> {
+  if (sql) {
+    await ensureSchema();
+    const rows = await sql`SELECT * FROM bookings WHERE external_lead_id = ${externalLeadId} LIMIT 1`;
+    const arr = rows as any[];
+    return arr.length ? rowToBooking(arr[0]) : null;
+  }
+  return readFile().find(b => b.externalLeadId === externalLeadId) ?? null;
 }
 
 // ─── Customer thank-you link + feedback ─────────────────────────────────────
@@ -1321,6 +1397,7 @@ export async function getBusinessStats() {
     leadsBySource: {
       website: bookings.filter(b => (b.source ?? 'website') === 'website').length,
       manual: bookings.filter(b => b.source === 'manual').length,
+      facebookLeadAd: bookings.filter(b => b.source === 'facebook-lead-ad').length,
     },
     revByMonth,
     topSuburbs,
@@ -2076,6 +2153,260 @@ export async function recordInvoiceView(token: string): Promise<Invoice | null> 
   return rows[idx];
 }
 
+// ─── Quotes (see src/lib/quote.ts) ──────────────────────────────────────────
+
+function readQuotes(): Quote[] {
+  try {
+    if (!fs.existsSync(QUOTES_PATH)) return [];
+    return JSON.parse(fs.readFileSync(QUOTES_PATH, 'utf-8'));
+  } catch { return []; }
+}
+function writeQuotes(rows: Quote[]): void {
+  const dir = path.dirname(QUOTES_PATH);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(QUOTES_PATH, JSON.stringify(rows, null, 2));
+}
+
+function parseStringArray(raw: unknown): string[] {
+  if (Array.isArray(raw)) return raw.filter((x): x is string => typeof x === 'string');
+  try {
+    const arr = JSON.parse((raw as string) ?? '[]');
+    return Array.isArray(arr) ? arr.filter((x): x is string => typeof x === 'string') : [];
+  } catch { return []; }
+}
+
+// SQL-row mapper only (snake_case columns) — the JSON fallback store already
+// holds plain camelCase Quote objects, same as every other entity in this file.
+function rowToQuote(r: any): Quote {
+  return {
+    id: r.id,
+    number: r.number,
+    seq: Number(r.seq),
+    token: r.token,
+    bookingId: r.booking_id,
+    status: (r.status as QuoteStatus) ?? 'draft',
+    services: parseStringArray(r.services),
+    extras: parseStringArray(r.extras),
+    otherText: r.other_text ?? '',
+    amount: r.amount == null ? 0 : Number(r.amount),
+    propertyType: r.property_type ?? 'residential',
+    billToName: r.bill_to_name ?? '',
+    billToAddress: r.bill_to_address ?? '',
+    fromName: r.from_name ?? '',
+    fromTradingAs: r.from_trading_as ?? '',
+    fromAbn: r.from_abn ?? '',
+    fromAddress: r.from_address ?? '',
+    fromEmail: r.from_email ?? '',
+    fromPhone: r.from_phone ?? '',
+    quoteDate: r.quote_date ?? '',
+    validUntil: r.valid_until ?? '',
+    notes: r.notes ?? '',
+    termsText: r.terms_text ?? '',
+    createdAt: typeof r.created_at === 'string' ? r.created_at : new Date(r.created_at).toISOString(),
+    updatedAt: typeof r.updated_at === 'string' ? r.updated_at : new Date(r.updated_at).toISOString(),
+    sentAt: r.sent_at == null ? null : (typeof r.sent_at === 'string' ? r.sent_at : new Date(r.sent_at).toISOString()),
+  };
+}
+
+// Atomically reserve the next quote sequence number.
+async function nextQuoteSeq(): Promise<number> {
+  if (sql) {
+    const rows = await sql`UPDATE quote_counter SET last_seq = last_seq + 1 WHERE id = ${QUOTE_PREFIX} RETURNING last_seq`;
+    const arr = rows as any[];
+    return arr.length ? Number(arr[0].last_seq) : QUOTE_START_SEQ;
+  }
+  const rows = readQuotes();
+  const maxSeq = rows.reduce((m, q) => Math.max(m, q.seq), QUOTE_START_SEQ - 1);
+  return maxSeq + 1;
+}
+
+// Admin-only entity — always all rows, no ownerGuestId scoping.
+export async function getQuotes(): Promise<Quote[]> {
+  if (sql) {
+    return withTimeout((async () => {
+      await ensureSchema();
+      const rows = await sql`SELECT * FROM quotes ORDER BY seq DESC`;
+      return (rows as any[]).map(rowToQuote);
+    })());
+  }
+  return readQuotes().sort((a, b) => b.seq - a.seq);
+}
+
+export async function getQuotesForBooking(bookingId: string): Promise<Quote[]> {
+  const all = await getQuotes();
+  return all.filter(q => q.bookingId === bookingId);
+}
+
+export async function getQuoteById(id: string): Promise<Quote | null> {
+  if (sql) {
+    await ensureSchema();
+    const rows = await sql`SELECT * FROM quotes WHERE id = ${id} LIMIT 1`;
+    const arr = rows as any[];
+    return arr.length ? rowToQuote(arr[0]) : null;
+  }
+  return readQuotes().find(q => q.id === id) ?? null;
+}
+
+export async function getQuoteByToken(token: string): Promise<Quote | null> {
+  if (sql) {
+    await ensureSchema();
+    const rows = await sql`SELECT * FROM quotes WHERE token = ${token} LIMIT 1`;
+    const arr = rows as any[];
+    return arr.length ? rowToQuote(arr[0]) : null;
+  }
+  return readQuotes().find(q => q.token === token) ?? null;
+}
+
+// The "drive the booking's existing quote fields" sync — the single source of
+// truth for booking.quoteAmount/status once a Quote exists. Best-effort, never
+// throws. Never downgrades a booking already past 'pending'. Deliberately NOT
+// called on delete — booking.quoteAmount is left as-is (one-way sync, same
+// house style as syncInvoicePaidToBookings above).
+async function syncQuoteAmountToBooking(quote: Quote): Promise<void> {
+  try {
+    const b = await getBookingById(quote.bookingId);
+    if (!b) return;
+    const updates: Partial<Booking> = { quoteAmount: quote.amount };
+    if (b.status === 'pending') updates.status = 'quoted';
+    await updateBooking(quote.bookingId, updates);
+  } catch { /* best-effort */ }
+}
+
+export async function createQuote(input: QuoteInput): Promise<Quote> {
+  const now = new Date().toISOString();
+  if (sql) {
+    await ensureSchema();
+    const seq = await nextQuoteSeq();
+    const quote: Quote = {
+      id: `QT-${Date.now()}`,
+      number: `${QUOTE_PREFIX}${seq}`,
+      seq,
+      token: `qt_${crypto.randomBytes(12).toString('hex')}`,
+      bookingId: input.bookingId,
+      status: input.status ?? 'draft',
+      services: input.services ?? [],
+      extras: input.extras ?? [],
+      otherText: input.otherText ?? '',
+      amount: Number(input.amount) || 0,
+      propertyType: input.propertyType ?? 'residential',
+      billToName: input.billToName ?? '', billToAddress: input.billToAddress ?? '',
+      fromName: input.fromName ?? '', fromTradingAs: input.fromTradingAs ?? '', fromAbn: input.fromAbn ?? '',
+      fromAddress: input.fromAddress ?? '', fromEmail: input.fromEmail ?? '', fromPhone: input.fromPhone ?? '',
+      quoteDate: input.quoteDate ?? '', validUntil: input.validUntil ?? '',
+      notes: input.notes ?? '', termsText: input.termsText ?? '',
+      createdAt: now, updatedAt: now, sentAt: null,
+    };
+    await sql`
+      INSERT INTO quotes (
+        id, number, seq, status, booking_id, services, extras, other_text, amount, property_type,
+        bill_to_name, bill_to_address,
+        from_name, from_trading_as, from_abn, from_address, from_email, from_phone,
+        quote_date, valid_until, notes, terms_text, token
+      ) VALUES (
+        ${quote.id}, ${quote.number}, ${quote.seq}, ${quote.status}, ${quote.bookingId},
+        ${JSON.stringify(quote.services)}, ${JSON.stringify(quote.extras)}, ${quote.otherText}, ${quote.amount}, ${quote.propertyType},
+        ${quote.billToName}, ${quote.billToAddress},
+        ${quote.fromName}, ${quote.fromTradingAs}, ${quote.fromAbn}, ${quote.fromAddress}, ${quote.fromEmail}, ${quote.fromPhone},
+        ${quote.quoteDate}, ${quote.validUntil}, ${quote.notes}, ${quote.termsText}, ${quote.token}
+      )
+    `;
+    await syncQuoteAmountToBooking(quote);
+    return quote;
+  }
+
+  const rows = readQuotes();
+  const seq = await nextQuoteSeq();
+  const quote: Quote = {
+    id: `QT-${Date.now()}`,
+    number: `${QUOTE_PREFIX}${seq}`,
+    seq,
+    token: `qt_${crypto.randomBytes(12).toString('hex')}`,
+    bookingId: input.bookingId,
+    status: input.status ?? 'draft',
+    services: input.services ?? [],
+    extras: input.extras ?? [],
+    otherText: input.otherText ?? '',
+    amount: Number(input.amount) || 0,
+    propertyType: input.propertyType ?? 'residential',
+    billToName: input.billToName ?? '', billToAddress: input.billToAddress ?? '',
+    fromName: input.fromName ?? '', fromTradingAs: input.fromTradingAs ?? '', fromAbn: input.fromAbn ?? '',
+    fromAddress: input.fromAddress ?? '', fromEmail: input.fromEmail ?? '', fromPhone: input.fromPhone ?? '',
+    quoteDate: input.quoteDate ?? '', validUntil: input.validUntil ?? '',
+    notes: input.notes ?? '', termsText: input.termsText ?? '',
+    createdAt: now, updatedAt: now, sentAt: null,
+  };
+  rows.push(quote);
+  writeQuotes(rows);
+  await syncQuoteAmountToBooking(quote);
+  return quote;
+}
+
+// Stamp sentAt the first time a quote reaches 'sent', unless the caller
+// passed an explicit value. Mirrors withInvoiceStamps, simpler (one stamp).
+function withQuoteStamps(cur: Quote, updates: Partial<Quote>): Partial<Quote> {
+  const out = { ...updates };
+  if (!('sentAt' in updates) && updates.status === 'sent' && cur.status !== 'sent' && !cur.sentAt) {
+    out.sentAt = new Date().toISOString();
+  }
+  return out;
+}
+
+export async function updateQuote(id: string, rawUpdates: Partial<Quote>): Promise<Quote | null> {
+  if (sql) {
+    await ensureSchema();
+    const cur = await getQuoteById(id);
+    if (!cur) return null;
+    const updates = withQuoteStamps(cur, rawUpdates);
+    const m = { ...cur, ...updates };
+    // Never let the caller rewrite identity/number/seq/token/bookingId.
+    m.id = cur.id; m.number = cur.number; m.seq = cur.seq; m.token = cur.token; m.bookingId = cur.bookingId;
+    const rows = await sql`
+      UPDATE quotes SET
+        status = ${m.status},
+        services = ${JSON.stringify(m.services)}, extras = ${JSON.stringify(m.extras)}, other_text = ${m.otherText},
+        amount = ${m.amount}, property_type = ${m.propertyType},
+        bill_to_name = ${m.billToName}, bill_to_address = ${m.billToAddress},
+        from_name = ${m.fromName}, from_trading_as = ${m.fromTradingAs}, from_abn = ${m.fromAbn},
+        from_address = ${m.fromAddress}, from_email = ${m.fromEmail}, from_phone = ${m.fromPhone},
+        quote_date = ${m.quoteDate}, valid_until = ${m.validUntil}, notes = ${m.notes}, terms_text = ${m.termsText},
+        sent_at = ${m.sentAt ?? null},
+        updated_at = now()
+      WHERE id = ${id}
+      RETURNING *
+    `;
+    const arr = rows as any[];
+    const updated = arr.length ? rowToQuote(arr[0]) : null;
+    if (updated && updated.amount !== cur.amount) await syncQuoteAmountToBooking(updated);
+    return updated;
+  }
+
+  const rows = readQuotes();
+  const idx = rows.findIndex(q => q.id === id);
+  if (idx === -1) return null;
+  const cur = rows[idx];
+  const updates = withQuoteStamps(cur, rawUpdates);
+  const m = { ...cur, ...updates };
+  m.id = cur.id; m.number = cur.number; m.seq = cur.seq; m.token = cur.token; m.bookingId = cur.bookingId;
+  m.updatedAt = new Date().toISOString();
+  rows[idx] = m;
+  writeQuotes(rows);
+  if (m.amount !== cur.amount) await syncQuoteAmountToBooking(m);
+  return rows[idx];
+}
+
+export async function deleteQuote(id: string): Promise<boolean> {
+  if (sql) {
+    await ensureSchema();
+    const rows = await sql`DELETE FROM quotes WHERE id = ${id} RETURNING id`;
+    return (rows as any[]).length > 0;
+  }
+  const rows = readQuotes();
+  const filtered = rows.filter(q => q.id !== id);
+  if (filtered.length === rows.length) return false;
+  writeQuotes(filtered);
+  return true;
+}
+
 // ─── Payment profiles ────────────────────────────────────────────────────────
 
 function readPaymentProfiles(): PaymentProfile[] {
@@ -2243,6 +2574,86 @@ export async function deleteBusinessProfile(id: string): Promise<boolean> {
   const target = rows.find(p => p.id === id);
   if (!target || target.builtin) return false;
   writeBusinessProfiles(rows.filter(p => p.id !== id));
+  return true;
+}
+
+// ─── Vault (personal clipboard — see src/lib/vault.ts) ─────────────────────
+function readVaultItems(): VaultItem[] {
+  try {
+    if (!fs.existsSync(VAULT_PATH)) return [];
+    return JSON.parse(fs.readFileSync(VAULT_PATH, 'utf-8'));
+  } catch { return []; }
+}
+function writeVaultItems(rows: VaultItem[]): void {
+  const dir = path.dirname(VAULT_PATH);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(VAULT_PATH, JSON.stringify(rows, null, 2));
+}
+function rowToVaultItem(r: any): VaultItem {
+  return {
+    id: r.id,
+    label: r.label,
+    value: r.value ?? '',
+    notes: r.notes ?? '',
+    createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at ?? r.createdAt),
+  };
+}
+
+export async function getVaultItems(): Promise<VaultItem[]> {
+  if (sql) {
+    return withTimeout((async () => {
+      await ensureSchema();
+      const rows = await sql`SELECT * FROM vault_items ORDER BY created_at DESC`;
+      return (rows as any[]).map(rowToVaultItem);
+    })());
+  }
+  return readVaultItems().sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+export async function addVaultItem(data: { label: string; value: string; notes: string }): Promise<VaultItem> {
+  const id = `VLT-${Date.now()}`;
+  if (sql) {
+    await ensureSchema();
+    const rows = await sql`
+      INSERT INTO vault_items (id, label, value, notes)
+      VALUES (${id}, ${data.label}, ${data.value}, ${data.notes})
+      RETURNING *
+    `;
+    return rowToVaultItem((rows as any[])[0]);
+  }
+  const item: VaultItem = { id, label: data.label, value: data.value, notes: data.notes, createdAt: new Date().toISOString() };
+  const rows = readVaultItems();
+  rows.push(item);
+  writeVaultItems(rows);
+  return item;
+}
+
+export async function updateVaultItem(id: string, data: Partial<Pick<VaultItem, 'label' | 'value' | 'notes'>>): Promise<VaultItem | null> {
+  if (sql) {
+    await ensureSchema();
+    const cur = (await sql`SELECT * FROM vault_items WHERE id = ${id} LIMIT 1`) as any[];
+    if (!cur.length) return null;
+    const m = { ...rowToVaultItem(cur[0]), ...data };
+    await sql`UPDATE vault_items SET label = ${m.label}, value = ${m.value}, notes = ${m.notes} WHERE id = ${id}`;
+    return m;
+  }
+  const rows = readVaultItems();
+  const idx = rows.findIndex(s => s.id === id);
+  if (idx === -1) return null;
+  rows[idx] = { ...rows[idx], ...data };
+  writeVaultItems(rows);
+  return rows[idx];
+}
+
+export async function deleteVaultItem(id: string): Promise<boolean> {
+  if (sql) {
+    await ensureSchema();
+    const rows = await sql`DELETE FROM vault_items WHERE id = ${id} RETURNING id`;
+    return (rows as any[]).length > 0;
+  }
+  const rows = readVaultItems();
+  if (!rows.some(s => s.id === id)) return false;
+  writeVaultItems(rows.filter(s => s.id !== id));
   return true;
 }
 

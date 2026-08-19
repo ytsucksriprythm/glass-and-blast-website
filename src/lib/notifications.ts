@@ -183,8 +183,10 @@ export async function sendBookingNotifications(booking: Booking): Promise<void> 
     }
   }
 
-  // Send confirmation email to customer
-  if (emailConfigured() && booking.email) {
+  // Send confirmation email to customer — skipped for Facebook lead ads: they
+  // expressed interest via a quick form, not a specific date/time booking, so
+  // a "Booking Confirmed" email would overpromise before anyone's called them.
+  if (emailConfigured() && booking.email && booking.source !== 'facebook-lead-ad') {
     try {
       const transporter = getTransporter();
       await transporter.sendMail({

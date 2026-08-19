@@ -7,10 +7,11 @@ import { upload } from '@vercel/blob/client';
 import {
   ArrowLeft, Settings as SettingsIcon, Save, ShieldAlert, CreditCard, Bell, Star,
   CalendarClock, Globe, ScrollText, RefreshCw, FileEdit, Trash2, Plus, Pencil, X, Check, MapPin, Sparkles,
-  FolderOpen, UploadCloud, Copy, ExternalLink, FileVideo, FileImage, File as FileIcon,
+  FolderOpen, UploadCloud, Copy, ExternalLink, FileVideo, FileImage, File as FileIcon, Lock, Facebook, ChevronDown,
 } from 'lucide-react';
 import type { AppSettings } from '@/lib/settings';
 import type { PaymentProfile, BusinessProfile } from '@/lib/invoice';
+import type { VaultItem } from '@/lib/vault';
 import { ACTIVITY_TYPE_LABEL, type ActivityEntry } from '@/lib/activity';
 import { APP_VERSION } from '@/lib/version';
 import { AdminSidebar, AdminMobileNav, AdminMoreSheet, useMoreSheet, adminNavItems } from '@/components/admin/AdminNav';
@@ -81,13 +82,12 @@ type FieldConfig = { key: string; label: string };
 // too: with 1 profile there's just a plain "add another" affordance; once a
 // second exists, this list is what makes the invoice-page picker appear.
 function ProfileManager<T extends { id: string; name: string; builtin: boolean }>({
-  title, icon, autofillLabel, autofillSub, autofillEnabled, onToggleAutofill,
+  title, icon, autofillLabel, autofillEnabled, onToggleAutofill,
   profiles, fields, onAdd, onUpdate, onDelete,
 }: {
   title: string;
   icon: React.ComponentType<{ className?: string }>;
   autofillLabel: string;
-  autofillSub: string;
   autofillEnabled: boolean;
   onToggleAutofill: (v: boolean) => void;
   profiles: T[];
@@ -127,7 +127,7 @@ function ProfileManager<T extends { id: string; name: string; builtin: boolean }
 
   return (
     <Section title={title} icon={icon}>
-      <Toggle label={autofillLabel} sub={autofillSub} checked={autofillEnabled} onChange={onToggleAutofill} />
+      <Toggle label={autofillLabel} checked={autofillEnabled} onChange={onToggleAutofill} />
       <div className="space-y-2">
         {profiles.map(p => editingId === p.id ? (
           <div key={p.id} className="rounded-lg border border-sky-400/30 bg-sky-400/5 p-3 space-y-2">
@@ -159,9 +159,6 @@ function ProfileManager<T extends { id: string; name: string; builtin: boolean }
           </div>
         ))}
       </div>
-      {profiles.length <= 1 && (
-        <p className="text-slate-600 text-xs">Only one profile — the invoice page won&apos;t show a picker until a second one exists here.</p>
-      )}
       {!open ? (
         <button onClick={() => setOpen(true)} className="inline-flex items-center gap-1.5 text-xs text-sky-400 hover:text-sky-300 cursor-pointer"><Plus className="w-3.5 h-3.5" /> Add profile</button>
       ) : (
@@ -283,11 +280,6 @@ function MediaLibrary() {
 
   return (
     <Section title="Media library" icon={FolderOpen}>
-      <p className="text-slate-500 text-xs -mt-1">
-        Upload ad videos, images or other files here to get a plain public URL — no admin login needed to open it.
-        Use it for Meta ads, sending a link, or embedding elsewhere.
-      </p>
-
       <input ref={inputRef} type="file" multiple className="hidden" onChange={e => onFilesChosen(e.target.files)} />
       <button
         onClick={() => inputRef.current?.click()}
@@ -342,6 +334,145 @@ function MediaLibrary() {
   );
 }
 
+// Personal clipboard for anything the owner might want to copy again later —
+// the ntfy.sh topic/subscribe URL, a webhook secret, an env var, a CLI
+// one-liner. Stored in the database, not in source, so real secrets are safe
+// to paste in here even though this is a public repo. Admin-only, both
+// reading and writing (see /api/admin/vault) — unlike the profile managers
+// above, guests never see this.
+function Vault() {
+  const [items, setItems] = useState<VaultItem[] | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [listOpen, setListOpen] = useState(false); // closed by default — this list gets long
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState({ label: '', value: '', notes: '' });
+  const [saving, setSaving] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState({ label: '', value: '', notes: '' });
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch('/api/admin/vault');
+      if (res.ok) setItems(await res.json());
+      else toast.error('Failed to load vault');
+    } finally { setLoading(false); }
+  };
+  useEffect(() => { load(); }, []);
+
+  const copyValue = (value: string) => {
+    navigator.clipboard.writeText(value).then(
+      () => toast.success('Copied'),
+      () => toast.error('Could not copy — select the text manually'),
+    );
+  };
+
+  const submit = async () => {
+    if (!form.label.trim()) { toast.error('Give it a label'); return; }
+    if (!form.value.trim()) { toast.error("What's the value to save?"); return; }
+    setSaving(true);
+    try {
+      const res = await fetch('/api/admin/vault', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form),
+      });
+      if (!res.ok) { toast.error((await res.json()).error || 'Failed to save'); return; }
+      const created: VaultItem = await res.json();
+      setItems(prev => [created, ...(prev ?? [])]);
+      setForm({ label: '', value: '', notes: '' });
+      setOpen(false);
+      toast.success(`Saved "${created.label}"`);
+    } finally { setSaving(false); }
+  };
+
+  const startEdit = (s: VaultItem) => { setEditForm({ label: s.label, value: s.value, notes: s.notes }); setEditingId(s.id); };
+  const submitEdit = async (s: VaultItem) => {
+    if (!editForm.label.trim()) { toast.error('Give it a label'); return; }
+    if (!editForm.value.trim()) { toast.error("What's the value to save?"); return; }
+    setSavingEdit(true);
+    try {
+      const res = await fetch(`/api/admin/vault/${s.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(editForm),
+      });
+      if (!res.ok) { toast.error((await res.json()).error || 'Failed to save'); return; }
+      const updated: VaultItem = await res.json();
+      setItems(prev => prev?.map(x => x.id === s.id ? updated : x) ?? null);
+      setEditingId(null);
+      toast.success('Updated');
+    } finally { setSavingEdit(false); }
+  };
+
+  const deleteItem = async (s: VaultItem) => {
+    if (!window.confirm(`Delete "${s.label}"? This can't be undone.`)) return;
+    setDeletingId(s.id);
+    try {
+      const res = await fetch(`/api/admin/vault/${s.id}`, { method: 'DELETE' });
+      if (res.ok) { setItems(prev => prev?.filter(x => x.id !== s.id) ?? null); toast.success('Deleted'); }
+      else toast.error('Delete failed');
+    } finally { setDeletingId(null); }
+  };
+
+  return (
+    <Section title="Vault" icon={Lock}>
+      {!loading && items && items.length > 0 && (
+        <button onClick={() => setListOpen(v => !v)} className="w-full flex items-center justify-between text-slate-300 hover:text-white text-sm cursor-pointer">
+          <span>{listOpen ? 'Hide' : 'Show'} {items.length} item{items.length !== 1 ? 's' : ''}</span>
+          <ChevronDown className={`w-4 h-4 transition-transform ${listOpen ? 'rotate-180' : ''}`} />
+        </button>
+      )}
+      <div className={`space-y-2 ${!listOpen && items && items.length > 0 ? 'hidden' : ''}`}>
+        {loading && !items ? (
+          <div className="text-center text-slate-600 text-xs py-6">Loading…</div>
+        ) : !items || items.length === 0 ? (
+          <div className="text-center text-slate-600 text-xs py-6">Nothing saved yet.</div>
+        ) : items.map(s => editingId === s.id ? (
+          <div key={s.id} className="rounded-lg border border-sky-400/30 bg-sky-400/5 p-3 space-y-2">
+            <input className="form-input text-sm w-full" placeholder="Label (e.g. ntfy.sh topic)" value={editForm.label} onChange={e => setEditForm(f => ({ ...f, label: e.target.value }))} />
+            <textarea className="form-input text-sm w-full font-mono" rows={3} placeholder="Value" value={editForm.value} onChange={e => setEditForm(f => ({ ...f, value: e.target.value }))} />
+            <input className="form-input text-sm w-full" placeholder="Notes (optional)" value={editForm.notes} onChange={e => setEditForm(f => ({ ...f, notes: e.target.value }))} />
+            <div className="flex gap-2">
+              <button onClick={() => submitEdit(s)} disabled={savingEdit} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-white text-sm font-semibold cursor-pointer"><Check className="w-3.5 h-3.5" /> Save</button>
+              <button onClick={() => setEditingId(null)} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-white/10 text-slate-300 hover:text-white cursor-pointer"><X className="w-3.5 h-3.5" /> Cancel</button>
+            </div>
+          </div>
+        ) : (
+          <div key={s.id} className="rounded-lg border border-white/10 bg-white/[0.02] p-3">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-white text-sm font-medium truncate">{s.label}</div>
+                {s.notes && <div className="text-slate-500 text-xs mt-0.5">{s.notes}</div>}
+              </div>
+              <div className="flex-shrink-0 flex items-center gap-2">
+                <button onClick={() => copyValue(s.value)} title="Copy value" className="text-slate-500 hover:text-sky-400 cursor-pointer"><Copy className="w-4 h-4" /></button>
+                <button onClick={() => startEdit(s)} title="Edit" className="text-slate-500 hover:text-sky-400 cursor-pointer"><Pencil className="w-4 h-4" /></button>
+                <button onClick={() => deleteItem(s)} disabled={deletingId === s.id} title="Delete" className="text-slate-500 hover:text-red-400 cursor-pointer disabled:opacity-50"><Trash2 className="w-4 h-4" /></button>
+              </div>
+            </div>
+            <div className="mt-2 rounded-md bg-black/20 border border-white/5 px-2.5 py-1.5 text-slate-300 text-xs font-mono break-all">
+              {s.value}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {!open ? (
+        <button onClick={() => setOpen(true)} className="inline-flex items-center gap-1.5 text-xs text-sky-400 hover:text-sky-300 cursor-pointer"><Plus className="w-3.5 h-3.5" /> Add item</button>
+      ) : (
+        <div className="rounded-lg border border-sky-400/30 bg-sky-400/5 p-3 space-y-2">
+          <input className="form-input text-sm w-full" placeholder="Label (e.g. ntfy.sh topic)" value={form.label} onChange={e => setForm(f => ({ ...f, label: e.target.value }))} />
+          <textarea className="form-input text-sm w-full font-mono" rows={3} placeholder="Value to save" value={form.value} onChange={e => setForm(f => ({ ...f, value: e.target.value }))} />
+          <input className="form-input text-sm w-full" placeholder="Notes (optional)" value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} />
+          <div className="flex gap-2">
+            <button onClick={submit} disabled={saving} className="px-3 py-2 rounded-lg bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-white text-sm font-semibold cursor-pointer">Save item</button>
+            <button onClick={() => { setOpen(false); setForm({ label: '', value: '', notes: '' }); }} className="px-3 py-2 rounded-lg border border-white/10 text-slate-300 hover:text-white cursor-pointer">Cancel</button>
+          </div>
+        </div>
+      )}
+    </Section>
+  );
+}
+
 function ActivityLog() {
   const [entries, setEntries] = useState<ActivityEntry[] | null>(null);
   const [loading, setLoading] = useState(true);
@@ -357,7 +488,6 @@ function ActivityLog() {
 
   return (
     <Section title="Activity log" icon={ScrollText}>
-      <p className="text-slate-500 text-xs -mt-1 mb-1">Everything that happens on the site and in the CRM — bookings, invoices, settings changes, guest logins, Square payments.</p>
       <button onClick={load} disabled={loading} className="inline-flex items-center gap-1.5 text-xs text-sky-400 hover:text-sky-300 cursor-pointer disabled:opacity-50">
         <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} /> Refresh
       </button>
@@ -508,6 +638,23 @@ export default function SettingsPage() {
     finally { setLarpBusy(false); }
   };
 
+  const [metaSyncing, setMetaSyncing] = useState(false);
+  // Manual trigger of the Facebook-leads-sheet cron — same endpoint Vercel
+  // Cron calls on a schedule (see vercel.json), for testing without waiting.
+  const syncMetaLeads = async () => {
+    setMetaSyncing(true);
+    try {
+      const res = await fetch('/api/cron/meta-leads-sheet');
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Sync failed');
+      toast.success(data.imported > 0 ? `${data.imported} new lead${data.imported > 1 ? 's' : ''} imported` : `No new leads (checked ${data.checked})`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Sync failed');
+    } finally {
+      setMetaSyncing(false);
+    }
+  };
+
   const save = async () => {
     if (!s) return;
     setSaving(true);
@@ -557,9 +704,6 @@ export default function SettingsPage() {
             <h1 className="font-display text-2xl font-bold text-white flex items-center gap-2">
               <SettingsIcon className="w-6 h-6 text-sky-400" /> Settings
             </h1>
-            <p className="text-slate-500 text-xs mt-1">
-              Toggles apply immediately, no redeploy needed.
-            </p>
           </div>
 
           {loading ? (
@@ -578,7 +722,6 @@ export default function SettingsPage() {
                 title="Invoice autofill — business info"
                 icon={FileEdit}
                 autofillLabel="Auto-fill business info"
-                autofillSub="Pre-fills new invoices' 'From' block. Already-created invoices keep their own saved copy."
                 autofillEnabled={s.autofillBusinessInfo}
                 onToggleAutofill={v => set('autofillBusinessInfo', v)}
                 profiles={businessProfiles}
@@ -596,7 +739,6 @@ export default function SettingsPage() {
               <Section title="Invoice address display" icon={MapPin}>
                 <Toggle
                   label="Show business address on new invoices (default)"
-                  sub="Applies to normal invoices only — editable per invoice next to the address field. Tax invoices always show the address, regardless of this setting."
                   checked={s.defaultShowAddressOnInvoice}
                   onChange={v => set('defaultShowAddressOnInvoice', v)}
                 />
@@ -606,7 +748,6 @@ export default function SettingsPage() {
                 title="Invoice autofill — payment details"
                 icon={FileEdit}
                 autofillLabel="Auto-fill payment details"
-                autofillSub="Pre-fills new invoices' bank details."
                 autofillEnabled={s.autofillPaymentDetails}
                 onToggleAutofill={v => set('autofillPaymentDetails', v)}
                 profiles={paymentProfiles}
@@ -621,16 +762,14 @@ export default function SettingsPage() {
               <Section title="Card payments (Square)" icon={CreditCard}>
                 <Toggle
                   label="Card payments enabled"
-                  sub="Turns on the customer-facing Pay-by-card button, admin link generation, and the webhook all at once. Also needs SQUARE_ACCESS_TOKEN / SQUARE_LOCATION_ID set in env — this toggle alone can't turn it on without those."
                   checked={s.squareCardPaymentsEnabled}
                   onChange={v => set('squareCardPaymentsEnabled', v)}
                 />
                 <Field label="Card surcharge (%)" type="number" value={s.squareSurchargePercent} onChange={v => set('squareSurchargePercent', Number(v) || 0)} />
-                <p className="text-slate-600 text-xs">Check this against your actual contracted Square rate (Square dashboard → Fees).</p>
               </Section>
 
               <Section title="Notifications" icon={Bell}>
-                <Toggle label="Notifications enabled" sub="Master switch — turns every push below on/off at once." checked={s.notificationsEnabled} onChange={v => set('notificationsEnabled', v)} />
+                <Toggle label="Notifications enabled" checked={s.notificationsEnabled} onChange={v => set('notificationsEnabled', v)} />
                 <div className="pl-1 border-l-2 border-white/5 ml-1 space-y-1">
                   <Toggle label="Job status changed" disabled={!s.notificationsEnabled} checked={s.notifyStatusChange} onChange={v => set('notifyStatusChange', v)} />
                   <Toggle label="Job sent to a subcontractor" disabled={!s.notificationsEnabled} checked={s.notifyJobAssigned} onChange={v => set('notifyJobAssigned', v)} />
@@ -641,34 +780,41 @@ export default function SettingsPage() {
               </Section>
 
               <Section title="Reviews & feedback" icon={Star}>
-                <Toggle label="Customer feedback widget enabled" sub="Shows the star-rating prompt on the thank-you page at all." checked={s.customerFeedbackEnabled} onChange={v => set('customerFeedbackEnabled', v)} />
+                <Toggle label="Customer feedback widget enabled" checked={s.customerFeedbackEnabled} onChange={v => set('customerFeedbackEnabled', v)} />
                 <Field label="Google review link" value={s.googleReviewUrl} onChange={v => set('googleReviewUrl', v)} placeholder="https://g.page/r/.../review" />
                 <div>
                   <L>Star rating that goes straight to Google</L>
                   <select className="form-input text-sm w-full" value={s.reviewStarThreshold} onChange={e => set('reviewStarThreshold', Number(e.target.value))}>
                     {[3, 4, 5].map(n => <option key={n} value={n}>{n}+ stars → Google review</option>)}
                   </select>
-                  <p className="text-slate-600 text-xs mt-1">Ratings below this open a private feedback box instead.</p>
                 </div>
               </Section>
 
               <Section title="Scheduling" icon={CalendarClock}>
                 <Field label="Default job start time" type="time" value={s.defaultJobStartTime} onChange={v => set('defaultJobStartTime', v)} />
-                <p className="text-slate-600 text-xs -mt-1">Used when a recurring plan auto-books its next visit. Manually scheduling a job on the calendar is unaffected.</p>
-                <Toggle label="Recurring auto-book enabled" sub="Pauses the daily cron that turns due recurring plans into bookings, without deleting the plans. The manual &quot;generate next visit&quot; button still works." checked={s.recurringAutoBookEnabled} onChange={v => set('recurringAutoBookEnabled', v)} />
+                <Toggle label="Recurring auto-book enabled" checked={s.recurringAutoBookEnabled} onChange={v => set('recurringAutoBookEnabled', v)} />
               </Section>
 
               <Section title="Public site" icon={Globe}>
-                <Toggle label="Accepting new bookings" sub="Off shows a 'not currently taking new bookings' message instead of the booking form." checked={s.acceptingNewBookings} onChange={v => set('acceptingNewBookings', v)} />
-                <Toggle label="Site visit tracking enabled" sub="Anonymous page-view tracking shown in Site Stats." checked={s.siteTrackingEnabled} onChange={v => set('siteTrackingEnabled', v)} />
+                <Toggle label="Accepting new bookings" checked={s.acceptingNewBookings} onChange={v => set('acceptingNewBookings', v)} />
+                <Toggle label="Site visit tracking enabled" checked={s.siteTrackingEnabled} onChange={v => set('siteTrackingEnabled', v)} />
+              </Section>
+
+              <Section title="Facebook lead sync" icon={Facebook}>
+                <p className="text-slate-500 text-xs -mt-1 mb-1">
+                  Pulls new rows from the Google Sheet that Meta&apos;s Lead Ads &quot;Connect CRM&quot; feature writes to, and turns each one into a booking. Runs automatically overnight (see vercel.json) — use this to check right away.
+                </p>
+                <button
+                  onClick={syncMetaLeads}
+                  disabled={metaSyncing}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg glass border border-white/10 text-slate-300 hover:text-white text-sm font-semibold cursor-pointer disabled:opacity-50"
+                >
+                  {metaSyncing ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                  {metaSyncing ? 'Syncing…' : 'Sync now'}
+                </button>
               </Section>
 
               <Section title="LARP mode" icon={Sparkles}>
-                <p className="text-slate-500 text-xs -mt-1">
-                  Fills the CRM with realistic-looking fake bookings, revenue and a full calendar — for messing with mates.
-                  Use the <span className="text-fuchsia-300 font-semibold">Larp</span> button up top to switch it on or off.
-                  Nothing here is a real customer, and turning it off removes every fake thing it added — nothing else.
-                </p>
                 <div>
                   <div className="flex items-center justify-between mb-1 gap-3">
                     <L>Fake revenue target</L>
@@ -690,30 +836,28 @@ export default function SettingsPage() {
                   <div className="flex items-center justify-between text-slate-600 text-[11px] mt-1">
                     <span>$10k</span><span>$1M</span>
                   </div>
-                  {s.larpModeActive
-                    ? <p className="text-amber-400 text-xs mt-2">Turn LARP mode off to change the target.</p>
-                    : <p className="text-slate-600 text-xs mt-2">Higher targets mean a lot more jobs, not bigger individual invoices — kept realistic on purpose.</p>}
                 </div>
 
                 <div className="pt-3 mt-3 border-t border-white/5 space-y-1">
                   <Toggle
                     label="Full Larper"
-                    sub="On when every category below is on. Flip it to switch all five at once."
                     checked={fullLarper}
                     disabled={s.larpModeActive}
                     onChange={toggleFullLarper}
                   />
                   <div className="pl-3 border-l border-white/10 ml-1 space-y-1">
-                    <Toggle label="Fake numbers" sub="Site traffic — page views, unique visitors — for the Site Stats tab." checked={s.larpFakeNumbers} disabled={s.larpModeActive} onChange={v => set('larpFakeNumbers', v)} />
-                    <Toggle label="Fake bookings" sub="The fake jobs themselves. Off means nothing below can generate either." checked={s.larpFakeBookings} disabled={s.larpModeActive} onChange={v => set('larpFakeBookings', v)} />
-                    <Toggle label="Fake cold leads" sub="Some fake jobs land in Cold Lead status, same as a real 14-day auto-move." checked={s.larpFakeColdLeads} disabled={s.larpModeActive || !s.larpFakeBookings} onChange={v => set('larpFakeColdLeads', v)} />
-                    <Toggle label="Fake invoices" sub="One invoice generated per fake job (numbered GB9000+, real numbering untouched)." checked={s.larpFakeInvoices} disabled={s.larpModeActive || !s.larpFakeBookings} onChange={v => set('larpFakeInvoices', v)} />
-                    <Toggle label="Fake calendar" sub="Fake jobs get a scheduled slot, filling out the calendar." checked={s.larpFakeCalendar} disabled={s.larpModeActive || !s.larpFakeBookings} onChange={v => set('larpFakeCalendar', v)} />
+                    <Toggle label="Fake numbers" checked={s.larpFakeNumbers} disabled={s.larpModeActive} onChange={v => set('larpFakeNumbers', v)} />
+                    <Toggle label="Fake bookings" checked={s.larpFakeBookings} disabled={s.larpModeActive} onChange={v => set('larpFakeBookings', v)} />
+                    <Toggle label="Fake cold leads" checked={s.larpFakeColdLeads} disabled={s.larpModeActive || !s.larpFakeBookings} onChange={v => set('larpFakeColdLeads', v)} />
+                    <Toggle label="Fake invoices" checked={s.larpFakeInvoices} disabled={s.larpModeActive || !s.larpFakeBookings} onChange={v => set('larpFakeInvoices', v)} />
+                    <Toggle label="Fake calendar" checked={s.larpFakeCalendar} disabled={s.larpModeActive || !s.larpFakeBookings} onChange={v => set('larpFakeCalendar', v)} />
                   </div>
                 </div>
               </Section>
 
               <MediaLibrary />
+
+              <Vault />
 
               <ActivityLog />
 
