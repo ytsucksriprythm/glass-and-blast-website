@@ -76,10 +76,13 @@ import { z } from 'zod';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import {
   getBookings, getBookingById, getInvoices, getInvoiceById, getRecurringJobs,
-  getGuests, getPageViews, getSettings, ensureSchema,
-  type Booking, type BookingStatus, type PageView,
+  getGuests, getPageViews, getFunnelEvents, getSettings, ensureSchema,
+  type Booking, type BookingStatus, type PageView, type FunnelEvent,
 } from '../src/lib/db';
 import { type Invoice, type InvoiceStatus, isInvoiceOverdue, debtorDays } from '../src/lib/invoice';
+import {
+  computePageEngagement, computeScrollBuckets, computeSiteWideTimeStats, computeBookingFunnel,
+} from '../src/lib/analytics';
 
 const LARP_ID_PREFIX = 'LARP-';
 const LARP_VISITOR_PREFIX = 'larp_';
@@ -113,13 +116,15 @@ function errorResult(message: string): CallToolResult {
 // ─── Real (non-LARP) data loader ────────────────────────────────────────────
 // Every tool goes through this so "real" always means the same thing.
 async function loadRealData() {
-  const [allBookings, allInvoices, allRecurring, pv, settings] = await withDbRetry(() => Promise.all([
-    getBookings(), getInvoices(), getRecurringJobs(), getPageViews(30), getSettings(),
+  const [allBookings, allInvoices, allRecurring, pv, settings, funnelEvents] = await withDbRetry(() => Promise.all([
+    getBookings(), getInvoices(), getRecurringJobs(), getPageViews(30), getSettings(), getFunnelEvents(30),
   ]));
   const bookings = allBookings.filter(b => isRealId(b.id));
   const invoices = allInvoices.filter(i => isRealId(i.id));
   const recurring = allRecurring.filter(r => isRealId(r.id));
   const views = pv.views.filter(isRealView);
+  // LARP mode never fakes booking-form funnel interactions (only page
+  // views/bookings/invoices/recurring plans), so every row here is real.
 
   const fakeCounts = {
     bookings: allBookings.length - bookings.length,
@@ -130,7 +135,7 @@ async function loadRealData() {
   const larpActive = Object.values(fakeCounts).some(n => n > 0);
 
   return {
-    bookings, invoices, recurring, views, allTimeViewsRaw: pv.allTime,
+    bookings, invoices, recurring, views, funnelEvents, allTimeViewsRaw: pv.allTime,
     demoData: {
       larpModeCurrentlyActive: larpActive,
       note: larpActive
@@ -223,7 +228,8 @@ function buildBusinessStats(bookings: Booking[], invoices: Invoice[]) {
   };
 }
 
-function buildSiteStats(views: PageView[]) {
+// views/funnelEvents already have LARP-mode rows filtered out by loadRealData().
+function buildSiteStats(views: PageView[], funnelEvents: FunnelEvent[]) {
   const now = new Date();
   const dayKey = (d: Date) => d.toISOString().slice(0, 10);
   const todayKey = dayKey(now);
@@ -231,8 +237,14 @@ function buildSiteStats(views: PageView[]) {
 
   const pageCounts: Record<string, number> = {};
   views.forEach(v => { pageCounts[v.path] = (pageCounts[v.path] ?? 0) + 1; });
-  const topPages = Object.entries(pageCounts).sort((a, b) => b[1] - a[1]).slice(0, 8)
-    .map(([path, views]) => ({ path, views }));
+  const rankedPaths = Object.entries(pageCounts).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([path, n]) => ({ path, views: n }));
+  // Scroll depth, time-on-page, and the booking-form funnel all use the same
+  // aggregation as the admin Site Stats tab (src/lib/analytics.ts) so this
+  // connector never reports different numbers than the dashboard does.
+  const topPages = computePageEngagement(views, rankedPaths);
+  const { buckets: scrollBuckets, sampleCount: scrollSampleCount } = computeScrollBuckets(views);
+  const { avgTimeOnPageSeconds, timeSamples, avgSessionDurationSeconds, sessionSamples } = computeSiteWideTimeStats(views);
+  const { steps: bookingFunnel, started: bookingFunnelStarted } = computeBookingFunnel(funnelEvents);
 
   return {
     views30d: views.length,
@@ -240,6 +252,14 @@ function buildSiteStats(views: PageView[]) {
     last7: views.filter(v => new Date(v.createdAt) >= sevenAgo).length,
     uniqueVisitors30d: new Set(views.map(v => v.visitor).filter(Boolean)).size,
     topPages,
+    scrollBuckets,
+    scrollSampleCount,
+    avgTimeOnPageSeconds,
+    timeSamples,
+    avgSessionDurationSeconds,
+    sessionSamples,
+    bookingFunnel,
+    bookingFunnelStarted,
   };
 }
 
@@ -358,12 +378,19 @@ server.registerTool(
   'get_site_stats',
   {
     title: 'Get site traffic stats',
-    description: 'Public-site traffic stats (last 30 days) matching the admin Site Stats tab, computed with LARP-mode fake page views excluded.',
+    description:
+      'Public-site traffic stats (last 30 days) matching the admin Site Stats tab, computed with LARP-mode fake page views excluded. ' +
+      'Includes: page views by day/page/referrer; scroll depth (how far down each page visitors got before leaving, plus a ' +
+      '0-25/26-50/51-75/76-100% distribution); time on page and average session duration (avgTimeOnPageSeconds per page, ' +
+      'avgSessionDurationSeconds site-wide — a "session" is one visitor\'s daily hash, see PageView.visitor); and the booking-form ' +
+      'funnel (bookingFunnel — cumulative counts of how many visitors reached each field of the booking form on the homepage before ' +
+      'leaving or submitting: name -> phone -> service -> address -> extras -> submitted). Scroll/time/funnel fields can be null or ' +
+      'zero-sample if tracking is new or a visitor bounced before the JS listener could report anything — that is genuinely "no data", not "0%"/"0s".',
     inputSchema: {},
   },
   async (): Promise<CallToolResult> => {
-    const { views, demoData } = await loadRealData();
-    return jsonResult({ ...buildSiteStats(views), _demoData: demoData });
+    const { views, funnelEvents, demoData } = await loadRealData();
+    return jsonResult({ ...buildSiteStats(views, funnelEvents), _demoData: demoData });
   },
 );
 

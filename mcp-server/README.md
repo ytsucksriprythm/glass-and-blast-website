@@ -27,7 +27,7 @@ time you want to check that directly.
 | `get_booking` | Full detail for one booking by id |
 | `get_dashboard_stats` | Counts + status breakdown + revenue, like the Dashboard tab |
 | `get_business_stats` | Conversion rate, avg quote, top suburbs, debtor days, overdue invoices |
-| `get_site_stats` | Last-30-days public site traffic, like the Site Stats tab |
+| `get_site_stats` | Last-30-days public site traffic, like the Site Stats tab — page views, scroll depth, time on page/session, and the booking-form funnel |
 | `list_invoices` | Real invoices, filterable by `status` / `limit` |
 | `get_invoice` | Full detail for one invoice by id |
 | `list_recurring_plans` | Recurring job plans (`activeOnly` default true) |

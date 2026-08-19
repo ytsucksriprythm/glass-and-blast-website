@@ -10,6 +10,8 @@ import {
   Menu, X, Facebook, Lock, Search, Calendar, MoveHorizontal,
 } from 'lucide-react';
 import Reviews from '@/components/Reviews';
+import { sendBeaconOrFetch } from '@/lib/beacon';
+import { BOOKING_FUNNEL_STEPS, type BookingFunnelStep } from '@/lib/analytics';
 
 // ─── Constants ─────────────────────────────────────────────────────────────
 
@@ -705,8 +707,8 @@ function Areas() {
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 function AddressAutocomplete({
-  street, onStreet, onSuburb,
-}: { street: string; onStreet: (v: string) => void; onSuburb: (v: string) => void }) {
+  street, onStreet, onSuburb, onFocus,
+}: { street: string; onStreet: (v: string) => void; onSuburb: (v: string) => void; onFocus?: () => void }) {
   const [results, setResults] = useState<any[]>([]);
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -753,7 +755,7 @@ function AddressAutocomplete({
         value={street}
         autoComplete="off"
         onChange={e => { onStreet(e.target.value); query(e.target.value); }}
-        onFocus={() => { if (results.length) setOpen(true); }}
+        onFocus={() => { if (results.length) setOpen(true); onFocus?.(); }}
         onBlur={() => setTimeout(() => setOpen(false), 150)}
       />
       {loading && (
@@ -798,12 +800,45 @@ function Book() {
       .catch(() => {}); // keep the form visible by default if this fails
   }, []);
 
+  // Booking-form funnel: how far down the form people get before submitting
+  // or leaving — reports only the furthest field reached, sent once when
+  // they leave (mirrors PageTracker's scroll-depth beacon, but field-level
+  // since this form is one section, not separate routes). See
+  // BOOKING_FUNNEL_STEPS in src/lib/analytics.ts for the step order.
+  const furthestStepRef = useRef(-1);
+  const funnelSentRef = useRef(false);
+  const touchFunnel = (step: BookingFunnelStep) => {
+    const idx = BOOKING_FUNNEL_STEPS.indexOf(step);
+    if (idx > furthestStepRef.current) furthestStepRef.current = idx;
+  };
+  const flushFunnel = () => {
+    if (funnelSentRef.current) return;
+    const idx = furthestStepRef.current;
+    if (idx < 0) return; // never touched the form — nothing to report
+    funnelSentRef.current = true;
+    sendBeaconOrFetch('/api/track/form', JSON.stringify({ step: BOOKING_FUNNEL_STEPS[idx], submitted: false }));
+  };
+  useEffect(() => {
+    const onVisibility = () => { if (document.hidden) flushFunnel(); };
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('pagehide', flushFunnel);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('pagehide', flushFunnel);
+      flushFunnel(); // component unmount = navigated away within the SPA
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const set = (k: string, v: string) => setForm(f => ({ ...f, [k]: v }));
-  const toggleService = (v: string) => setForm(f => {
-    const list = f.service ? f.service.split(',') : [];
-    const next = list.includes(v) ? list.filter(x => x !== v) : [...list, v];
-    return { ...f, service: next.join(',') };
-  });
+  const toggleService = (v: string) => {
+    touchFunnel('service');
+    setForm(f => {
+      const list = f.service ? f.service.split(',') : [];
+      const next = list.includes(v) ? list.filter(x => x !== v) : [...list, v];
+      return { ...f, service: next.join(',') };
+    });
+  };
   const selectedServices = form.service ? form.service.split(',') : [];
 
   const canSubmit = form.name && form.phone && form.service && form.address;
@@ -814,6 +849,8 @@ function Book() {
       const res = await fetch('/api/bookings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) });
       if (!res.ok) throw new Error('Failed');
       setSubmitted(true);
+      funnelSentRef.current = true; // submitted beats "left without submitting" — don't also flush that
+      sendBeaconOrFetch('/api/track/form', JSON.stringify({ step: 'submitted', submitted: true }));
       toast.success('Thanks, we have got your details and will be in touch.');
     } catch {
       toast.error('Something went wrong. Please call us on 0466 050 834.');
@@ -897,11 +934,11 @@ function Book() {
               <div className="grid sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-slate-600 text-sm font-medium mb-2">Name *</label>
-                  <input className="form-input" placeholder="Your name" autoComplete="name" value={form.name} onChange={e => set('name', e.target.value)} />
+                  <input className="form-input" placeholder="Your name" autoComplete="name" value={form.name} onChange={e => set('name', e.target.value)} onFocus={() => touchFunnel('name')} />
                 </div>
                 <div>
                   <label className="block text-slate-600 text-sm font-medium mb-2">Phone *</label>
-                  <input className="form-input" type="tel" placeholder="04XX XXX XXX" autoComplete="tel" value={form.phone} onChange={e => set('phone', e.target.value)} />
+                  <input className="form-input" type="tel" placeholder="04XX XXX XXX" autoComplete="tel" value={form.phone} onChange={e => set('phone', e.target.value)} onFocus={() => touchFunnel('phone')} />
                 </div>
               </div>
 
@@ -937,13 +974,13 @@ function Book() {
               {/* Where */}
               <div>
                 <label className="block text-slate-600 text-sm font-medium mb-2">Street address *</label>
-                <AddressAutocomplete street={form.address} onStreet={v => set('address', v)} onSuburb={v => set('suburb', v)} />
+                <AddressAutocomplete street={form.address} onStreet={v => set('address', v)} onSuburb={v => set('suburb', v)} onFocus={() => touchFunnel('address')} />
                 <p className="text-slate-500 text-xs mt-1.5">Start typing and pick your address, the suburb fills itself in.</p>
               </div>
 
               {/* Optional extras, collapsed by default */}
               {!showExtras ? (
-                <button onClick={() => setShowExtras(true)} className="text-sky-600 hover:text-sky-700 text-sm font-medium cursor-pointer">
+                <button onClick={() => { setShowExtras(true); touchFunnel('extras'); }} className="text-sky-600 hover:text-sky-700 text-sm font-medium cursor-pointer">
                   + Add a preferred day, email or notes (optional)
                 </button>
               ) : (

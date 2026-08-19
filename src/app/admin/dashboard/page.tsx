@@ -13,11 +13,12 @@ import {
   ArrowUpRight, ArrowDownRight, Edit3, Check, Plus, X, StickyNote, BadgeCheck, Wallet,
   Globe, Eye, Users, Link2, MapPin, Target, ClipboardCopy, CalendarDays, CalendarClock, ArrowRight,
   Repeat, PhoneCall, FileText, Send, CheckSquare, Square, Layers, AlertTriangle,
-  Snowflake, Undo2, GripVertical, MoveDown,
+  Snowflake, Undo2, GripVertical, MoveDown, Timer, ListChecks,
 } from 'lucide-react';
 import Image from 'next/image';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { formatDuration } from '@/lib/analytics';
 import toast from 'react-hot-toast';
 import type { Booking, BookingStatus, RecurringJob, BookingGroup } from '@/lib/db';
 import { type Invoice, type PaymentMethod, PAYMENT_METHOD_LABEL } from '@/lib/invoice';
@@ -54,10 +55,20 @@ interface SiteStats {
   allTimeViews: number; views30d: number; today: number; last7: number;
   uniqueVisitors: number; directShare: number;
   byDay: { day: string; views: number }[];
-  topPages: { path: string; views: number; avgScrollPercent: number | null; scrollSamples: number }[];
+  topPages: {
+    path: string; views: number;
+    avgScrollPercent: number | null; scrollSamples: number;
+    avgTimeOnPageSeconds: number | null; timeSamples: number;
+  }[];
   topReferrers: { source: string; views: number }[];
   scrollBuckets: { label: string; count: number }[];
   scrollSampleCount: number;
+  avgTimeOnPageSeconds: number | null;
+  timeSamples: number;
+  avgSessionDurationSeconds: number | null;
+  sessionSamples: number;
+  bookingFunnel: { step: string; label: string; count: number }[];
+  bookingFunnelStarted: number;
 }
 
 
@@ -1742,8 +1753,8 @@ export default function Dashboard() {
             {activeTab === 'site' && (
               <motion.div key="site" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-6">
                 {siteLoading || !siteStats ? (
-                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-                    {Array.from({ length: 4 }).map((_, i) => <div key={i} className="glass rounded-2xl border border-white/8 p-6 h-32 animate-pulse" />)}
+                  <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+                    {Array.from({ length: 5 }).map((_, i) => <div key={i} className="glass rounded-2xl border border-white/8 p-6 h-32 animate-pulse" />)}
                   </div>
                 ) : siteStats.allTimeViews === 0 ? (
                   <div className="glass rounded-2xl border border-white/8 p-12 text-center">
@@ -1753,11 +1764,18 @@ export default function Dashboard() {
                   </div>
                 ) : (
                   <>
-                    <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                    <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
                       <StatCard label="Views Today" value={siteStats.today} icon={Eye} color="#38BDF8" sub="Page views" />
                       <StatCard label="Last 7 Days" value={siteStats.last7} icon={TrendingUp} color="#818CF8" sub="Page views" />
                       <StatCard label="Unique Visitors" value={siteStats.uniqueVisitors} icon={Users} color="#A78BFA" sub="Last 30 days" />
                       <StatCard label="Total Views" value={siteStats.allTimeViews} icon={Globe} color="#34D399" sub="All time" />
+                      <StatCard
+                        label="Avg Time on Site"
+                        value={formatDuration(siteStats.avgSessionDurationSeconds)}
+                        icon={Timer}
+                        color="#F472B6"
+                        sub={siteStats.sessionSamples ? `${siteStats.sessionSamples} sessions` : 'No data yet'}
+                      />
                     </div>
 
                     <div className="glass rounded-2xl border border-white/8 p-6">
@@ -1776,13 +1794,16 @@ export default function Dashboard() {
                     <div className="grid lg:grid-cols-2 gap-6">
                       <div className="glass rounded-2xl border border-white/8 p-6">
                         <h3 className="font-display font-semibold text-white mb-1 flex items-center gap-2"><Eye className="w-4 h-4 text-sky-400" /> Top Pages</h3>
-                        <p className="text-slate-600 text-xs mb-4">Scroll % is how far down the page people got on average before leaving.</p>
+                        <p className="text-slate-600 text-xs mb-4">Scroll % and time are how far down the page and how long people spent, on average, before leaving.</p>
                         <div className="space-y-3">
                           {siteStats.topPages.map(p => (
                             <div key={p.path}>
                               <div className="flex items-center justify-between text-sm gap-3 mb-1">
                                 <span className="text-slate-300 truncate">{p.path}</span>
                                 <span className="flex items-center gap-2 whitespace-nowrap">
+                                  {p.avgTimeOnPageSeconds !== null && (
+                                    <span className="text-slate-500 text-xs">{formatDuration(p.avgTimeOnPageSeconds)}</span>
+                                  )}
                                   {p.avgScrollPercent !== null && (
                                     <span className="text-slate-500 text-xs">{p.avgScrollPercent}% scroll</span>
                                   )}
@@ -1841,8 +1862,35 @@ export default function Dashboard() {
                       )}
                     </div>
 
+                    <div className="glass rounded-2xl border border-white/8 p-6">
+                      <h3 className="font-display font-semibold text-white mb-1 flex items-center gap-2"><ListChecks className="w-4 h-4 text-sky-400" /> Booking Form Funnel</h3>
+                      {siteStats.bookingFunnelStarted === 0 ? (
+                        <p className="text-slate-600 text-sm py-4 text-center">No one has started filling in the booking form yet in this window.</p>
+                      ) : (
+                        <>
+                          <p className="text-slate-600 text-xs mb-4">
+                            How far people get through the booking form before leaving or submitting — {siteStats.bookingFunnelStarted} {siteStats.bookingFunnelStarted === 1 ? 'person has' : 'people have'} started it (last 30 days).
+                          </p>
+                          <div className="space-y-2">
+                            {siteStats.bookingFunnel.map(s => {
+                              const pct = siteStats.bookingFunnelStarted ? Math.round((s.count / siteStats.bookingFunnelStarted) * 100) : 0;
+                              return (
+                                <div key={s.step} className="flex items-center gap-3 text-sm">
+                                  <span className="text-slate-400 w-40 flex-shrink-0 truncate">{s.label}</span>
+                                  <div className="flex-1 h-2.5 rounded-full bg-white/5 overflow-hidden">
+                                    <div className={`h-full ${s.step === 'submitted' ? 'bg-emerald-400/70' : 'bg-fuchsia-400/70'}`} style={{ width: `${pct}%` }} />
+                                  </div>
+                                  <span className="text-white font-semibold w-20 flex-shrink-0 text-right">{s.count} ({pct}%)</span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </>
+                      )}
+                    </div>
+
                     <p className="text-slate-600 text-xs px-1">
-                      Privacy-friendly: visitors counted via a daily hash, no raw IPs stored, scroll depth carries no personal data. Admin pages excluded. Charts cover the last 30 days.
+                      Privacy-friendly: visitors counted via a daily hash, no raw IPs stored, scroll depth/time/funnel data carries no personal data. Admin pages excluded. Charts cover the last 30 days.
                     </p>
                   </>
                 )}

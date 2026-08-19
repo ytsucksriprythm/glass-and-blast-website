@@ -2,33 +2,24 @@
 
 import { useEffect, useRef } from 'react';
 import { usePathname } from 'next/navigation';
+import { sendBeaconOrFetch } from '@/lib/beacon';
 
 function newViewId(): string {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID();
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
-function sendBeaconOrFetch(url: string, body: string) {
-  try {
-    if (navigator.sendBeacon) {
-      navigator.sendBeacon(url, new Blob([body], { type: 'application/json' }));
-    } else {
-      fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, keepalive: true });
-    }
-  } catch {
-    /* tracking must never break the page */
-  }
-}
-
 // Fires one view ping per route change, plus a second "how far down the page
-// did they get" ping when they leave it — covers an SPA route change, a tab
-// close/refresh (pagehide), and backgrounding the tab (visibilitychange),
-// since on mobile especially people close out without ever firing pagehide.
-// Both pings carry only a per-view random id + a percentage, no PII.
+// did they get, how long did they stay" ping when they leave it — covers an
+// SPA route change, a tab close/refresh (pagehide), and backgrounding the
+// tab (visibilitychange), since on mobile especially people close out
+// without ever firing pagehide. Both pings carry only a per-view random id +
+// numbers, no PII.
 export default function PageTracker() {
   const pathname = usePathname();
   const viewIdRef = useRef<string | null>(null);
   const maxScrollRef = useRef(0);
+  const mountTimeRef = useRef(0);
 
   useEffect(() => {
     if (!pathname || pathname.startsWith('/admin')) return;
@@ -36,6 +27,7 @@ export default function PageTracker() {
     const viewId = newViewId();
     viewIdRef.current = viewId;
     maxScrollRef.current = 0;
+    mountTimeRef.current = Date.now();
 
     sendBeaconOrFetch('/api/track', JSON.stringify({ path: pathname, referrer: document.referrer || '', viewId }));
 
@@ -59,7 +51,8 @@ export default function PageTracker() {
     const flush = () => {
       const vid = viewIdRef.current;
       if (!vid) return;
-      sendBeaconOrFetch('/api/track/scroll', JSON.stringify({ viewId: vid, maxScrollPercent: maxScrollRef.current }));
+      const durationSeconds = Math.round((Date.now() - mountTimeRef.current) / 1000);
+      sendBeaconOrFetch('/api/track/scroll', JSON.stringify({ viewId: vid, maxScrollPercent: maxScrollRef.current, durationSeconds }));
     };
     const onVisibility = () => { if (document.hidden) flush(); };
     document.addEventListener('visibilitychange', onVisibility);

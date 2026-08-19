@@ -9,9 +9,11 @@ import {
 } from './invoice';
 import { type AppSettings, DEFAULT_SETTINGS } from './settings';
 import { type ActivityEntry, type InvoiceViewSession } from './activity';
+import { computePageEngagement, computeScrollBuckets, computeSiteWideTimeStats, computeBookingFunnel } from './analytics';
 
 const DB_PATH = path.join(process.cwd(), 'data', 'bookings.json');
 const PV_PATH = path.join(process.cwd(), 'data', 'pageviews.json');
+const FUNNEL_PATH = path.join(process.cwd(), 'data', 'booking-funnel.json');
 const PHOTO_PATH = path.join(process.cwd(), 'data', 'photos.json');
 const RECURRING_PATH = path.join(process.cwd(), 'data', 'recurring.json');
 const INVOICE_PATH = path.join(process.cwd(), 'data', 'invoices.json');
@@ -114,9 +116,21 @@ export interface PageView {
   // pre-migration rows still type-check with no data.
   viewId?: string | null;
   maxScrollPercent?: number | null;
+  durationSeconds?: number | null;
   createdAt: string;
 }
 export type NewPageView = Omit<PageView, 'createdAt'>;
+
+// One row per visitor session that touched the booking form (src/app/page.tsx's
+// Book component), recording only the furthest field they reached — see
+// BOOKING_FUNNEL_STEPS in src/lib/analytics.ts for the step order.
+export interface FunnelEvent {
+  visitor: string;
+  step: string;
+  submitted: boolean;
+  createdAt: string;
+}
+export type NewFunnelEvent = Omit<FunnelEvent, 'createdAt'>;
 
 // ─── Job photos (before / after documentation) ──────────────────────────────
 export type PhotoType = 'before' | 'after' | 'progress';
@@ -330,7 +344,20 @@ export async function ensureSchema(): Promise<void> {
       // "no data", not a false 0%).
       await sql`ALTER TABLE pageviews ADD COLUMN IF NOT EXISTS view_id TEXT`;
       await sql`ALTER TABLE pageviews ADD COLUMN IF NOT EXISTS max_scroll_percent INTEGER`;
+      await sql`ALTER TABLE pageviews ADD COLUMN IF NOT EXISTS duration_seconds INTEGER`;
       await sql`CREATE INDEX IF NOT EXISTS pageviews_view_id_idx ON pageviews (view_id)`;
+      // Booking-form funnel: how far down the form (src/app/page.tsx's Book
+      // component) people get before leaving or submitting.
+      await sql`
+        CREATE TABLE IF NOT EXISTS booking_funnel_events (
+          id          BIGSERIAL PRIMARY KEY,
+          visitor     TEXT NOT NULL DEFAULT '',
+          step        TEXT NOT NULL,
+          submitted   BOOLEAN NOT NULL DEFAULT false,
+          created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+      `;
+      await sql`CREATE INDEX IF NOT EXISTS booking_funnel_created_idx ON booking_funnel_events (created_at)`;
       await sql`CREATE INDEX IF NOT EXISTS pageviews_created_idx ON pageviews (created_at)`;
       // Job photos
       await sql`
@@ -1003,29 +1030,89 @@ export async function addPageView(data: NewPageView): Promise<void> {
   writePV(rows);
 }
 
-// Best-effort update from the "how far did they scroll before leaving"
-// beacon — arrives after the initial view row already exists (sometimes long
-// after, sometimes never, if the tab was killed outright). Never throws:
-// this must not be able to break the page it's reporting on.
-export async function updatePageViewScroll(viewId: string, percent: number): Promise<void> {
-  const clamped = Math.max(0, Math.min(100, Math.round(percent)));
+// Best-effort update from the "how far did they scroll, how long did they
+// stay" beacon fired when a visitor leaves a page — arrives after the
+// initial view row already exists (sometimes long after, sometimes never,
+// if the tab was killed outright). GREATEST() so a duplicate/racing flush
+// (visibilitychange can fire more than once if a tab is backgrounded and
+// re-foregrounded) only ever grows the recorded value, never shrinks it.
+// Never throws: this must not be able to break the page it's reporting on.
+export async function updatePageViewOnLeave(
+  viewId: string,
+  data: { maxScrollPercent?: number; durationSeconds?: number },
+): Promise<void> {
+  const scroll = typeof data.maxScrollPercent === 'number' ? Math.max(0, Math.min(100, Math.round(data.maxScrollPercent))) : null;
+  const duration = typeof data.durationSeconds === 'number' ? Math.max(0, Math.round(data.durationSeconds)) : null;
   try {
     if (sql) {
       await ensureSchema();
-      await sql`UPDATE pageviews SET max_scroll_percent = GREATEST(COALESCE(max_scroll_percent, 0), ${clamped}) WHERE view_id = ${viewId}`;
+      await sql`
+        UPDATE pageviews SET
+          max_scroll_percent = CASE WHEN ${scroll}::int IS NOT NULL THEN GREATEST(COALESCE(max_scroll_percent, 0), ${scroll}::int) ELSE max_scroll_percent END,
+          duration_seconds   = CASE WHEN ${duration}::int IS NOT NULL THEN GREATEST(COALESCE(duration_seconds, 0), ${duration}::int) ELSE duration_seconds END
+        WHERE view_id = ${viewId}
+      `;
       return;
     }
     const rows = readPV();
     for (let i = rows.length - 1; i >= 0; i--) {
       if (rows[i].viewId === viewId) {
-        rows[i].maxScrollPercent = Math.max(rows[i].maxScrollPercent ?? 0, clamped);
+        if (scroll !== null) rows[i].maxScrollPercent = Math.max(rows[i].maxScrollPercent ?? 0, scroll);
+        if (duration !== null) rows[i].durationSeconds = Math.max(rows[i].durationSeconds ?? 0, duration);
         break;
       }
     }
     writePV(rows);
   } catch (err) {
-    console.error('[track] updatePageViewScroll failed:', err);
+    console.error('[track] updatePageViewOnLeave failed:', err);
   }
+}
+
+// ─── Booking-form funnel ──────────────────────────────────────────────────
+
+function readFunnel(): FunnelEvent[] {
+  try {
+    if (!fs.existsSync(FUNNEL_PATH)) return [];
+    return JSON.parse(fs.readFileSync(FUNNEL_PATH, 'utf-8'));
+  } catch { return []; }
+}
+function writeFunnel(rows: FunnelEvent[]): void {
+  const dir = path.dirname(FUNNEL_PATH);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(FUNNEL_PATH, JSON.stringify(rows, null, 2));
+}
+
+// Best-effort — same "must never break the page" contract as the page-view
+// beacons above.
+export async function addFunnelEvent(data: NewFunnelEvent): Promise<void> {
+  try {
+    if (sql) {
+      await ensureSchema();
+      await sql`INSERT INTO booking_funnel_events (visitor, step, submitted) VALUES (${data.visitor}, ${data.step}, ${data.submitted})`;
+      return;
+    }
+    const rows = readFunnel();
+    rows.push({ ...data, createdAt: new Date().toISOString() });
+    writeFunnel(rows);
+  } catch (err) {
+    console.error('[track] addFunnelEvent failed:', err);
+  }
+}
+
+export async function getFunnelEvents(days = 30): Promise<FunnelEvent[]> {
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+  if (sql) {
+    await ensureSchema();
+    const rows = await withTimeout((async () =>
+      sql`SELECT visitor, step, submitted, created_at FROM booking_funnel_events WHERE created_at >= ${since.toISOString()} ORDER BY created_at DESC`)());
+    return (rows as any[]).map(r => ({
+      visitor: r.visitor ?? '',
+      step: r.step,
+      submitted: r.submitted === true || r.submitted === 1,
+      createdAt: typeof r.created_at === 'string' ? r.created_at : new Date(r.created_at).toISOString(),
+    }));
+  }
+  return readFunnel().filter(v => new Date(v.createdAt) >= since);
 }
 
 // LARP mode ("fake numbers"): a pre-built page view with a controlled
@@ -1072,10 +1159,11 @@ export async function getPageViews(days = 30): Promise<{ views: PageView[]; allT
   if (sql) {
     await ensureSchema();
     const rows = await withTimeout((async () =>
-      sql`SELECT path, referrer, visitor, created_at, max_scroll_percent FROM pageviews WHERE created_at >= ${since.toISOString()} ORDER BY created_at DESC`)());
+      sql`SELECT path, referrer, visitor, created_at, max_scroll_percent, duration_seconds FROM pageviews WHERE created_at >= ${since.toISOString()} ORDER BY created_at DESC`)());
     views = (rows as any[]).map(r => ({
       path: r.path, referrer: r.referrer ?? '', visitor: r.visitor ?? '',
       maxScrollPercent: r.max_scroll_percent == null ? null : Number(r.max_scroll_percent),
+      durationSeconds: r.duration_seconds == null ? null : Number(r.duration_seconds),
       createdAt: typeof r.created_at === 'string' ? r.created_at : new Date(r.created_at).toISOString(),
     }));
     const c = await sql`SELECT count(*)::int AS n FROM pageviews`;
@@ -1091,6 +1179,7 @@ export async function getPageViews(days = 30): Promise<{ views: PageView[]; allT
 export async function getSiteStats() {
   // Pull the last 30 days of views, aggregate in JS (works for both stores).
   const { views, allTime } = await getPageViews(30);
+  const funnelEvents = await getFunnelEvents(30);
 
   const now = new Date();
   const todayKey = dayKey(now);
@@ -1109,38 +1198,16 @@ export async function getSiteStats() {
     byDay.push({ day: label, views: views.filter(v => dayKey(new Date(v.createdAt)) === key).length });
   }
 
-  // Top pages
+  // Top pages, with scroll-depth + time-on-page attached (src/lib/analytics.ts
+  // — shared with the Claude connector so both report identical numbers).
   const pageCounts: Record<string, number> = {};
   views.forEach(v => { pageCounts[v.path] = (pageCounts[v.path] ?? 0) + 1; });
+  const rankedPaths = Object.entries(pageCounts).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([path, n]) => ({ path, views: n }));
+  const topPages = computePageEngagement(views, rankedPaths);
 
-  // Scroll depth: how far down the page people got before leaving. Only
-  // views that actually reported a beacon count (a bounce before the JS
-  // listener attaches, or a killed tab, means no data — that's honestly
-  // different from "left at 0%", so it's excluded rather than counted as 0).
-  const withScroll = views.filter((v): v is PageView & { maxScrollPercent: number } => typeof v.maxScrollPercent === 'number');
-  const scrollByPage: Record<string, { sum: number; count: number }> = {};
-  withScroll.forEach(v => {
-    const e = scrollByPage[v.path] ?? (scrollByPage[v.path] = { sum: 0, count: 0 });
-    e.sum += v.maxScrollPercent;
-    e.count += 1;
-  });
-  const scrollBuckets = [
-    { label: '0–25%', min: 0, max: 25 },
-    { label: '26–50%', min: 26, max: 50 },
-    { label: '51–75%', min: 51, max: 75 },
-    { label: '76–100%', min: 76, max: 100 },
-  ].map(b => ({
-    label: b.label,
-    count: withScroll.filter(v => v.maxScrollPercent >= b.min && v.maxScrollPercent <= b.max).length,
-  }));
-
-  const topPages = Object.entries(pageCounts)
-    .sort((a, b) => b[1] - a[1]).slice(0, 8)
-    .map(([path, views]) => ({
-      path, views,
-      avgScrollPercent: scrollByPage[path] ? Math.round(scrollByPage[path].sum / scrollByPage[path].count) : null,
-      scrollSamples: scrollByPage[path]?.count ?? 0,
-    }));
+  const { buckets: scrollBuckets, sampleCount: scrollSampleCount } = computeScrollBuckets(views);
+  const { avgTimeOnPageSeconds, timeSamples, avgSessionDurationSeconds, sessionSamples } = computeSiteWideTimeStats(views);
+  const { steps: bookingFunnel, started: bookingFunnelStarted } = computeBookingFunnel(funnelEvents);
 
   // Top referrers (external only)
   const refCounts: Record<string, number> = {};
@@ -1165,7 +1232,13 @@ export async function getSiteStats() {
     topPages,
     topReferrers,
     scrollBuckets,
-    scrollSampleCount: withScroll.length,
+    scrollSampleCount,
+    avgTimeOnPageSeconds,
+    timeSamples,
+    avgSessionDurationSeconds,
+    sessionSamples,
+    bookingFunnel,
+    bookingFunnelStarted,
     directShare: views.length ? Math.round(((views.length - Object.values(refCounts).reduce((a, b) => a + b, 0)) / views.length) * 100) : 0,
   };
 }
