@@ -4,6 +4,8 @@ import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { ArrowLeft } from 'lucide-react';
 import type { Booking } from '@/lib/db';
+import type { Quote } from '@/lib/quote';
+import { paymentDueTermsDays } from '@/lib/invoice';
 import InvoiceEditor, { type InvoicePrefill } from '@/components/InvoiceEditor';
 
 const SERVICE_LABELS: Record<string, string> = {
@@ -17,8 +19,12 @@ const SERVICE_LABELS: Record<string, string> = {
 const serviceText = (s: string) =>
   (s ?? '').split(',').filter(Boolean).map(x => SERVICE_LABELS[x] ?? x).join(' + ') || 'Cleaning Service';
 
-function bookingToPrefill(b: Booking): InvoicePrefill {
+// dueDays comes from the booking's most recent Quote (if any) — carries the
+// payment terms the customer already agreed to on the quote over to the
+// invoice, instead of falling back to the generic default.
+function bookingToPrefill(b: Booking, quotes: Quote[]): InvoicePrefill {
   const address = [b.address, b.suburb].filter(Boolean).join(', ');
+  const latestQuote = quotes[0]; // getQuotesForBooking returns newest-first (by seq)
   return {
     billToName: b.name,
     billToLines: address,
@@ -27,6 +33,7 @@ function bookingToPrefill(b: Booking): InvoicePrefill {
     amount: typeof b.quoteAmount === 'number' ? b.quoteAmount : null,
     serviceDate: /^\d{4}-\d{2}-\d{2}$/.test(b.preferredDate) ? b.preferredDate : '',
     bookingId: b.id,
+    dueDays: latestQuote ? paymentDueTermsDays(latestQuote.paymentTerms) : undefined,
   };
 }
 
@@ -41,8 +48,14 @@ function NewInvoiceInner() {
     if (!fromBooking) return;
     (async () => {
       try {
-        const res = await fetch(`/api/admin/bookings/${fromBooking}`);
-        if (res.ok) setPrefill(bookingToPrefill(await res.json()));
+        const [bRes, qRes] = await Promise.all([
+          fetch(`/api/admin/bookings/${fromBooking}`),
+          fetch(`/api/admin/quotes?bookingId=${fromBooking}`),
+        ]);
+        if (bRes.ok) {
+          const quotes: Quote[] = qRes.ok ? await qRes.json() : [];
+          setPrefill(bookingToPrefill(await bRes.json(), quotes));
+        }
       } finally { setReady(true); }
     })();
   }, [fromBooking]);

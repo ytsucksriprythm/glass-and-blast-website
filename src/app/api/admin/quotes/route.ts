@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getQuotes, getQuotesForBooking, createQuote, logActivity } from '@/lib/db';
 import { isAdminAuthenticated } from '@/lib/auth';
-import { addDays, DEFAULT_QUOTE_TERMS, QUOTE_VALID_DAYS, type QuoteInput } from '@/lib/quote';
+import { addDays, DEFAULT_QUOTE_TERMS, DEFAULT_QUOTE_ASSUMPTIONS, DEFAULT_PAYMENT_DUE_TERMS, isPaymentDueTerms, QUOTE_VALID_DAYS, type QuoteInput, type QuoteOtherLine } from '@/lib/quote';
 import { BUSINESS_DEFAULTS } from '@/lib/invoice';
 
 export const dynamic = 'force-dynamic';
@@ -24,17 +24,33 @@ export async function POST(req: NextRequest) {
 
     const services = Array.isArray(b.services) ? b.services.filter((x: unknown) => typeof x === 'string') : [];
     const extras = Array.isArray(b.extras) ? b.extras.filter((x: unknown) => typeof x === 'string') : [];
-    const otherText = (b.otherText ?? '').trim();
-    if (services.length === 0 && extras.length === 0 && !otherText) {
-      return NextResponse.json({ error: 'Check at least one service, extra, or describe the job in Other' }, { status: 400 });
+    const otherLines: QuoteOtherLine[] = Array.isArray(b.otherLines)
+      ? b.otherLines
+        .filter((l: unknown): l is Record<string, unknown> => !!l && typeof l === 'object')
+        .map((l: Record<string, unknown>, i: number) => ({
+          id: typeof l.id === 'string' && l.id ? l.id : `ol-${i}`,
+          description: typeof l.description === 'string' ? l.description : '',
+          amount: Number(l.amount) || 0,
+        }))
+      : [];
+    if (services.length === 0 && extras.length === 0 && !otherLines.some(l => l.description.trim())) {
+      return NextResponse.json({ error: 'Check at least one service, extra, or add an Other line' }, { status: 400 });
+    }
+
+    const itemAmounts: Record<string, number> = {};
+    if (b.itemAmounts && typeof b.itemAmounts === 'object') {
+      for (const [k, v] of Object.entries(b.itemAmounts)) { const n = Number(v); if (!isNaN(n)) itemAmounts[k] = n; }
     }
 
     const quoteDate = b.quoteDate || new Date().toISOString().slice(0, 10);
     const input: QuoteInput = {
       bookingId,
       status: b.status === 'sent' ? 'sent' : 'draft',
-      services, extras, otherText,
+      services, extras, itemAmounts, otherLines,
       amount: Number(b.amount) || 0,
+      scope: b.scope ?? '',
+      assumptions: b.assumptions ?? DEFAULT_QUOTE_ASSUMPTIONS,
+      paymentTerms: isPaymentDueTerms(b.paymentTerms) ? b.paymentTerms : DEFAULT_PAYMENT_DUE_TERMS,
       propertyType: b.propertyType === 'commercial' ? 'commercial' : 'residential',
       billToName: b.billToName ?? '',
       billToAddress: b.billToAddress ?? '',

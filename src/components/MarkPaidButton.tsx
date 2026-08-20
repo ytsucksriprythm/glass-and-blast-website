@@ -27,7 +27,7 @@ export default function MarkPaidButton({ token }: { token: string }) {
   if (state === 'done') {
     return (
       <span className="no-print inline-flex items-center gap-2 px-4 py-2.5 rounded-full bg-emerald-50 text-emerald-700 text-sm font-semibold">
-        <CheckCircle2 className="w-4 h-4" /> Thanks — taking you through
+        <CheckCircle2 className="w-4 h-4" /> Thanks, taking you through
       </span>
     );
   }

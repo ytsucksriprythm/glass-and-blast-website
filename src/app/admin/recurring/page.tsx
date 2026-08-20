@@ -7,7 +7,7 @@ import toast from 'react-hot-toast';
 import {
   ArrowLeft, Repeat, Plus, Check, X, Trash2, Play, MapPin, Phone as PhoneIcon, CalendarDays, CalendarPlus,
 } from 'lucide-react';
-import type { RecurringJob, RecurringFrequency, Booking } from '@/lib/db';
+import type { RecurringJob, RecurringFrequency, BillingCycle, Booking } from '@/lib/db';
 import { AdminSidebar, AdminMobileNav, AdminMoreSheet, useMoreSheet, adminNavItems } from '@/components/admin/AdminNav';
 
 const SERVICE_OPTIONS = [
@@ -20,19 +20,25 @@ const SERVICE_OPTIONS = [
 const SERVICE_LABELS: Record<string, string> = Object.fromEntries(SERVICE_OPTIONS.map(o => [o.v, o.l]));
 const serviceText = (s: string) => (s ?? '').split(',').filter(Boolean).map(x => SERVICE_LABELS[x] ?? x).join(' + ') || '-';
 
-const FREQ_LABEL: Record<RecurringFrequency, string> = { monthly: 'Monthly', quarterly: 'Quarterly', biannual: 'Twice a year' };
-const FREQ_DISCOUNT: Record<RecurringFrequency, number> = { monthly: 100, quarterly: 75, biannual: 50 };
+const FREQ_LABEL: Record<RecurringFrequency, string> = {
+  weekly: 'Weekly', fortnightly: 'Fortnightly', monthly: 'Monthly', quarterly: 'Quarterly', biannual: 'Twice a year', custom: 'Custom',
+};
+const freqBadge = (j: RecurringJob) => j.frequency === 'custom' && j.customIntervalWeeks ? `Every ${j.customIntervalWeeks}w` : FREQ_LABEL[j.frequency];
 
+const BILLING_LABEL: Record<BillingCycle, string> = { per_visit: 'Every visit', monthly: 'Every month', custom: 'Custom' };
+const billingBadge = (j: RecurringJob) => j.billingCycle === 'custom' && j.customBillingCycle ? j.customBillingCycle : BILLING_LABEL[j.billingCycle];
 
 type PlanForm = {
   name: string; phone: string; email: string; address: string; suburb: string;
-  service: string; frequency: RecurringFrequency; nextDate: string;
-  preferredTime: string; notes: string; discount: string;
+  service: string; frequency: RecurringFrequency; customIntervalWeeks: string; nextDate: string;
+  preferredTime: string; notes: string; visitPrice: string;
+  billingCycle: BillingCycle; customBillingCycle: string;
 };
 const EMPTY: PlanForm = {
   name: '', phone: '', email: '', address: '', suburb: '',
-  service: 'window-washing', frequency: 'quarterly', nextDate: '',
-  preferredTime: '', notes: '', discount: String(FREQ_DISCOUNT.quarterly),
+  service: 'window-washing', frequency: 'quarterly', customIntervalWeeks: '', nextDate: '',
+  preferredTime: '', notes: '', visitPrice: '',
+  billingCycle: 'per_visit', customBillingCycle: '',
 };
 
 function FieldLabel({ children }: { children: React.ReactNode }) {
@@ -96,30 +102,36 @@ function RecurringInner() {
   const openEdit = (j: RecurringJob) => {
     setForm({
       name: j.name, phone: j.phone, email: j.email, address: j.address, suburb: j.suburb,
-      service: j.service, frequency: j.frequency, nextDate: j.nextDate,
-      preferredTime: j.preferredTime, notes: j.notes, discount: j.discount != null ? String(j.discount) : '',
+      service: j.service, frequency: j.frequency, customIntervalWeeks: j.customIntervalWeeks != null ? String(j.customIntervalWeeks) : '', nextDate: j.nextDate,
+      preferredTime: j.preferredTime, notes: j.notes,
+      visitPrice: j.visitPrice != null ? String(j.visitPrice) : '',
+      billingCycle: j.billingCycle, customBillingCycle: j.customBillingCycle ?? '',
     });
     setEditId(j.id);
     setShowForm(true);
   };
   const closeForm = () => { setShowForm(false); setEditId(null); setForm(EMPTY); };
 
-  const pickFrequency = (freq: RecurringFrequency) => {
-    setForm(f => ({
-      ...f,
-      frequency: freq,
-      // Keep a manually-typed discount; only swap in the default when untouched.
-      discount: f.discount === '' || Object.values(FREQ_DISCOUNT).map(String).includes(f.discount) ? String(FREQ_DISCOUNT[freq]) : f.discount,
-    }));
-  };
+  const pickFrequency = (freq: RecurringFrequency) => setForm(f => ({ ...f, frequency: freq }));
+  const pickBilling = (cycle: BillingCycle) => setForm(f => ({ ...f, billingCycle: cycle }));
 
   const save = async () => {
     if (!form.name || !form.service || !form.nextDate) { toast.error('Name, service and next visit date are needed'); return; }
+    if (form.frequency === 'custom' && (!form.customIntervalWeeks.trim() || Number(form.customIntervalWeeks) < 1)) {
+      toast.error('Custom cadence needs a number of weeks (1 or more)');
+      return;
+    }
+    if (form.billingCycle === 'custom' && !form.customBillingCycle.trim()) {
+      toast.error('Describe the custom billing cycle');
+      return;
+    }
     setSaving(true);
     try {
       const payload = {
         ...form,
-        discount: form.discount.trim() === '' ? null : Number(form.discount.replace(/[^0-9.]/g, '')),
+        customIntervalWeeks: form.frequency === 'custom' && form.customIntervalWeeks.trim() !== '' ? Number(form.customIntervalWeeks) : null,
+        visitPrice: form.visitPrice.trim() === '' ? null : Number(form.visitPrice.replace(/[^0-9.]/g, '')),
+        customBillingCycle: form.billingCycle === 'custom' ? form.customBillingCycle.trim() : null,
       };
       const res = editId
         ? await fetch(`/api/admin/recurring/${editId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
@@ -254,18 +266,41 @@ function RecurringInner() {
                   </button>
                 ))}
               </div>
+              {form.frequency === 'custom' && (
+                <div className="mt-2">
+                  <FieldLabel>Every how many weeks? *</FieldLabel>
+                  <input className="form-input" inputMode="numeric" placeholder="e.g. 3" value={form.customIntervalWeeks} onChange={e => set('customIntervalWeeks', e.target.value.replace(/[^0-9]/g, ''))} />
+                  <p className="text-slate-500 text-xs mt-1">
+                    Set "Next visit" to the right day once (e.g. a Saturday) and every cycle keeps landing on it — that's how you'd do "every other Saturday": Fortnightly, next visit on a Saturday.
+                  </p>
+                </div>
+              )}
             </div>
 
             <div className="grid grid-cols-2 gap-4">
               <div><FieldLabel>Next visit *</FieldLabel><input className="form-input" type="date" value={form.nextDate} onChange={e => set('nextDate', e.target.value)} /></div>
               <div><FieldLabel>Preferred time</FieldLabel><input className="form-input" placeholder="e.g. Morning" value={form.preferredTime} onChange={e => set('preferredTime', e.target.value)} /></div>
-              <div>
-                <FieldLabel>Plan discount ($ per clean)</FieldLabel>
+              <div className="col-span-2">
+                <FieldLabel>What it's worth per visit ($)</FieldLabel>
                 <div className="relative">
                   <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500">$</span>
-                  <input className="form-input pl-8" inputMode="decimal" value={form.discount} onChange={e => set('discount', e.target.value)} />
+                  <input className="form-input pl-8" inputMode="decimal" placeholder="e.g. 180" value={form.visitPrice} onChange={e => set('visitPrice', e.target.value)} />
                 </div>
               </div>
+            </div>
+
+            <div>
+              <FieldLabel>Billing cycle *</FieldLabel>
+              <div className="grid grid-cols-3 gap-2">
+                {(Object.keys(BILLING_LABEL) as BillingCycle[]).map(c => (
+                  <button key={c} type="button" onClick={() => pickBilling(c)} className={`px-2 py-2.5 rounded-lg border text-sm font-medium transition-colors cursor-pointer ${form.billingCycle === c ? 'border-sky-400 bg-sky-400/15 text-white' : 'border-white/10 bg-white/[0.03] text-slate-300 hover:border-white/25'}`}>
+                    {BILLING_LABEL[c]}
+                  </button>
+                ))}
+              </div>
+              {form.billingCycle === 'custom' && (
+                <input className="form-input mt-2" placeholder="e.g. Invoiced quarterly in advance" value={form.customBillingCycle} onChange={e => set('customBillingCycle', e.target.value)} />
+              )}
             </div>
 
             <div><FieldLabel>Notes</FieldLabel><textarea className="form-input resize-none" rows={2} placeholder="Access notes, standing instructions" value={form.notes} onChange={e => set('notes', e.target.value)} /></div>
@@ -294,7 +329,7 @@ function RecurringInner() {
                     <div className="text-slate-400 text-xs mt-0.5 truncate">{serviceText(j.service)}</div>
                   </button>
                   <span className="flex-shrink-0 inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-sky-400/15 text-sky-400 border border-sky-400/20">
-                    {FREQ_LABEL[j.frequency]}
+                    {freqBadge(j)}
                   </span>
                 </div>
 
@@ -305,7 +340,8 @@ function RecurringInner() {
                   </span>
                   {j.suburb && <span className="inline-flex items-center gap-1.5"><MapPin className="w-3.5 h-3.5" /> {j.suburb}</span>}
                   {j.phone && <a href={`tel:${j.phone}`} className="inline-flex items-center gap-1.5 text-sky-400"><PhoneIcon className="w-3.5 h-3.5" /> {j.phone}</a>}
-                  {j.discount != null && j.discount > 0 && <span className="text-emerald-400">${j.discount} off per clean</span>}
+                  {j.visitPrice != null && j.visitPrice > 0 && <span className="text-white font-semibold">${j.visitPrice}/visit</span>}
+                  <span className="text-slate-500">Billed: {billingBadge(j)}</span>
                 </div>
 
                 <button

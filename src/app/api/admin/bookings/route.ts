@@ -72,8 +72,17 @@ export async function GET(req: NextRequest) {
     const search = searchParams.get('search')?.toLowerCase() ?? '';
 
     let filtered = bookings;
-    if (status && status !== 'all') filtered = filtered.filter(b => b.status === status);
-    if (service && service !== 'all') filtered = filtered.filter(b => (b.service ?? '').split(',').includes(service));
+    // Comma-separated = OR match across whatever's checked (multi-select
+    // filter UI). 'facebook-lead-ad' is a synthetic status value that
+    // actually matches on source, not status — see the Bookings tab filter.
+    if (status && status !== 'all') {
+      const statuses = status.split(',').filter(Boolean);
+      filtered = filtered.filter(b => statuses.includes(b.status) || (statuses.includes('facebook-lead-ad') && b.source === 'facebook-lead-ad'));
+    }
+    if (service && service !== 'all') {
+      const services = service.split(',').filter(Boolean);
+      filtered = filtered.filter(b => (b.service ?? '').split(',').some(s => services.includes(s)));
+    }
     if (search) filtered = filtered.filter(b =>
       b.name.toLowerCase().includes(search) ||
       b.email.toLowerCase().includes(search) ||

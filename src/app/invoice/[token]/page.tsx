@@ -75,7 +75,7 @@ export default async function PublicInvoicePage({ params }: { params: Promise<{ 
           <PayByCardButton
             token={invoice.token}
             href={invoice.squarePaymentLinkUrl!}
-            label={`Pay by card — ${money(cardTotal(invoice.total, settings.squareSurchargePercent))} (incl. card surcharge)`}
+            label={`Pay by card: ${money(cardTotal(invoice.total, settings.squareSurchargePercent))} (incl. card surcharge)`}
           />
         )}
         <div className="rounded-xl shadow-lg ring-1 ring-slate-200 overflow-hidden">

@@ -9,13 +9,13 @@ const SITE_URL = process.env.NEXT_PUBLIC_URL || 'https://glassandblast.com.au';
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
   title: 'Glass & Blast Window Cleaning | Award-Winning Canberra',
-  description: '2025 Best Window Cleaner in North Canberra. Professional window washing and pressure cleaning for residential and commercial properties. 5-star rated, locally owned.',
-  keywords: 'window cleaning Canberra, professional window cleaners, residential window cleaning, commercial window cleaning, pressure washing Canberra, window washer ACT, glass and blast',
+  description: '2025 Best Window Cleaner in North Canberra. Professional window washing and pressure cleaning for residential and commercial properties across Canberra, Queanbeyan and Googong. 5-star rated, locally owned.',
+  keywords: 'window cleaning Canberra, window cleaning Queanbeyan, window cleaning Googong, professional window cleaners, residential window cleaning, commercial window cleaning, pressure washing Canberra, window washer ACT, glass and blast',
   alternates: { canonical: '/' },
   verification: { google: 'kpP4WDW7oi9FoqQ-jsYv2VQu1sFhh7K9f24ZZnZ0668' },
   openGraph: {
     title: 'Glass & Blast Window Cleaning | Canberra',
-    description: 'Award-winning window cleaning and pressure washing in Canberra. Book online today.',
+    description: 'Award-winning window cleaning and pressure washing across Canberra, Queanbeyan and Googong. Book online today.',
     type: 'website',
     locale: 'en_AU',
     url: SITE_URL,
@@ -25,7 +25,7 @@ export const metadata: Metadata = {
   twitter: {
     card: 'summary_large_image',
     title: 'Glass & Blast Window Cleaning | Canberra',
-    description: 'Award-winning window cleaning and pressure washing in Canberra.',
+    description: 'Award-winning window cleaning and pressure washing across Canberra, Queanbeyan and Googong.',
     images: ['/og.png'],
   },
 };
@@ -41,7 +41,11 @@ const businessJsonLd = {
   telephone: '+61466050834',
   email: 'info@glassandblast.com.au',
   priceRange: '$$',
-  areaServed: { '@type': 'City', name: 'Canberra' },
+  areaServed: [
+    { '@type': 'City', name: 'Canberra' },
+    { '@type': 'City', name: 'Queanbeyan' },
+    { '@type': 'City', name: 'Googong' },
+  ],
   address: {
     '@type': 'PostalAddress',
     addressLocality: 'North Canberra',
@@ -49,7 +53,7 @@ const businessJsonLd = {
     addressCountry: 'AU',
   },
   description:
-    'Award-winning, locally owned window cleaning and pressure washing in Canberra. Residential and commercial window cleaning with a streak-free finish.',
+    'Award-winning, locally owned window cleaning and pressure washing across Canberra, Queanbeyan and Googong. Residential and commercial window cleaning with a streak-free finish.',
   aggregateRating: { '@type': 'AggregateRating', ratingValue: '5', reviewCount: String(REVIEWS.length), bestRating: '5' },
   review: REVIEWS.map(r => ({
     '@type': 'Review',

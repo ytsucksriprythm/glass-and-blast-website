@@ -34,6 +34,7 @@ export interface InvoiceViewSession {
 export const ACTIVITY_TYPE_LABEL: Record<string, string> = {
   'booking.created': 'Booking created',
   'booking.deleted': 'Booking deleted',
+  'booking.restored': 'Booking restored from trash',
   'booking.status_changed': 'Booking status changed',
   'booking.auto_moved_cold': 'Auto-moved to Cold Lead',
   'booking.contacted': 'Lead marked contacted',

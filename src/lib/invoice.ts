@@ -135,6 +135,40 @@ export const PAYMENT_DEFAULTS = {
   payAccountNumber: '11315803',
 };
 
+// ─── Payment due terms ─────────────────────────────────────────────────────
+// We don't take card. Customers pay cash on completion of the job, or by
+// bank transfer once we send the invoice — this is just how long they have
+// to pay the invoice. Chosen on a Quote (see quote.ts) and carried over to
+// autofill the invoice's dueDate when that booking is invoiced (see
+// src/app/admin/invoices/new/page.tsx).
+export type PaymentDueTerms = 'on_receipt' | '7' | '14' | '30';
+
+export const PAYMENT_DUE_TERMS_OPTIONS: { key: PaymentDueTerms; label: string; days: number }[] = [
+  { key: 'on_receipt', label: 'Due on receipt', days: 0 },
+  { key: '7', label: 'Due 7 days after the invoice is sent', days: 7 },
+  { key: '14', label: 'Due 14 days after the invoice is sent', days: 14 },
+  { key: '30', label: 'Due 1 month after the invoice is sent', days: 30 },
+];
+
+export const DEFAULT_PAYMENT_DUE_TERMS: PaymentDueTerms = 'on_receipt';
+
+export function isPaymentDueTerms(v: unknown): v is PaymentDueTerms {
+  return PAYMENT_DUE_TERMS_OPTIONS.some(o => o.key === v);
+}
+
+export function paymentDueTermsDays(key: string): number {
+  return PAYMENT_DUE_TERMS_OPTIONS.find(o => o.key === key)?.days ?? 0;
+}
+
+export function paymentDueTermsLabel(key: string): string {
+  return PAYMENT_DUE_TERMS_OPTIONS.find(o => o.key === key)?.label ?? PAYMENT_DUE_TERMS_OPTIONS[0].label;
+}
+
+// The one fixed payment-terms sentence — only the due-window varies.
+export function paymentTermsText(key: string): string {
+  return `Payment is cash on completion of the job, or by bank transfer once we send the invoice (${paymentDueTermsLabel(key).toLowerCase()}). If you pay by cash, we'll still send an invoice afterwards as your receipt.`;
+}
+
 // ─── Saved payment profiles (selectable presets in the invoice editor) ────────
 export interface PaymentProfile {
   id: string;
@@ -258,7 +292,7 @@ export function blankInvoiceInput(todayStr: string): InvoiceInput {
     client: { show: false, clientName: '', trn: '', fileNo: '', claimRef: '' },
     invoiceDate: todayStr,
     serviceDate: todayStr,
-    dueDate: addDays(todayStr, 30),
+    dueDate: addDays(todayStr, paymentDueTermsDays(DEFAULT_PAYMENT_DUE_TERMS)),
     items: [emptyLineItem()],
     notes: 'Thank you for your business.',
     ...PAYMENT_DEFAULTS,

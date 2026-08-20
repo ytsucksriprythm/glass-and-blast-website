@@ -269,7 +269,7 @@ export default function BookingView() {
   };
   const shareQuote = async (q: Quote) => {
     const url = `${window.location.origin}/quote/${q.token}`;
-    const title = `Quote ${q.number} — ${q.fromTradingAs}`;
+    const title = `Quote ${q.number} · ${q.fromTradingAs}`;
     const nav = navigator as Navigator & { share?: (d: ShareData) => Promise<void> };
     if (nav.share) { try { await nav.share({ title, text: title, url }); } catch { /* dismissed */ } }
     else { try { await navigator.clipboard.writeText(url); toast.success('Link copied'); } catch { toast.error('Copy failed'); } }
@@ -440,7 +440,7 @@ export default function BookingView() {
             ? form.preferredDate
             : new Date(Date.now() + 86400000).toISOString().slice(0, 10);
           scheduledAtISO = new Date(`${base}T09:00:00`).toISOString();
-          toast.success('Added to calendar — adjust the time on the calendar');
+          toast.success('Added to calendar, adjust the time on the calendar');
         }
       }
       patch.scheduledAt = scheduledAtISO;
@@ -531,7 +531,7 @@ export default function BookingView() {
               >
                 <AlertTriangle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />
                 <div className="text-sm">
-                  <div className="text-red-300 font-semibold">Flagged — something&apos;s gone wrong</div>
+                  <div className="text-red-300 font-semibold">Flagged: something&apos;s gone wrong</div>
                   {b.flagNote && <div className="text-red-200/90 mt-0.5 whitespace-pre-wrap break-words">{b.flagNote}</div>}
                   <div className="text-red-300/70 text-xs mt-1">{longDate(b.flaggedAt)} · tap to edit or clear</div>
                 </div>
@@ -588,8 +588,8 @@ export default function BookingView() {
                 <div className="flex items-start gap-2.5 rounded-lg border border-amber-400/30 bg-amber-400/10 px-3 py-2.5">
                   <AlertTriangle className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
                   <div className="text-amber-200 text-sm">
-                    <span className="font-semibold">Customer says they&apos;ve paid</span> — {longDate(b.customerMarkedPaidAt)}.
-                    <span className="text-amber-300/80"> Not marked paid here yet — check the bank first.</span>
+                    <span className="font-semibold">Customer says they&apos;ve paid</span>, {longDate(b.customerMarkedPaidAt)}.
+                    <span className="text-amber-300/80"> Not marked paid here yet, check the bank first.</span>
                   </div>
                 </div>
               )}
@@ -829,7 +829,7 @@ export default function BookingView() {
               {guests.filter(g => g.active).length === 0 ? (
                 <div className="p-6 text-center text-slate-500 text-sm">
                   No guest logins yet.
-                  <Link href="/admin/guests" className="block mt-2 text-sky-400 hover:text-sky-300">Create one</Link>
+                  <Link href="/admin/settings" className="block mt-2 text-sky-400 hover:text-sky-300">Create one</Link>
                 </div>
               ) : (
                 guests.filter(g => g.active).map(g => {

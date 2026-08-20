@@ -303,19 +303,20 @@ function Hero() {
       <div className="relative z-10 w-full max-w-6xl mx-auto px-6 pt-24 pb-16">
         <div className="max-w-2xl">
           <Reveal>
-            <span className="inline-block text-sky-300 text-xs font-semibold uppercase tracking-[0.18em]">Window cleaning &amp; pressure washing · North Canberra</span>
+            <span className="inline-block text-sky-300 text-xs font-semibold uppercase tracking-[0.18em]">Window cleaning &amp; pressure washing · Canberra, Queanbeyan &amp; Googong</span>
           </Reveal>
 
           <Reveal delay={0.05}>
             <h1 className="font-display text-[2.6rem] leading-[1.06] sm:text-6xl lg:text-[4.25rem] sm:leading-[1.03] font-extrabold text-white tracking-[-0.02em] mt-5">
-              The window cleaners North Canberra keeps calling back
+              The window cleaners Canberra keeps calling back
             </h1>
           </Reveal>
 
           <Reveal delay={0.1}>
             <p className="text-slate-200 text-base sm:text-lg leading-relaxed mt-5 max-w-xl">
-              We are a small local crew cleaning windows and pressure washing for homes and businesses around
-              Gungahlin, Belconnen and the inner north. Fully insured, and we do not pack up until the glass is clear.
+              We are a small local crew cleaning windows and pressure washing for homes and businesses right across
+              Canberra, from Gungahlin and Belconnen to Woden and Tuggeranong, plus Queanbeyan and Googong. Fully
+              insured, and we do not pack up until the glass is clear.
             </p>
           </Reveal>
 
@@ -434,7 +435,7 @@ function Work() {
         <Reveal className="max-w-2xl">
           <Kicker>Recent work</Kicker>
           <h2 className="font-display text-[1.9rem] leading-[1.15] sm:text-[2.75rem] sm:leading-[1.12] font-bold tracking-tight text-slate-900 mt-3">
-            A few jobs from around the inner north
+            A few jobs from around Canberra
           </h2>
           <p className="text-slate-600 mt-3">
             Same crew, same gear, every visit. Here is some recent window and pressure washing work across Canberra.
@@ -545,8 +546,8 @@ function HowItWorks() {
         <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-x-6 gap-y-8 mt-10">
           {STEPS.map((s, i) => (
             <Reveal key={s.n} delay={i * 0.06} className="border-t-2 border-navy-900 pt-5">
-              <div className="font-display text-5xl font-extrabold text-slate-200 leading-none select-none" aria-hidden>
-                {s.n.padStart(2, '0')}
+              <div className="font-display text-5xl font-extrabold text-navy-500 leading-none select-none" aria-hidden>
+                {s.n}
               </div>
               <h3 className="text-slate-900 font-semibold mt-4">{s.title}</h3>
               <p className="text-slate-600 text-sm leading-relaxed mt-2">{s.text}</p>
@@ -633,9 +634,9 @@ function About() {
             A local team, not a franchise
           </h2>
           <p className="text-slate-600 mt-5 leading-relaxed">
-            Glass &amp; Blast is a locally owned and operated business based in North Canberra. We handle every job
-            ourselves, so the people you book are the people who turn up and clean your windows. No call centre, no
-            subcontractors you have never met.
+            Glass &amp; Blast is a locally owned and operated business servicing the whole of Canberra, plus
+            Queanbeyan and Googong. We handle every job ourselves, so the people you book are the people who turn up
+            and clean your windows. No call centre, no subcontractors you have never met.
           </p>
           <p className="text-slate-600 mt-4 leading-relaxed">
             A good deal of our work comes through referrals and repeat customers, and we aim to keep it that way.
@@ -670,7 +671,10 @@ function About() {
 const AREA_LINKS: Record<string, string> = { Gungahlin: 'gungahlin', Belconnen: 'belconnen', Dickson: 'dickson', Ainslie: 'ainslie' };
 
 function Areas() {
-  const suburbs = ['Gungahlin', 'Belconnen', 'Dickson', 'Braddon', 'Ainslie', 'O\'Connor', 'Lyneham', 'Watson', 'Bruce', 'Turner', 'Reid', 'Civic', 'Hackett', 'Downer'];
+  const suburbs = [
+    'Gungahlin', 'Belconnen', 'Dickson', 'Braddon', 'Ainslie', 'O\'Connor', 'Lyneham', 'Watson', 'Bruce', 'Turner',
+    'Reid', 'Civic', 'Hackett', 'Downer', 'Woden', 'Weston Creek', 'Tuggeranong', 'Kambah', 'Queanbeyan', 'Googong',
+  ];
   return (
     <section id="areas" className="bg-white border-t border-slate-200 py-16 sm:py-24">
       <div className="max-w-6xl mx-auto px-6 grid lg:grid-cols-[0.8fr_1.2fr] gap-8 lg:gap-12">
@@ -678,8 +682,9 @@ function Areas() {
           <Kicker>Where we work</Kicker>
           <h2 className="font-display text-[1.9rem] leading-[1.15] sm:text-[2.75rem] sm:leading-[1.12] font-bold tracking-tight text-slate-900 mt-3">Areas we cover</h2>
           <p className="text-slate-600 mt-4 leading-relaxed text-sm">
-            We cover the whole of the ACT. If you are just outside the ACT we may add a small travel fee, but it is
-            case by case, so just ask and we will sort it out with your quote before you book.
+            We cover the whole of Canberra, north and south, plus Queanbeyan and Googong just over the border. If
+            you are further out again we may add a small travel fee, but it is case by case, so just ask and we
+            will sort it out with your quote before you book.
           </p>
         </div>
         <div className="flex flex-wrap gap-2 content-start">
@@ -696,7 +701,7 @@ function Areas() {
             );
           })}
           <span className="px-3 py-1.5 rounded-md bg-slate-50 border border-slate-200 text-slate-400 text-sm">
-            and the rest of the ACT
+            and everywhere in between
           </span>
         </div>
       </div>

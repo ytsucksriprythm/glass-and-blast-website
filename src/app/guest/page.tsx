@@ -24,7 +24,7 @@ const SERVICE_LABELS: Record<string, string> = {
   'other': 'Other',
 };
 const serviceText = (s: string) =>
-  (s ?? '').split(',').filter(Boolean).map(x => SERVICE_LABELS[x] ?? x).join(' + ') || '—';
+  (s ?? '').split(',').filter(Boolean).map(x => SERVICE_LABELS[x] ?? x).join(' + ') || '-';
 
 const money = (n?: number | null) => (typeof n === 'number' && n > 0 ? `$${n.toLocaleString('en-AU')}` : null);
 
@@ -249,7 +249,7 @@ export default function GuestDashboard() {
           {LOCKED.map(({ label, icon: Icon }) => (
             <button
               key={label}
-              onClick={() => toast.error('Access denied — admin only')}
+              onClick={() => toast.error('Access denied: admin only')}
               title="Admin only"
               className="rounded-xl border border-white/5 bg-navy-800/50 p-4 flex items-center gap-3 opacity-50 cursor-not-allowed text-left"
             >

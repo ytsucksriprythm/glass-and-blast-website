@@ -460,7 +460,7 @@ server.registerTool(
       plans: rows.map(r => ({
         id: r.id, name: r.name, suburb: r.suburb, address: r.address,
         frequency: r.frequency, nextDate: r.nextDate, active: r.active,
-        discount: r.discount, service: r.service,
+        visitPrice: r.visitPrice, billingCycle: r.billingCycle, service: r.service,
       })),
       _demoData: demoData,
     });

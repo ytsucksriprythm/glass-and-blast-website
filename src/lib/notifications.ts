@@ -125,7 +125,7 @@ function bookingEmailHtml(booking: Booking): string {
       <p style="font-size:14px;color:#64748b;margin:0">Submitted on ${new Date(booking.createdAt).toLocaleString('en-AU', { timeZone: 'Australia/Sydney' })}</p>
       <a href="${process.env.NEXT_PUBLIC_URL ?? 'http://localhost:3000'}/admin/dashboard" class="cta">View in Admin Dashboard</a>
     </div>
-    <div class="footer">Glass & Blast Window Cleaning · North Canberra · +61 466 050 834</div>
+    <div class="footer">Glass & Blast Window Cleaning · Canberra, Queanbeyan & Googong · +61 466 050 834</div>
   </div>
 </body>
 </html>`;
@@ -205,7 +205,7 @@ export async function sendBookingNotifications(booking: Booking): Promise<void> 
               <p style="margin:4px 0"><strong>Booking ID:</strong> ${booking.id}</p>
             </div>
             <p>Questions? Call us: <a href="tel:+61466050834">+61 466 050 834</a></p>
-            <p style="color:#94a3b8;font-size:13px">Glass & Blast Window Cleaning · North Canberra</p>
+            <p style="color:#94a3b8;font-size:13px">Glass & Blast Window Cleaning · Canberra, Queanbeyan & Googong</p>
           </div>
         `,
       });

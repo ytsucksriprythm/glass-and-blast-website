@@ -17,7 +17,7 @@ export async function POST() {
   await updateSettings({ larpModeActive: false });
   await logActivity(
     'larp.stopped',
-    `LARP mode off — ${bookings} fake jobs, ${invoices} fake invoices, ${recurring} fake recurring plans, ${pageViews} fake page views removed`,
+    `LARP mode off: ${bookings} fake jobs, ${invoices} fake invoices, ${recurring} fake recurring plans, ${pageViews} fake page views removed`,
     { bookings, invoices, recurring, pageViews },
     'admin',
   );

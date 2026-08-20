@@ -14,7 +14,7 @@ export function FlagButton({ booking, onClick, size = 'md' }: { booking: Booking
   return (
     <button
       onClick={onClick}
-      title={flagged ? 'Job flagged — tap to view' : 'Flag a problem with this job'}
+      title={flagged ? 'Job flagged, tap to view' : 'Flag a problem with this job'}
       className={`${pad} rounded-lg border cursor-pointer transition-all ${
         flagged
           ? 'bg-red-500/20 border-red-400/50 text-red-300'

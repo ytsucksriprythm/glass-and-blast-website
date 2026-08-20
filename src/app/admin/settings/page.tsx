@@ -8,10 +8,12 @@ import {
   ArrowLeft, Settings as SettingsIcon, Save, ShieldAlert, CreditCard, Bell, Star,
   CalendarClock, Globe, ScrollText, RefreshCw, FileEdit, Trash2, Plus, Pencil, X, Check, MapPin, Sparkles,
   FolderOpen, UploadCloud, Copy, ExternalLink, FileVideo, FileImage, File as FileIcon, Lock, Facebook, ChevronDown,
+  Users, Eye, KeyRound, Download,
 } from 'lucide-react';
 import type { AppSettings } from '@/lib/settings';
 import type { PaymentProfile, BusinessProfile } from '@/lib/invoice';
 import type { VaultItem } from '@/lib/vault';
+import type { Booking, BookingStatus } from '@/lib/db';
 import { ACTIVITY_TYPE_LABEL, type ActivityEntry } from '@/lib/activity';
 import { APP_VERSION } from '@/lib/version';
 import { AdminSidebar, AdminMobileNav, AdminMoreSheet, useMoreSheet, adminNavItems } from '@/components/admin/AdminNav';
@@ -147,7 +149,7 @@ function ProfileManager<T extends { id: string; name: string; builtin: boolean }
             <div className="min-w-0">
               <div className="text-white text-sm font-medium">{p.name}{p.builtin && <span className="text-slate-500 text-xs ml-1.5">(built-in)</span>}</div>
               <div className="text-slate-500 text-xs mt-0.5 truncate">
-                {fields.map(fc => (p as unknown as Record<string, string>)[fc.key]).filter(Boolean).join(' · ') || '—'}
+                {fields.map(fc => (p as unknown as Record<string, string>)[fc.key]).filter(Boolean).join(' · ') || '-'}
               </div>
             </div>
             <div className="flex-shrink-0 flex items-center gap-2">
@@ -264,12 +266,12 @@ function MediaLibrary() {
   const copyUrl = (url: string) => {
     navigator.clipboard.writeText(url).then(
       () => toast.success('Link copied'),
-      () => toast.error('Could not copy — long-press the link to copy manually'),
+      () => toast.error('Could not copy, long-press the link to copy manually'),
     );
   };
 
   const deleteItem = async (item: MediaItem) => {
-    if (!window.confirm(`Delete "${item.filename}"? This removes the public link — anywhere it's already shared will break.`)) return;
+    if (!window.confirm(`Delete "${item.filename}"? This removes the public link, anywhere it's already shared will break.`)) return;
     setDeletingUrl(item.url);
     try {
       const res = await fetch(`/api/admin/media?url=${encodeURIComponent(item.url)}`, { method: 'DELETE' });
@@ -365,7 +367,7 @@ function Vault() {
   const copyValue = (value: string) => {
     navigator.clipboard.writeText(value).then(
       () => toast.success('Copied'),
-      () => toast.error('Could not copy — select the text manually'),
+      () => toast.error('Could not copy, select the text manually'),
     );
   };
 
@@ -469,6 +471,290 @@ function Vault() {
           </div>
         </div>
       )}
+    </Section>
+  );
+}
+
+type Guest = { id: string; name: string; active: boolean; createdAt: string };
+
+// Guest (subcontractor) logins — moved here from its own /admin/guests page.
+function GuestLogins() {
+  const router = useRouter();
+  const [guests, setGuests] = useState<Guest[] | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [showCreate, setShowCreate] = useState(false);
+  const [name, setName] = useState('');
+  const [password, setPassword] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [resetFor, setResetFor] = useState<Guest | null>(null);
+  const [newPassword, setNewPassword] = useState('');
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch('/api/admin/guests');
+      if (res.ok) setGuests(await res.json());
+    } finally { setLoading(false); }
+  };
+  useEffect(() => { load(); }, []);
+
+  const create = async () => {
+    if (!name.trim()) { toast.error('Name is required'); return; }
+    if (password.length < 4) { toast.error('Password must be at least 4 characters'); return; }
+    setSaving(true);
+    try {
+      const res = await fetch('/api/admin/guests', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, password }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error || 'Failed');
+      const guest: Guest = await res.json();
+      setGuests(g => [...(g ?? []), guest]);
+      toast.success(`Guest login "${guest.name}" created`);
+      setShowCreate(false); setName(''); setPassword('');
+    } catch (err) { toast.error(err instanceof Error ? err.message : 'Failed'); }
+    finally { setSaving(false); }
+  };
+
+  // Admin -> guest view. No password needed; the admin session is kept.
+  const viewAs = async (g: Guest) => {
+    const res = await fetch('/api/admin/switch', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ guestId: g.id }),
+    });
+    if (res.ok) router.push('/guest');
+    else toast.error('Could not switch');
+  };
+
+  const toggleActive = async (g: Guest) => {
+    const res = await fetch(`/api/admin/guests/${g.id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ active: !g.active }),
+    });
+    if (res.ok) {
+      const updated: Guest = await res.json();
+      setGuests(list => list?.map(x => x.id === g.id ? updated : x) ?? null);
+      toast.success(updated.active ? 'Login enabled' : 'Login disabled');
+    } else toast.error('Update failed');
+  };
+
+  const resetPassword = async () => {
+    if (!resetFor) return;
+    if (newPassword.length < 4) { toast.error('Password must be at least 4 characters'); return; }
+    const res = await fetch(`/api/admin/guests/${resetFor.id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: newPassword }),
+    });
+    if (res.ok) { toast.success('Password updated'); setResetFor(null); setNewPassword(''); }
+    else toast.error('Update failed');
+  };
+
+  const remove = async (g: Guest) => {
+    if (!window.confirm(`Delete the guest login "${g.name}"? Their jobs stay, but become unassigned. This cannot be undone.`)) return;
+    const res = await fetch(`/api/admin/guests/${g.id}`, { method: 'DELETE' });
+    if (res.ok) { setGuests(list => list?.filter(x => x.id !== g.id) ?? null); toast.success('Guest deleted'); }
+    else toast.error('Delete failed');
+  };
+
+  return (
+    <Section title="Guest logins" icon={Users}>
+      <p className="text-slate-500 text-xs -mt-1 mb-1">Subcontractors sign in with their own password and only see jobs you send them.</p>
+
+      {loading && !guests ? (
+        <div className="text-center text-slate-600 text-xs py-6">Loading…</div>
+      ) : !guests || guests.length === 0 ? (
+        <div className="text-center text-slate-600 text-xs py-6">No guest logins yet.</div>
+      ) : (
+        <div className="space-y-2">
+          {guests.map(g => (
+            <div key={g.id} className={`rounded-lg border p-3 ${g.active ? 'border-white/10 bg-white/[0.02]' : 'border-white/5 bg-white/[0.01] opacity-60'}`}>
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-white text-sm font-medium truncate">{g.name}</div>
+                  <div className="text-slate-500 text-xs mt-0.5">{g.active ? 'Active' : 'Disabled'}</div>
+                </div>
+                <button onClick={() => viewAs(g)} className="flex-shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-sky-400/30 bg-sky-400/10 text-sky-300 hover:bg-sky-400/15 text-xs font-semibold cursor-pointer">
+                  <Eye className="w-3.5 h-3.5" /> View as
+                </button>
+              </div>
+              <div className="mt-2.5 pt-2.5 border-t border-white/5 flex items-center gap-4">
+                <button onClick={() => toggleActive(g)} className={`text-xs font-semibold cursor-pointer ${g.active ? 'text-slate-400 hover:text-amber-400' : 'text-emerald-400'}`}>
+                  {g.active ? 'Disable login' : 'Enable login'}
+                </button>
+                <button onClick={() => { setResetFor(g); setNewPassword(''); }} className="inline-flex items-center gap-1.5 text-xs text-slate-400 hover:text-sky-400 cursor-pointer">
+                  <KeyRound className="w-3.5 h-3.5" /> Reset password
+                </button>
+                <button onClick={() => remove(g)} aria-label="Delete guest" className="ml-auto text-slate-500 hover:text-red-400 cursor-pointer"><Trash2 className="w-4 h-4" /></button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {!showCreate ? (
+        <button onClick={() => setShowCreate(true)} className="inline-flex items-center gap-1.5 text-xs text-sky-400 hover:text-sky-300 cursor-pointer"><Plus className="w-3.5 h-3.5" /> Create guest login</button>
+      ) : (
+        <div className="rounded-lg border border-sky-400/30 bg-sky-400/5 p-3 space-y-2">
+          <input className="form-input text-sm w-full" placeholder="Profile name (e.g. Dave)" value={name} onChange={e => setName(e.target.value)} />
+          <input className="form-input text-sm w-full" placeholder="Password (they sign in with this)" value={password} onChange={e => setPassword(e.target.value)} />
+          <div className="flex gap-2">
+            <button onClick={create} disabled={saving} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-white text-sm font-semibold cursor-pointer">
+              {saving ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <Check className="w-4 h-4" />} Create login
+            </button>
+            <button onClick={() => { setShowCreate(false); setName(''); setPassword(''); }} className="px-3 py-2 rounded-lg border border-white/10 text-slate-300 hover:text-white cursor-pointer">Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {resetFor && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => setResetFor(null)}>
+          <div className="w-full max-w-sm rounded-xl border border-white/10 bg-navy-800 p-5" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-white font-semibold">Reset {resetFor.name}&apos;s password</h2>
+              <button onClick={() => setResetFor(null)} className="text-slate-400 hover:text-white cursor-pointer"><X className="w-5 h-5" /></button>
+            </div>
+            <input autoFocus className="form-input text-sm w-full" placeholder="New password" value={newPassword} onChange={e => setNewPassword(e.target.value)} />
+            <button onClick={resetPassword} className="mt-3 w-full py-3 rounded-lg bg-sky-500 hover:bg-sky-400 text-white font-semibold cursor-pointer">Update password</button>
+          </div>
+        </div>
+      )}
+    </Section>
+  );
+}
+
+// Trash — bookings deleted (single, bulk, or group-delete) within the last
+// 60 days, restorable here. See DELETED_BOOKING_RETENTION_DAYS in db.ts;
+// anything older gets purged for good the next time this list loads.
+function DeletedBookings() {
+  const [bookings, setBookings] = useState<Booking[] | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [listOpen, setListOpen] = useState(false);
+  const [restoringId, setRestoringId] = useState<string | null>(null);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch('/api/admin/bookings/deleted');
+      if (res.ok) setBookings(await res.json());
+    } finally { setLoading(false); }
+  };
+  useEffect(() => { load(); }, []);
+
+  const restore = async (b: Booking) => {
+    setRestoringId(b.id);
+    try {
+      const res = await fetch(`/api/admin/bookings/${b.id}/restore`, { method: 'POST' });
+      if (!res.ok) throw new Error();
+      setBookings(list => list?.filter(x => x.id !== b.id) ?? null);
+      toast.success(`${b.name} restored`);
+    } catch { toast.error('Restore failed'); }
+    finally { setRestoringId(null); }
+  };
+
+  return (
+    <Section title="Deleted bookings" icon={Trash2}>
+      <p className="text-slate-500 text-xs -mt-1 mb-1">Deleted bookings stay here for 60 days before they&apos;re gone for good — restore one any time before then.</p>
+      {loading && !bookings ? (
+        <div className="text-center text-slate-600 text-xs py-6">Loading…</div>
+      ) : !bookings || bookings.length === 0 ? (
+        <div className="text-center text-slate-600 text-xs py-6">Nothing in the trash.</div>
+      ) : (
+        <>
+          <button onClick={() => setListOpen(v => !v)} className="w-full flex items-center justify-between text-slate-300 hover:text-white text-sm cursor-pointer">
+            <span>{listOpen ? 'Hide' : 'Show'} {bookings.length} deleted booking{bookings.length !== 1 ? 's' : ''}</span>
+            <ChevronDown className={`w-4 h-4 transition-transform ${listOpen ? 'rotate-180' : ''}`} />
+          </button>
+          {listOpen && (
+            <div className="space-y-2 pt-1">
+              {bookings.map(b => (
+                <div key={b.id} className="rounded-lg border border-white/10 bg-white/[0.02] p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-white text-sm font-medium truncate">{b.name}</div>
+                      <div className="text-slate-500 text-xs mt-0.5 truncate">{[b.address, b.suburb].filter(Boolean).join(', ') || '-'}</div>
+                      <div className="text-slate-600 text-xs mt-0.5">Deleted {b.deletedAt ? timeAgo(b.deletedAt) : 'recently'}</div>
+                    </div>
+                    <button
+                      onClick={() => restore(b)}
+                      disabled={restoringId === b.id}
+                      className="flex-shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-emerald-400/30 bg-emerald-400/10 text-emerald-300 hover:bg-emerald-400/15 disabled:opacity-50 text-xs font-semibold cursor-pointer"
+                    >
+                      {restoringId === b.id ? <div className="w-3.5 h-3.5 border-2 border-emerald-300/30 border-t-emerald-300 rounded-full animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />} Restore
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+    </Section>
+  );
+}
+
+const EXPORT_STATUS_LABEL: Record<BookingStatus, string> = {
+  pending: 'Pending', quoted: 'Quoted', confirmed: 'Confirmed', completed: 'Completed', cancelled: 'Cancelled', cold: 'Cold Lead',
+};
+const EXPORT_SERVICE_LABEL: Record<string, string> = {
+  'window-washing': 'Window Washing', 'pressure-washing': 'Pressure Washing', both: 'Both Services',
+  'flyscreen-repair': 'Flyscreen Repair', 'solar-panel-cleaning': 'Solar Panel Cleaning', other: 'Other',
+};
+const exportServiceText = (service: string) =>
+  (service ?? '').split(',').filter(Boolean).map(s => EXPORT_SERVICE_LABEL[s] ?? s).join(' + ') || '-';
+
+// Copy every booking as readable text — moved here from the Bookings tab's
+// toolbar so it doesn't crowd the filters there.
+function ExportBookings() {
+  const router = useRouter();
+  const [busy, setBusy] = useState(false);
+
+  const exportBookings = async () => {
+    setBusy(true);
+    try {
+      const res = await fetch('/api/admin/bookings?status=all&service=all&sort=createdAt&order=desc&search=');
+      if (res.status === 401) { router.push('/admin'); return; }
+      const all: Booking[] = await res.json();
+      if (!Array.isArray(all) || all.length === 0) { toast.error('No bookings to export'); return; }
+
+      const blocks = all.map((b, i) => {
+        const lines = [
+          `${i + 1}. ${b.name}${b.phone ? ` · ${b.phone}` : ''}`,
+          `   Service: ${exportServiceText(b.service)} | ${b.propertyType}`,
+          `   Status: ${EXPORT_STATUS_LABEL[b.status] ?? b.status} | Paid: ${b.paid ? 'yes' : 'no'}${typeof b.quoteAmount === 'number' && b.quoteAmount > 0 ? ` | Quote: ${money(b.quoteAmount)}` : ''}`,
+        ];
+        if (b.preferredDate || b.preferredTime) lines.push(`   When: ${[b.preferredDate, b.preferredTime].filter(Boolean).join(' ')}`);
+        if (b.address || b.suburb) lines.push(`   Address: ${[b.address, b.suburb].filter(Boolean).join(', ')}`);
+        if (b.email) lines.push(`   Email: ${b.email}`);
+        if (b.notes) lines.push(`   Customer note: ${b.notes}`);
+        if (b.adminNotes) lines.push(`   Admin note: ${b.adminNotes}`);
+        if (b.flaggedAt) lines.push(`   ⚠ FLAGGED: ${b.flagNote ?? ''}`);
+        lines.push(`   Source: ${b.source} | Created: ${new Date(b.createdAt).toLocaleDateString('en-AU')}`);
+        return lines.join('\n');
+      });
+
+      const text = `Glass & Blast · Bookings export\nGenerated: ${new Date().toLocaleString('en-AU')}\nTotal: ${all.length}\n\n${blocks.join('\n\n')}`;
+
+      try {
+        await navigator.clipboard.writeText(text);
+        toast.success(`Copied ${all.length} bookings to clipboard`);
+      } catch {
+        const url = URL.createObjectURL(new Blob([text], { type: 'text/plain' }));
+        const a = document.createElement('a');
+        a.href = url; a.download = `bookings-${new Date().toISOString().slice(0, 10)}.txt`;
+        a.click(); URL.revokeObjectURL(url);
+        toast.success(`Downloaded ${all.length} bookings`);
+      }
+    } catch { toast.error('Export failed'); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <Section title="Export bookings" icon={Download}>
+      <p className="text-slate-500 text-xs -mt-1 mb-1">Copies every booking as readable text — handy for pasting into Claude or notes.</p>
+      <button onClick={exportBookings} disabled={busy} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg glass border border-white/10 text-slate-300 hover:text-white text-sm font-semibold cursor-pointer disabled:opacity-50">
+        {busy ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <Download className="w-4 h-4" />}
+        {busy ? 'Exporting…' : 'Export all bookings'}
+      </button>
     </Section>
   );
 }
@@ -619,7 +905,7 @@ export default function SettingsPage() {
         if (!res.ok) throw new Error();
         const { bookings, invoices, recurring, pageViews } = await res.json();
         setS(prev => prev ? { ...prev, larpModeActive: false } : prev);
-        toast.success(`LARP mode off — removed ${bookings} jobs, ${invoices} invoices, ${recurring} recurring plans, ${pageViews} page views`);
+        toast.success(`LARP mode off: removed ${bookings} jobs, ${invoices} invoices, ${recurring} recurring plans, ${pageViews} page views`);
       } else {
         const res = await fetch('/api/admin/larp/start', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -632,9 +918,9 @@ export default function SettingsPage() {
         if (!res.ok) throw new Error();
         const { bookings, invoices, recurring, pageViews } = await res.json();
         setS(prev => prev ? { ...prev, larpModeActive: true } : prev);
-        toast.success(`Larping — ${bookings} jobs, ${invoices} invoices, ${recurring} recurring plans, ${pageViews} page views added`);
+        toast.success(`Larping: ${bookings} jobs, ${invoices} invoices, ${recurring} recurring plans, ${pageViews} page views added`);
       }
-    } catch { toast.error('LARP mode failed — try again'); }
+    } catch { toast.error('LARP mode failed, try again'); }
     finally { setLarpBusy(false); }
   };
 
@@ -686,7 +972,7 @@ export default function SettingsPage() {
               <button
                 onClick={toggleLarp}
                 disabled={larpBusy || !s}
-                title={s?.larpModeActive ? 'Turn LARP mode off — removes the fake data' : 'Turn LARP mode on — fills the CRM with fake data'}
+                title={s?.larpModeActive ? 'Turn LARP mode off: removes the fake data' : 'Turn LARP mode on: fills the CRM with fake data'}
                 className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold cursor-pointer transition-colors disabled:opacity-50 ${s?.larpModeActive ? 'bg-fuchsia-500/20 border border-fuchsia-400/40 text-fuchsia-300' : 'glass border border-white/10 text-slate-300 hover:text-white'}`}
               >
                 {larpBusy && <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />}
@@ -719,9 +1005,9 @@ export default function SettingsPage() {
           ) : s && (
             <div className="space-y-4">
               <ProfileManager<BusinessProfile>
-                title="Invoice autofill — business info"
+                title="Invoice & quote autofill: business info"
                 icon={FileEdit}
-                autofillLabel="Auto-fill business info"
+                autofillLabel="Auto-fill business info (invoices & quotes)"
                 autofillEnabled={s.autofillBusinessInfo}
                 onToggleAutofill={v => set('autofillBusinessInfo', v)}
                 profiles={businessProfiles}
@@ -745,7 +1031,7 @@ export default function SettingsPage() {
               </Section>
 
               <ProfileManager<PaymentProfile>
-                title="Invoice autofill — payment details"
+                title="Invoice autofill: payment details"
                 icon={FileEdit}
                 autofillLabel="Auto-fill payment details"
                 autofillEnabled={s.autofillPaymentDetails}
@@ -800,9 +1086,15 @@ export default function SettingsPage() {
                 <Toggle label="Site visit tracking enabled" checked={s.siteTrackingEnabled} onChange={v => set('siteTrackingEnabled', v)} />
               </Section>
 
+              <GuestLogins />
+
+              <ExportBookings />
+
+              <DeletedBookings />
+
               <Section title="Facebook lead sync" icon={Facebook}>
                 <p className="text-slate-500 text-xs -mt-1 mb-1">
-                  Pulls new rows from the Google Sheet that Meta&apos;s Lead Ads &quot;Connect CRM&quot; feature writes to, and turns each one into a booking. Runs automatically overnight (see vercel.json) — use this to check right away.
+                  Pulls new rows from the Google Sheet that Meta&apos;s Lead Ads &quot;Connect CRM&quot; feature writes to, and turns each one into a booking. Runs automatically overnight (see vercel.json), use this to check right away.
                 </p>
                 <button
                   onClick={syncMetaLeads}

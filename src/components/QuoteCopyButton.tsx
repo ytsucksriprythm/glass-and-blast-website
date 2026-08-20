@@ -16,7 +16,7 @@ export default function QuoteCopyButton({ text }: { text: string }) {
       toast.success('Quote text copied');
       setTimeout(() => setCopied(false), 2000);
     } catch {
-      toast.error('Copy failed — select the text manually');
+      toast.error('Copy failed, select the text manually');
     }
   };
   return (

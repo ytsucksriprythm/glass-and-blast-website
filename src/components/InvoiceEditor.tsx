@@ -9,6 +9,7 @@ import {
 import {
   type Invoice, type InvoiceStatus, type InvoiceLineItem, type PaymentProfile, type BusinessProfile, type PaymentMethod,
   BUSINESS_DEFAULTS, PAYMENT_DEFAULTS, PAYMENT_METHOD_LABEL, SQUARE_SURCHARGE_PERCENT_FALLBACK, isInvoiceOverdue, addDays, cardTotal, computeTotals, money, longDate, addressesMatch,
+  DEFAULT_PAYMENT_DUE_TERMS, paymentDueTermsDays, PAYMENT_DUE_TERMS_OPTIONS,
 } from '@/lib/invoice';
 import type { AppSettings } from '@/lib/settings';
 import type { Booking } from '@/lib/db';
@@ -67,7 +68,11 @@ function fromInvoice(inv: Invoice): Form {
   };
 }
 
-// Auto-fill shape passed when creating an invoice from a booking.
+// Auto-fill shape passed when creating an invoice from a booking. `dueDays`
+// comes from that booking's most recent Quote (see PAYMENT_DUE_TERMS_OPTIONS
+// in lib/invoice.ts) so the invoice's due date matches what was already
+// promised on the quote — falls back to the business default when there's
+// no quote (or the quote predates this field) to carry over.
 export type InvoicePrefill = {
   billToName?: string;
   billToLines?: string;
@@ -77,6 +82,7 @@ export type InvoicePrefill = {
   amount?: number | null;
   serviceDate?: string;
   bookingId?: string | null;
+  dueDays?: number;
 };
 
 function blankForm(prefill?: InvoicePrefill): Form {
@@ -88,7 +94,8 @@ function blankForm(prefill?: InvoicePrefill): Form {
     billToName: prefill?.billToName ?? '',
     billToLines: prefill?.billToLines ?? '',
     clientShow: false, clientName: '', clientTrn: '', clientFileNo: '', clientClaimRef: '',
-    invoiceDate: t, serviceDate: prefill?.serviceDate || t, dueDate: addDays(t, 30),
+    invoiceDate: t, serviceDate: prefill?.serviceDate || t,
+    dueDate: addDays(t, prefill?.dueDays ?? paymentDueTermsDays(DEFAULT_PAYMENT_DUE_TERMS)),
     items: [{
       ...emptyItemForm(),
       description: prefill?.itemDescription ?? '',
@@ -429,7 +436,7 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
     const res = await fetch(`/api/admin/invoices/${inv.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     if (res.ok) {
       setInv(await res.json());
-      toast.success(status === 'paid' && paymentMethod ? `Marked paid — ${PAYMENT_METHOD_LABEL[paymentMethod].toLowerCase()}` : `Marked ${STATUS_LABEL[status].toLowerCase()}`);
+      toast.success(status === 'paid' && paymentMethod ? `Marked paid: ${PAYMENT_METHOD_LABEL[paymentMethod].toLowerCase()}` : `Marked ${STATUS_LABEL[status].toLowerCase()}`);
     } else toast.error('Update failed');
   };
 
@@ -495,7 +502,7 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
                     value=""
                     onChange={e => { const v = e.target.value as PaymentMethod; if (v) setStatus('paid', v); }}
                     className="appearance-none pl-7 pr-6 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/15 text-slate-200 hover:border-emerald-400/40 text-xs font-semibold cursor-pointer bg-navy-800"
-                    title="Mark paid — choose how"
+                    title="Mark paid: choose how"
                   >
                     <option value="" disabled>Mark paid…</option>
                     <option value="bank_transfer">Bank transfer</option>
@@ -531,7 +538,7 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
               {inv.squarePaidAt && (
                 <div className="mb-3 rounded-lg border border-amber-400/25 bg-amber-400/10 p-3 flex flex-wrap items-center justify-between gap-2">
                   <span className="inline-flex items-center gap-1.5 text-amber-300 text-xs font-semibold">
-                    <Banknote className="w-3.5 h-3.5" /> Square says this was paid by card — verify the money's in the account, then confirm.
+                    <Banknote className="w-3.5 h-3.5" /> Square says this was paid by card. Verify the money's in the account, then confirm.
                   </span>
                   <button onClick={() => setStatus('paid', 'card')} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-white text-xs font-semibold cursor-pointer">
                     <BadgeCheck className="w-3.5 h-3.5" /> Confirm paid
@@ -551,7 +558,7 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
                   <p className="mt-2 text-slate-500 text-xs">
                     Card total incl. {settings?.squareSurchargePercent ?? SQUARE_SURCHARGE_PERCENT_FALLBACK}% surcharge: <span className="text-slate-300 font-semibold">{money(cardTotal(total, settings?.squareSurchargePercent))}</span>.
                     {inv.squareLinkAmount != null && Math.abs(inv.squareLinkAmount - cardTotal(total, settings?.squareSurchargePercent)) > 0.01 && (
-                      <span className="text-amber-400"> Invoice total changed since this link was made — hit Regenerate.</span>
+                      <span className="text-amber-400"> Invoice total changed since this link was made. Hit Regenerate.</span>
                     )}
                   </p>
                 </>
@@ -626,7 +633,7 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
               <button type="button" onClick={() => set('isTaxInvoice', false)} className={`px-3 py-2.5 rounded-lg border text-sm font-medium cursor-pointer ${!f.isTaxInvoice ? 'border-sky-400 bg-sky-400/15 text-white' : 'border-white/10 text-slate-300'}`}>Invoice</button>
               <button type="button" onClick={() => set('isTaxInvoice', true)} className={`px-3 py-2.5 rounded-lg border text-sm font-medium cursor-pointer ${f.isTaxInvoice ? 'border-sky-400 bg-sky-400/15 text-white' : 'border-white/10 text-slate-300'}`}>Tax Invoice</button>
             </div>
-            <p className="mt-2 text-xs text-slate-500">{f.isTaxInvoice ? 'Only use "Tax Invoice" if a client requires it — you’re not registered for GST.' : 'Compliant default: you’re not registered for GST, so this is titled "Invoice".'}</p>
+            <p className="mt-2 text-xs text-slate-500">{f.isTaxInvoice ? 'Only use "Tax Invoice" if a client requires it, you’re not registered for GST.' : 'Compliant default: you’re not registered for GST, so this is titled "Invoice".'}</p>
           </Section>
 
           <Section title="Dates">
@@ -635,7 +642,13 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
               <div><L>Service date</L><input type="date" className="form-input text-sm" value={f.serviceDate} onChange={e => set('serviceDate', e.target.value)} /></div>
               <div><L>Due date</L><input type="date" className="form-input text-sm" value={f.dueDate} onChange={e => set('dueDate', e.target.value)} /></div>
             </div>
-            <button type="button" onClick={() => set('dueDate', addDays(f.invoiceDate, 30))} className="mt-2 text-xs text-sky-400 hover:text-sky-300 cursor-pointer">Set due 30 days after invoice date</button>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {PAYMENT_DUE_TERMS_OPTIONS.map(o => (
+                <button key={o.key} type="button" onClick={() => set('dueDate', addDays(f.invoiceDate, o.days))} className="px-2.5 py-1 rounded-md border border-white/10 text-xs text-slate-400 hover:text-sky-300 hover:border-sky-400/40 cursor-pointer">
+                  {o.label}
+                </button>
+              ))}
+            </div>
           </Section>
 
           <Section title="Bill to">

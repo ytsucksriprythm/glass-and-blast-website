@@ -5,14 +5,17 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import {
-  LayoutDashboard, Calendar as CalendarIcon, CalendarClock, FileSignature, FileText, Repeat,
-  BarChart3, Globe, Users, Settings as SettingsIcon, LogOut, Menu, X,
+  LayoutDashboard, Calendar as CalendarIcon, CalendarClock, FileText, Repeat,
+  BarChart3, Settings as SettingsIcon, LogOut, Menu, X,
 } from 'lucide-react';
 import { APP_VERSION } from '@/lib/version';
 
 // Single source of truth for admin nav order: Overview, Bookings, Calendar,
-// Quotes, Invoices, Recurring Plans, Business Stats, Site Stats, Guest Logins, Settings.
-export type AdminNavKey = 'overview' | 'bookings' | 'calendar' | 'quotes' | 'invoices' | 'recurring' | 'business' | 'site' | 'guests' | 'settings';
+// Invoices & Quotes, Recurring Plans, Stats, Settings. Quotes live as a tab on
+// the Invoices page (src/app/admin/invoices/page.tsx); Business/Site stats
+// live as two tabs on the Stats view (dashboard 'business'/'site' tabs);
+// Guest Logins moved into Settings — none of those get their own nav entry.
+export type AdminNavKey = 'overview' | 'bookings' | 'calendar' | 'invoices' | 'recurring' | 'stats' | 'settings';
 
 export type AdminNavItem = {
   key: AdminNavKey;
@@ -42,12 +45,10 @@ export function adminNavItems(opts: {
     { key: 'overview', label: 'Overview', icon: LayoutDashboard, ...tabItem('overview') },
     { key: 'bookings', label: 'Bookings', icon: CalendarIcon, badge: pending, ...tabItem('bookings') },
     { key: 'calendar', label: 'Calendar', icon: CalendarClock, href: '/admin/calendar' },
-    { key: 'quotes', label: 'Quotes', icon: FileSignature, href: '/admin/quotes', warn: 'New — not checked for ACT legal compliance yet. Don’t send a real quote off this until it’s been reviewed.' },
-    { key: 'invoices', label: 'Invoices', icon: FileText, href: '/admin/invoices' },
+    { key: 'invoices', label: 'Invoices & Quotes', icon: FileText, href: '/admin/invoices' },
     { key: 'recurring', label: 'Recurring Plans', icon: Repeat, href: '/admin/recurring' },
-    { key: 'business', label: 'Business Stats', icon: BarChart3, ...tabItem('business') },
-    { key: 'site', label: 'Site Stats', icon: Globe, ...tabItem('site') },
-    { key: 'guests', label: 'Guest Logins', icon: Users, href: '/admin/guests' },
+    // "Stats" opens on the Business tab; Site Stats is the second tab there.
+    { key: 'stats', label: 'Stats', icon: BarChart3, ...tabItem('business') },
     { key: 'settings', label: 'Settings', icon: SettingsIcon, href: '/admin/settings' },
   ];
 }

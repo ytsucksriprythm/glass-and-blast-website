@@ -18,16 +18,26 @@ export async function POST(req: NextRequest) {
     if (!name || !service || !frequency || !nextDate) {
       return NextResponse.json({ error: 'Name, service, frequency and next date are required' }, { status: 400 });
     }
-    if (!['monthly', 'quarterly', 'biannual'].includes(frequency)) {
+    if (!['weekly', 'fortnightly', 'monthly', 'quarterly', 'biannual', 'custom'].includes(frequency)) {
       return NextResponse.json({ error: 'Invalid frequency' }, { status: 400 });
     }
     if (!/^\d{4}-\d{2}-\d{2}$/.test(nextDate)) {
       return NextResponse.json({ error: 'Next date must be YYYY-MM-DD' }, { status: 400 });
     }
+    const customIntervalWeeks = typeof body.customIntervalWeeks === 'number' ? body.customIntervalWeeks : null;
+    if (frequency === 'custom' && (!customIntervalWeeks || customIntervalWeeks < 1)) {
+      return NextResponse.json({ error: 'Custom cadence needs a number of weeks (1 or more)' }, { status: 400 });
+    }
+    const billingCycle = ['per_visit', 'monthly', 'custom'].includes(body.billingCycle) ? body.billingCycle : 'per_visit';
+    const customBillingCycle = typeof body.customBillingCycle === 'string' ? body.customBillingCycle.trim() : '';
+    if (billingCycle === 'custom' && !customBillingCycle) {
+      return NextResponse.json({ error: 'Describe the custom billing cycle' }, { status: 400 });
+    }
     const job = await addRecurringJob({
       name,
       service,
       frequency,
+      customIntervalWeeks: frequency === 'custom' ? customIntervalWeeks : null,
       nextDate,
       phone: body.phone ?? '',
       email: body.email ?? '',
@@ -36,7 +46,9 @@ export async function POST(req: NextRequest) {
       propertyType: body.propertyType || 'residential',
       preferredTime: body.preferredTime ?? '',
       notes: body.notes ?? '',
-      discount: typeof body.discount === 'number' ? body.discount : null,
+      visitPrice: typeof body.visitPrice === 'number' ? body.visitPrice : null,
+      billingCycle,
+      customBillingCycle: billingCycle === 'custom' ? customBillingCycle : null,
     });
     return NextResponse.json(job, { status: 201 });
   } catch (err) {

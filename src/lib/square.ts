@@ -50,7 +50,7 @@ export async function createSquarePaymentLink(
     body: JSON.stringify({
       idempotency_key: crypto.randomUUID(),
       quick_pay: {
-        name: `Invoice ${invoice.number} — Glass and Blast`,
+        name: `Invoice ${invoice.number} · Glass and Blast`,
         price_money: { amount: Math.round(amount * 100), currency: 'AUD' },
         location_id: LOCATION_ID,
       },

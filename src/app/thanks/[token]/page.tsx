@@ -34,7 +34,7 @@ export default async function ThanksPage({ params }: { params: Promise<{ token: 
         {/* Header */}
         <div className="text-center mb-8">
           <div className="font-display text-3xl font-extrabold tracking-tight">Glass and Blast</div>
-          <div className="text-slate-500 text-sm mt-1">Window Cleaning &nbsp;|&nbsp; North Canberra &amp; Greater ACT</div>
+          <div className="text-slate-500 text-sm mt-1">Window Cleaning &nbsp;|&nbsp; Canberra, Queanbeyan &amp; Googong</div>
         </div>
 
         <div className="rounded-2xl bg-white border border-slate-200 shadow-sm p-6 sm:p-8 text-center">

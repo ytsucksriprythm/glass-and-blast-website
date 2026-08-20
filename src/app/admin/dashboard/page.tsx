@@ -11,7 +11,7 @@ import {
   Clock, CheckCircle, XCircle, Trash2, ChevronUp,
   ChevronDown, ChevronRight, Search, RefreshCw, DollarSign,
   ArrowUpRight, ArrowDownRight, Edit3, Check, Plus, X, StickyNote, BadgeCheck, Wallet,
-  Globe, Eye, Users, Link2, MapPin, Target, ClipboardCopy, CalendarDays, CalendarClock, ArrowRight,
+  Globe, Eye, Users, Link2, MapPin, Target, CalendarDays, CalendarClock, ArrowRight,
   Repeat, PhoneCall, FileText, Send, CheckSquare, Square, Layers, AlertTriangle,
   Snowflake, Undo2, GripVertical, MoveDown, Timer, ListChecks, Compass, Facebook,
 } from 'lucide-react';
@@ -107,7 +107,7 @@ const serviceText = (service: string) =>
     .split(',')
     .filter(Boolean)
     .map(s => SERVICE_LABELS[s] ?? s)
-    .join(' + ') || '—';
+    .join(' + ') || '-';
 
 // Internal calendar slot label. "Tuesday 3:00 PM" within a week, else "15 Aug 2026".
 function scheduledLabel(iso: string): string {
@@ -182,6 +182,71 @@ function StatCard({ label, value, sub, icon: Icon, trend, color = '#38BDF8' }: {
       <div className="text-slate-400 text-sm mt-1">{label}</div>
       {sub && <div className="text-slate-600 text-xs mt-0.5">{sub}</div>}
     </motion.div>
+  );
+}
+
+// Generic checkbox-list filter dropdown — replaces the old single-value
+// <select> for Status/Service so more than one can be picked at once.
+// Empty `selected` means "all" (no filter applied) — and displays every box
+// as checked, so the default view reads as "everything's shown" instead of
+// looking like nothing's selected. Unchecking one converts to an explicit
+// list of the rest; re-checking everything collapses back to `[]`. If the
+// user unchecks the very last box, that's "show nothing" — a real, different
+// state from the default "show everything", so it's held as the one-element
+// NONE_SENTINEL array rather than an empty array (which would otherwise be
+// indistinguishable from — and silently revert to — the "all" default).
+const NONE_SENTINEL = '__none__';
+function MultiSelectDropdown({ label, options, selected, onChange }: {
+  label: string;
+  options: { value: string; label: string }[];
+  selected: string[];
+  onChange: (v: string[]) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const onDoc = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, []);
+  const isNone = selected.length === 1 && selected[0] === NONE_SENTINEL;
+  const toggle = (v: string) => {
+    const allValues = options.map(o => o.value);
+    const effective = selected.length === 0 ? allValues : isNone ? [] : selected;
+    const next = effective.includes(v) ? effective.filter(x => x !== v) : [...effective, v];
+    if (next.length === 0) onChange([NONE_SENTINEL]);
+    else if (next.length === allValues.length) onChange([]);
+    else onChange(next);
+  };
+  const text = selected.length === 0 ? `All ${label}`
+    : isNone ? `No ${label}`
+    : selected.length === 1 ? (options.find(o => o.value === selected[0])?.label ?? label)
+    : `${selected.length} ${label}`;
+  return (
+    <div className="relative" ref={ref}>
+      <button type="button" onClick={() => setOpen(v => !v)} className="form-input py-2.5 text-sm w-full sm:w-auto flex items-center justify-between gap-2 cursor-pointer">
+        <span className="truncate">{text}</span>
+        <ChevronDown className={`w-3.5 h-3.5 flex-shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && (
+        <div className="absolute z-20 mt-1 w-56 max-h-72 overflow-y-auto rounded-lg border border-white/10 bg-navy-800 shadow-xl p-1.5">
+          {selected.length > 0 && (
+            <button type="button" onClick={() => onChange([])} className="w-full text-left px-2.5 py-1.5 rounded-md text-xs text-sky-400 hover:bg-white/5 cursor-pointer">Select all</button>
+          )}
+          {options.map(o => (
+            <label key={o.value} className="flex items-center gap-2 px-2.5 py-1.5 rounded-md hover:bg-white/5 cursor-pointer text-sm text-slate-200">
+              <input
+                type="checkbox"
+                checked={selected.length === 0 ? true : isNone ? false : selected.includes(o.value)}
+                onChange={() => toggle(o.value)}
+                className="appearance-none w-3.5 h-3.5 rounded border border-white/25 bg-white/10 checked:bg-sky-500 checked:border-sky-500 cursor-pointer relative before:content-['✓'] before:absolute before:inset-0 before:flex before:items-center before:justify-center before:text-[9px] before:leading-none before:text-white before:opacity-0 checked:before:opacity-100"
+              />
+              {o.label}
+            </label>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -294,7 +359,7 @@ function CustomerPaidClaimBadge({ booking }: { booking: Booking }) {
   return (
     <span
       className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-400/15 text-amber-300 border border-amber-400/25"
-      title={`Customer marked as paid ${new Date(booking.customerMarkedPaidAt).toLocaleDateString('en-AU')} — not yet confirmed`}
+      title={`Customer marked as paid ${new Date(booking.customerMarkedPaidAt).toLocaleDateString('en-AU')}, not yet confirmed`}
     >
       <AlertTriangle className="w-2.5 h-2.5" /> Customer says paid
     </span>
@@ -431,7 +496,7 @@ function BookingRow({ b, actions }: { b: Booking; actions: BookingRowActions }) 
       <div className="text-sm">
         {typeof b.quoteAmount === 'number' && b.quoteAmount > 0
           ? <span className="text-violet-300 font-semibold">{money(b.quoteAmount)}</span>
-          : <span className="text-slate-600">—</span>}
+          : <span className="text-slate-600">-</span>}
         {b.adminNotes ? <StickyNote className="inline w-3 h-3 ml-1.5 text-slate-500" /> : null}
       </div>
       {/* Paid — stopPropagation dead zone */}
@@ -878,13 +943,21 @@ export default function Dashboard() {
     else toast.error('Could not switch');
   };
 
-  // Filters
+  // Filters — multi-select checkboxes now, so these are arrays. Empty = "all".
+  // 'facebook-lead-ad' is a synthetic status option that actually filters by
+  // source, not status — see fetchData/API below.
   const [search, setSearch] = useState('');
-  const [statusFilter, setStatusFilter] = useState('all');
-  const [serviceFilter, setServiceFilter] = useState('all');
+  const [statusFilter, setStatusFilter] = useState<string[]>([]);
+  const [serviceFilter, setServiceFilter] = useState<string[]>([]);
   const [showPaid, setShowPaid] = useState(true);
-  const [sortField, setSortField] = useState('createdAt');
-  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
+  // Default to the manual drag order, not createdAt — a booking's sortOrder
+  // is null until someone drags it, and the API's sortOrder sort already
+  // falls unset ones to the bottom in their normal createdAt-desc order (see
+  // /api/admin/bookings), so this looks identical to before until a drag
+  // actually happens, and then it's the one that survives a refresh instead
+  // of always snapping back to chronological.
+  const [sortField, setSortField] = useState('sortOrder');
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
 
   // Modals
   const [manage, setManage] = useState<Booking | null>(null);
@@ -980,7 +1053,7 @@ export default function Dashboard() {
     try {
       const [sRes, bRes] = await Promise.all([
         fetch('/api/admin/bookings?type=stats'),
-        fetch(`/api/admin/bookings?status=${statusFilter}&service=${serviceFilter}&sort=${sortField}&order=${sortOrder}&search=${encodeURIComponent(search)}`),
+        fetch(`/api/admin/bookings?status=${statusFilter.join(',') || 'all'}&service=${serviceFilter.join(',') || 'all'}&sort=${sortField}&order=${sortOrder}&search=${encodeURIComponent(search)}`),
       ]);
       if (sRes.status === 401 || bRes.status === 401) { router.push('/admin'); return; }
       setStats(await sRes.json());
@@ -990,6 +1063,32 @@ export default function Dashboard() {
   }, [statusFilter, serviceFilter, sortField, sortOrder, search, router]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
+
+  // Facebook lead sync: pulls in anything new from the Google Sheet (see
+  // /api/cron/meta-leads-sheet), then reloads bookings. Dedup means existing
+  // rows are never touched and a booking deleted from the CRM stays deleted
+  // (see dismissLeadId in src/lib/db.ts) — this only ever adds genuinely new
+  // leads. Runs on the manual refresh button and every 60s while the
+  // Bookings tab is open.
+  const [fbSyncing, setFbSyncing] = useState(false);
+  const syncFacebookLeadsAndRefresh = useCallback(async () => {
+    setFbSyncing(true);
+    try {
+      const res = await fetch('/api/cron/meta-leads-sheet');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.imported > 0) toast.success(`${data.imported} new Facebook lead${data.imported !== 1 ? 's' : ''} imported`);
+      }
+    } catch { /* best-effort — bookings still refresh below */ }
+    finally { setFbSyncing(false); }
+    await fetchData();
+  }, [fetchData]);
+
+  useEffect(() => {
+    if (activeTab !== 'bookings') return;
+    const id = setInterval(() => { syncFacebookLeadsAndRefresh(); }, 60_000);
+    return () => clearInterval(id);
+  }, [activeTab, syncFacebookLeadsAndRefresh]);
 
   const fetchBusiness = useCallback(async () => {
     setBizLoading(true);
@@ -1052,7 +1151,7 @@ export default function Dashboard() {
         body: JSON.stringify({ status: 'paid', paymentMethod: method }),
       });
       if (!res.ok) throw new Error();
-      toast.success(`Marked paid — ${PAYMENT_METHOD_LABEL[method].toLowerCase()}`);
+      toast.success(`Marked paid: ${PAYMENT_METHOD_LABEL[method].toLowerCase()}`);
       setPayInvoicePrompt(null);
       await Promise.all([fetchData(), loadInvoices()]);
     } catch { toast.error('Could not mark paid'); }
@@ -1084,11 +1183,11 @@ export default function Dashboard() {
 
   const removeBooking = async (id: string) => {
     const target = bookings.find(x => x.id === id);
-    if (!confirm(`Delete the booking for ${target?.name ?? 'this customer'}? This cannot be undone.`)) return;
+    if (!confirm(`Delete the booking for ${target?.name ?? 'this customer'}? It's kept in Settings -> Deleted bookings for 60 days, then gone for good.`)) return;
     try {
       await fetch(`/api/admin/bookings/${id}`, { method: 'DELETE' });
       setBookings(prev => prev.filter(b => b.id !== id));
-      toast.success('Booking deleted');
+      toast.success('Booking deleted — restorable from Settings for 60 days');
       fetchData();
     } catch { toast.error('Delete failed'); }
   };
@@ -1119,45 +1218,7 @@ export default function Dashboard() {
     else { setSortField(field); setSortOrder('asc'); }
   };
 
-  // Copy every booking as readable text — for pasting into Claude / notes.
-  const exportBookings = async () => {
-    try {
-      const res = await fetch('/api/admin/bookings?status=all&service=all&sort=createdAt&order=desc&search=');
-      if (res.status === 401) { router.push('/admin'); return; }
-      const all: Booking[] = await res.json();
-      if (!Array.isArray(all) || all.length === 0) { toast.error('No bookings to export'); return; }
-
-      const blocks = all.map((b, i) => {
-        const lines = [
-          `${i + 1}. ${b.name}${b.phone ? ` — ${b.phone}` : ''}`,
-          `   Service: ${serviceText(b.service)} | ${b.propertyType}`,
-          `   Status: ${STATUS_CONFIG[b.status]?.label ?? b.status} | Paid: ${b.paid ? 'yes' : 'no'}${typeof b.quoteAmount === 'number' && b.quoteAmount > 0 ? ` | Quote: ${money(b.quoteAmount)}` : ''}`,
-        ];
-        if (b.preferredDate || b.preferredTime) lines.push(`   When: ${[b.preferredDate, b.preferredTime].filter(Boolean).join(' ')}`);
-        if (b.address || b.suburb) lines.push(`   Address: ${[b.address, b.suburb].filter(Boolean).join(', ')}`);
-        if (b.email) lines.push(`   Email: ${b.email}`);
-        if (b.notes) lines.push(`   Customer note: ${b.notes}`);
-        if (b.adminNotes) lines.push(`   Admin note: ${b.adminNotes}`);
-        if (b.flaggedAt) lines.push(`   ⚠ FLAGGED: ${b.flagNote ?? ''}`);
-        lines.push(`   Source: ${b.source} | Created: ${new Date(b.createdAt).toLocaleDateString('en-AU')}`);
-        return lines.join('\n');
-      });
-
-      const text = `Glass & Blast — Bookings export\nGenerated: ${new Date().toLocaleString('en-AU')}\nTotal: ${all.length}\n\n${blocks.join('\n\n')}`;
-
-      try {
-        await navigator.clipboard.writeText(text);
-        toast.success(`Copied ${all.length} bookings to clipboard`);
-      } catch {
-        // Clipboard blocked (rare) — fall back to a text-file download.
-        const url = URL.createObjectURL(new Blob([text], { type: 'text/plain' }));
-        const a = document.createElement('a');
-        a.href = url; a.download = `bookings-${new Date().toISOString().slice(0, 10)}.txt`;
-        a.click(); URL.revokeObjectURL(url);
-        toast.success(`Downloaded ${all.length} bookings`);
-      }
-    } catch { toast.error('Export failed'); }
-  };
+  // Export moved to Settings -> Export bookings (kept the toolbar less crowded).
 
   const SortIcon = ({ field }: { field: string }) => (
     sortField === field
@@ -1180,8 +1241,8 @@ export default function Dashboard() {
   // Cold leads get pulled out of the main list into their own collapsible
   // section below it — but only when browsing "All Status"; picking the
   // "Cold Lead" filter explicitly should still show them inline as normal.
-  const coldBookings = statusFilter === 'all' ? visibleBookings.filter(b => b.status === 'cold') : [];
-  const mainBookings = statusFilter === 'all' ? visibleBookings.filter(b => b.status !== 'cold') : visibleBookings;
+  const coldBookings = statusFilter.length === 0 ? visibleBookings.filter(b => b.status === 'cold') : [];
+  const mainBookings = statusFilter.length === 0 ? visibleBookings.filter(b => b.status !== 'cold') : visibleBookings;
   const bookingsByGroup = new Map<string, Booking[]>();
   for (const b of mainBookings) {
     if (!b.groupId) continue;
@@ -1234,9 +1295,12 @@ export default function Dashboard() {
     onManage: setManage, onRemove: removeBooking, onFlag: setFlagTarget,
   };
 
+  // Business/Site stats are two tabs under one "Stats" nav entry now — both map to it.
+  const navActive = activeTab === 'business' || activeTab === 'site' ? 'stats' : activeTab;
+
   return (
     <div className="min-h-[100svh] bg-navy-900 flex">
-      <AdminSidebar active={activeTab} items={navItems} />
+      <AdminSidebar active={navActive} items={navItems} />
 
       {/* Main */}
       <div className="flex-1 flex flex-col min-w-0">
@@ -1253,17 +1317,31 @@ export default function Dashboard() {
             </p>
           </div>
           <div className="flex items-center gap-3">
+            {(activeTab === 'business' || activeTab === 'site') && (
+              <div className="hidden sm:inline-flex rounded-lg border border-white/10 bg-navy-900/60 p-1">
+                <button onClick={() => setActiveTab('business')} className={`px-3 py-1.5 rounded-md text-xs font-semibold cursor-pointer transition-colors ${activeTab === 'business' ? 'bg-sky-500 text-white' : 'text-slate-400 hover:text-white'}`}>Business</button>
+                <button onClick={() => setActiveTab('site')} className={`px-3 py-1.5 rounded-md text-xs font-semibold cursor-pointer transition-colors ${activeTab === 'site' ? 'bg-sky-500 text-white' : 'text-slate-400 hover:text-white'}`}>Site</button>
+              </div>
+            )}
             <button onClick={() => { setActiveTab('bookings'); setShowAdd(true); }} className="hidden sm:inline-flex items-center gap-2 px-4 py-2 bg-sky-500 hover:bg-sky-400 text-white text-sm font-semibold rounded-xl transition-all cursor-pointer">
               <Plus className="w-4 h-4" /> Add Booking
             </button>
-            <button onClick={() => { if (activeTab === 'business') fetchBusiness(); else if (activeTab === 'site') fetchSite(); else fetchData(); }} className="p-2 rounded-xl glass border border-white/10 text-slate-400 hover:text-white transition-colors cursor-pointer">
-              <RefreshCw className={`w-4 h-4 ${(loading || bizLoading || siteLoading) ? 'animate-spin' : ''}`} />
+            <button onClick={() => { if (activeTab === 'business') fetchBusiness(); else if (activeTab === 'site') fetchSite(); else if (activeTab === 'bookings') syncFacebookLeadsAndRefresh(); else fetchData(); }} title={activeTab === 'bookings' ? 'Refresh — also checks for new Facebook leads' : 'Refresh'} className="p-2 rounded-xl glass border border-white/10 text-slate-400 hover:text-white transition-colors cursor-pointer">
+              <RefreshCw className={`w-4 h-4 ${(loading || bizLoading || siteLoading || fbSyncing) ? 'animate-spin' : ''}`} />
             </button>
             <button onClick={logout} className="lg:hidden p-2 rounded-xl glass border border-white/10 text-red-400 cursor-pointer">
               <LogOut className="w-4 h-4" />
             </button>
           </div>
         </header>
+        {(activeTab === 'business' || activeTab === 'site') && (
+          <div className="sm:hidden px-4 pt-3">
+            <div className="inline-flex rounded-lg border border-white/10 bg-navy-900/60 p-1">
+              <button onClick={() => setActiveTab('business')} className={`px-3 py-1.5 rounded-md text-xs font-semibold cursor-pointer transition-colors ${activeTab === 'business' ? 'bg-sky-500 text-white' : 'text-slate-400 hover:text-white'}`}>Business</button>
+              <button onClick={() => setActiveTab('site')} className={`px-3 py-1.5 rounded-md text-xs font-semibold cursor-pointer transition-colors ${activeTab === 'site' ? 'bg-sky-500 text-white' : 'text-slate-400 hover:text-white'}`}>Site</button>
+            </div>
+          </div>
+        )}
 
         <main className="flex-1 overflow-auto p-4 sm:p-6 space-y-6 pb-28 lg:pb-6">
           <AnimatePresence mode="wait">
@@ -1414,7 +1492,7 @@ export default function Dashboard() {
                                 {guests.filter(g => g.active).length} active
                               </span>
                             </span>
-                            <Link href="/admin/guests" className="flex-shrink-0 text-xs text-sky-400 hover:text-sky-300 cursor-pointer">Manage</Link>
+                            <Link href="/admin/settings" className="flex-shrink-0 text-xs text-sky-400 hover:text-sky-300 cursor-pointer">Manage</Link>
                           </div>
                           {guests.filter(g => g.active).length > 0 && (
                             <div className="mt-3 pt-3 border-t border-white/5">
@@ -1492,19 +1570,25 @@ export default function Dashboard() {
                     <input className="form-input pl-9 py-2.5 text-sm" placeholder="Search name, phone, address..." value={search} onChange={e => setSearch(e.target.value)} />
                   </div>
                   <div className="grid grid-cols-2 sm:flex gap-2">
-                    <select className="form-input py-2.5 text-sm w-full sm:w-auto" value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
-                      <option value="all">All Status</option>
-                      {STATUS_KEYS.map(s => <option key={s} value={s}>{STATUS_CONFIG[s].label}</option>)}
-                    </select>
-                    <select className="form-input py-2.5 text-sm w-full sm:w-auto" value={serviceFilter} onChange={e => setServiceFilter(e.target.value)}>
-                      <option value="all">All Services</option>
-                      <option value="window-washing">Window</option>
-                      <option value="pressure-washing">Pressure</option>
-                      <option value="both">Both</option>
-                      <option value="flyscreen-repair">Flyscreen</option>
-                      <option value="solar-panel-cleaning">Solar Panel</option>
-                      <option value="other">Other</option>
-                    </select>
+                    <MultiSelectDropdown
+                      label="Status"
+                      options={[...STATUS_KEYS.map(s => ({ value: s, label: STATUS_CONFIG[s].label })), { value: 'facebook-lead-ad', label: 'Facebook Lead' }]}
+                      selected={statusFilter}
+                      onChange={setStatusFilter}
+                    />
+                    <MultiSelectDropdown
+                      label="Services"
+                      options={[
+                        { value: 'window-washing', label: 'Window' },
+                        { value: 'pressure-washing', label: 'Pressure' },
+                        { value: 'both', label: 'Both' },
+                        { value: 'flyscreen-repair', label: 'Flyscreen' },
+                        { value: 'solar-panel-cleaning', label: 'Solar Panel' },
+                        { value: 'other', label: 'Other' },
+                      ]}
+                      selected={serviceFilter}
+                      onChange={setServiceFilter}
+                    />
                     <label className="inline-flex items-center justify-center gap-2 px-3 py-2.5 glass border border-white/10 text-slate-300 text-sm font-semibold rounded-xl cursor-pointer whitespace-nowrap">
                       <input
                         type="checkbox"
@@ -1514,9 +1598,6 @@ export default function Dashboard() {
                       />
                       Show paid
                     </label>
-                    <button onClick={exportBookings} title="Copy all bookings as text (for pasting into Claude / notes)" className="inline-flex items-center justify-center gap-2 px-4 py-2.5 glass border border-white/10 text-slate-300 hover:text-white text-sm font-semibold rounded-xl transition-all cursor-pointer whitespace-nowrap">
-                      <ClipboardCopy className="w-4 h-4" /> Export
-                    </button>
                     <button onClick={() => setShowAdd(true)} className="inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-sky-500 hover:bg-sky-400 text-white text-sm font-semibold rounded-xl transition-all cursor-pointer whitespace-nowrap">
                       <Plus className="w-4 h-4" /> Add Booking
                     </button>
@@ -1555,7 +1636,7 @@ export default function Dashboard() {
                             {STATUS_KEYS.map(s => <option key={s} value={s}>{STATUS_CONFIG[s].label}</option>)}
                           </select>
                           <button onClick={() => setShowGroupModal(true)} disabled={bulkBusy} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-sky-400/30 bg-sky-400/10 text-sky-300 text-sm font-semibold cursor-pointer"><Layers className="w-4 h-4" /> Group</button>
-                          <button onClick={() => { if (window.confirm(`Delete ${selected.size} booking(s)? This cannot be undone.`)) bulkAction({ action: 'delete' }, 'Bookings deleted'); }} disabled={bulkBusy} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-red-400/30 bg-red-500/10 text-red-300 text-sm font-semibold cursor-pointer"><Trash2 className="w-4 h-4" /> Delete</button>
+                          <button onClick={() => { if (window.confirm(`Delete ${selected.size} booking(s)? Kept in Settings -> Deleted bookings for 60 days, then gone for good.`)) bulkAction({ action: 'delete' }, 'Bookings deleted — restorable from Settings for 60 days'); }} disabled={bulkBusy} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-red-400/30 bg-red-500/10 text-red-300 text-sm font-semibold cursor-pointer"><Trash2 className="w-4 h-4" /> Delete</button>
                           <button onClick={clearSel} className="ml-auto text-slate-400 text-sm cursor-pointer">Cancel</button>
                         </div>
                       </div>
@@ -1671,7 +1752,7 @@ export default function Dashboard() {
                     <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
                       <StatCard
                         label="Avg Debtor Days"
-                        value={bizStats.avgDebtorDays != null ? `${bizStats.avgDebtorDays}d` : '—'}
+                        value={bizStats.avgDebtorDays != null ? `${bizStats.avgDebtorDays}d` : '-'}
                         icon={CalendarClock}
                         color="#818CF8"
                         sub="Invoice sent → job paid"
@@ -1751,7 +1832,7 @@ export default function Dashboard() {
                     {/* Auto-captured for website bookings — see src/lib/attribution.ts */}
                     <div className="glass rounded-2xl border border-white/8 p-6">
                       <h3 className="font-display font-semibold text-white mb-1 flex items-center gap-2"><Compass className="w-4 h-4 text-sky-400" /> Website booking sources</h3>
-                      <p className="text-slate-600 text-xs mb-4">How website bookings found us — Facebook/Instagram bio links and Google Maps only show up distinctly if those links are UTM-tagged.</p>
+                      <p className="text-slate-600 text-xs mb-4">How website bookings found us. Facebook/Instagram bio links and Google Maps only show up distinctly if those links are UTM-tagged.</p>
                       {(() => {
                         const counts: Record<string, number> = {};
                         bookings.forEach(b => { if (b.source === 'website' && b.attributionSource) counts[b.attributionSource] = (counts[b.attributionSource] ?? 0) + 1; });
@@ -1802,7 +1883,7 @@ export default function Dashboard() {
                     </div>
 
                     <div className="glass rounded-2xl border border-white/8 p-6">
-                      <h3 className="font-display font-semibold text-white mb-6">Views — Last 14 Days</h3>
+                      <h3 className="font-display font-semibold text-white mb-6">Views: Last 14 Days</h3>
                       <ResponsiveContainer width="100%" height={240}>
                         <LineChart data={siteStats.byDay} margin={{ top: 0, right: 8, left: -10, bottom: 0 }}>
                           <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
@@ -1846,7 +1927,7 @@ export default function Dashboard() {
                       <div className="glass rounded-2xl border border-white/8 p-6">
                         <h3 className="font-display font-semibold text-white mb-4 flex items-center gap-2"><Link2 className="w-4 h-4 text-sky-400" /> Top Referrers</h3>
                         {siteStats.topReferrers.length === 0 ? (
-                          <div className="text-slate-600 text-sm py-6 text-center">Mostly direct traffic — no external referrers yet</div>
+                          <div className="text-slate-600 text-sm py-6 text-center">Mostly direct traffic, no external referrers yet</div>
                         ) : (
                           <div className="space-y-2">
                             {siteStats.topReferrers.map(r => (
@@ -1861,9 +1942,9 @@ export default function Dashboard() {
                     </div>
 
                     <div className="glass rounded-2xl border border-white/8 p-6">
-                      <h3 className="font-display font-semibold text-white mb-1 flex items-center gap-2"><MoveDown className="w-4 h-4 text-sky-400" /> Scroll Depth — All Pages</h3>
+                      <h3 className="font-display font-semibold text-white mb-1 flex items-center gap-2"><MoveDown className="w-4 h-4 text-sky-400" /> Scroll Depth: All Pages</h3>
                       {siteStats.scrollSampleCount === 0 ? (
-                        <p className="text-slate-600 text-sm py-4 text-center">No scroll data yet — appears once visitors leave a page after it's loaded.</p>
+                        <p className="text-slate-600 text-sm py-4 text-center">No scroll data yet, appears once visitors leave a page after it's loaded.</p>
                       ) : (
                         <>
                           <p className="text-slate-600 text-xs mb-4">How far down the page visitors got before leaving, across {siteStats.scrollSampleCount} recorded {siteStats.scrollSampleCount === 1 ? 'visit' : 'visits'} (last 30 days).</p>
@@ -1892,7 +1973,7 @@ export default function Dashboard() {
                       ) : (
                         <>
                           <p className="text-slate-600 text-xs mb-4">
-                            How far people get through the booking form before leaving or submitting — {siteStats.bookingFunnelStarted} {siteStats.bookingFunnelStarted === 1 ? 'person has' : 'people have'} started it (last 30 days).
+                            How far people get through the booking form before leaving or submitting. {siteStats.bookingFunnelStarted} {siteStats.bookingFunnelStarted === 1 ? 'person has' : 'people have'} started it (last 30 days).
                           </p>
                           <div className="space-y-2">
                             {siteStats.bookingFunnel.map(s => {
@@ -1923,8 +2004,8 @@ export default function Dashboard() {
         </main>
       </div>
 
-      <AdminMobileNav active={activeTab} items={navItems} onMore={moreSheet.show} />
-      <AdminMoreSheet open={moreSheet.open} onClose={moreSheet.hide} active={activeTab} items={navItems} />
+      <AdminMobileNav active={navActive} items={navItems} onMore={moreSheet.show} />
+      <AdminMoreSheet open={moreSheet.open} onClose={moreSheet.hide} active={navActive} items={navItems} />
 
       {/* Manage modal */}
       <AnimatePresence>
@@ -2107,11 +2188,11 @@ function DeleteGroupModal({ group, onClose, onDelete }: {
           <div className="text-slate-400 text-xs mt-0.5">Removes the group. All {group.jobCount} booking{group.jobCount !== 1 ? 's' : ''} are kept.</div>
         </button>
         <button
-          onClick={() => { if (window.confirm(`This permanently deletes the group AND all ${group.jobCount} booking(s) inside it. This cannot be undone. Continue?`)) onDelete(group, true); }}
+          onClick={() => { if (window.confirm(`This deletes the group AND all ${group.jobCount} booking(s) inside it. They're kept in Settings -> Deleted bookings for 60 days. Continue?`)) onDelete(group, true); }}
           className="w-full text-left p-4 rounded-xl border border-red-400/30 bg-red-500/5 hover:border-red-400/60 cursor-pointer"
         >
           <div className="text-red-300 font-semibold text-sm flex items-center gap-1.5"><AlertTriangle className="w-4 h-4" /> Delete group and contents</div>
-          <div className="text-slate-400 text-xs mt-0.5">Permanently deletes the group and all {group.jobCount} booking{group.jobCount !== 1 ? 's' : ''} (worth {money(group.totalValue)}). Cannot be undone.</div>
+          <div className="text-slate-400 text-xs mt-0.5">Deletes the group and all {group.jobCount} booking{group.jobCount !== 1 ? 's' : ''} (worth {money(group.totalValue)}) — kept in Settings -&gt; Deleted bookings for 60 days.</div>
         </button>
       </div>
     </Overlay>
@@ -2289,7 +2370,7 @@ function AddModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
               })}
             </div>
             {selectedServices.length >= 2 && (
-              <p className="text-emerald-400 text-xs mt-2">Multi-service — remember the bundle discount.</p>
+              <p className="text-emerald-400 text-xs mt-2">Multi-service: remember the bundle discount.</p>
             )}
           </Field>
         </div>

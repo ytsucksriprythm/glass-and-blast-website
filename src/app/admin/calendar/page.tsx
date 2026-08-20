@@ -24,7 +24,7 @@ const SERVICE_LABELS: Record<string, string> = {
   'flyscreen-repair': 'Flyscreen Repair', 'solar-panel-cleaning': 'Solar Panel Cleaning',
   'both': 'Window & Pressure', 'other': 'Other',
 };
-const serviceText = (s: string) => (s ?? '').split(',').filter(Boolean).map(x => SERVICE_LABELS[x] ?? x).join(' + ') || '—';
+const serviceText = (s: string) => (s ?? '').split(',').filter(Boolean).map(x => SERVICE_LABELS[x] ?? x).join(' + ') || '-';
 
 // ─── date helpers (Monday-first weeks, local time) ──────────────────────────
 const pad = (n: number) => String(n).padStart(2, '0');
@@ -268,7 +268,7 @@ function WeekView({ anchor, byDay, onOpen, onAdd }: {
               <button onClick={() => onAdd(d)} className="text-slate-500 hover:text-sky-400 cursor-pointer"><Plus className="w-3.5 h-3.5" /></button>
             </div>
             <div className="space-y-1">
-              {items.length === 0 && <div className="text-[11px] text-slate-600">—</div>}
+              {items.length === 0 && <div className="text-[11px] text-slate-600">-</div>}
               {items.map(b => <Chip key={b.id} b={b} onClick={() => onOpen(b)} />)}
             </div>
           </div>

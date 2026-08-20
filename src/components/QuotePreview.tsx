@@ -1,5 +1,5 @@
 import { Check } from 'lucide-react';
-import { type Quote, QUOTE_SERVICE_OPTIONS, QUOTE_EXTRA_OPTIONS, money, longDate } from '@/lib/quote';
+import { type Quote, QUOTE_SERVICE_OPTIONS, QUOTE_EXTRA_OPTIONS, money, longDate, quoteTotal, paymentTermsText } from '@/lib/quote';
 
 // Display fields QuotePreview needs. The modal's live (unsaved) draft passes
 // a synthesized object (number/token may be placeholders) before the quote
@@ -18,13 +18,19 @@ function Field({ label, value }: { label: string; value: React.ReactNode }) {
 /**
  * Paper quote. Always light-themed, same spirit as InvoicePreview — looks the
  * same in the dark admin modal and on the public page, and prints cleanly.
- * Deliberately simpler than InvoicePreview: no line-items table, no
- * subtotal/GST breakdown (one lump-sum total), no payment/bank block.
+ * Each checked service/extra (and the Other line) carries its own price —
+ * see quoteTotal() in lib/quote.ts for how the total is derived. Still no
+ * payment/bank block (that's paymentTerms, below, not a Square/EFT block).
  */
 export default function QuotePreview({ quote }: { quote: QuotePreviewData }) {
-  const services = quote.services.map(k => QUOTE_SERVICE_OPTIONS.find(o => o.key === k)?.label ?? k);
-  const extras = quote.extras.map(k => QUOTE_EXTRA_OPTIONS.find(o => o.key === k)?.label ?? k);
-  const items = [...services, ...extras, ...(quote.otherText.trim() ? [quote.otherText.trim()] : [])];
+  const items: { label: string; amount: number }[] = [
+    ...quote.services.map(k => ({ label: QUOTE_SERVICE_OPTIONS.find(o => o.key === k)?.label ?? k, amount: Number(quote.itemAmounts?.[k]) || 0 })),
+    ...quote.extras.map(k => ({ label: QUOTE_EXTRA_OPTIONS.find(o => o.key === k)?.label ?? k, amount: Number(quote.itemAmounts?.[k]) || 0 })),
+    ...(quote.otherLines ?? [])
+      .filter(l => l.description.trim() || l.amount)
+      .map(l => ({ label: l.description.trim() || 'Other', amount: Number(l.amount) || 0 })),
+  ];
+  const total = quoteTotal(quote);
 
   return (
     <div className="quote-sheet bg-white text-slate-900 mx-auto w-full" style={{ maxWidth: '820px' }}>
@@ -36,7 +42,7 @@ export default function QuotePreview({ quote }: { quote: QuotePreviewData }) {
               {quote.fromTradingAs || 'Glass and Blast'}
             </div>
             <div className="text-slate-500 text-xs sm:text-sm mt-1">
-              Window Cleaning &nbsp;|&nbsp; North Canberra &amp; Greater ACT
+              Window Cleaning &nbsp;|&nbsp; Canberra, Queanbeyan &amp; Googong
             </div>
           </div>
           <div className="text-right">
@@ -78,7 +84,7 @@ export default function QuotePreview({ quote }: { quote: QuotePreviewData }) {
           </div>
         )}
 
-        {/* Checklist */}
+        {/* Itemised services */}
         <div className="mt-8 rounded-lg border border-slate-200 overflow-hidden">
           <div className="bg-slate-50 px-4 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
             Services
@@ -86,23 +92,45 @@ export default function QuotePreview({ quote }: { quote: QuotePreviewData }) {
           <div className="divide-y divide-slate-100">
             {items.length === 0 ? (
               <div className="px-4 py-3 text-slate-400 text-sm">No services selected</div>
-            ) : items.map((label, i) => (
+            ) : items.map((it, i) => (
               <div key={i} className="px-4 py-2.5 flex items-center gap-2.5 text-sm">
                 <Check className="w-4 h-4 text-sky-600 flex-shrink-0" />
-                <span className="text-slate-900">{label}</span>
+                <span className="text-slate-900 flex-1">{it.label}</span>
+                <span className="text-slate-900 font-medium">{money(it.amount)}</span>
               </div>
             ))}
           </div>
         </div>
 
+        {/* Scope of work */}
+        {quote.scope?.trim() && (
+          <div className="mt-5">
+            <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 mb-1.5">Scope of work</div>
+            <p className="text-slate-700 text-sm whitespace-pre-line">{quote.scope.trim()}</p>
+          </div>
+        )}
+
         {/* Total */}
         <div className="mt-5 flex justify-end">
           <div className="w-full sm:w-72 text-right">
             <div className="flex justify-between pt-2 border-t-2 border-slate-900 text-base font-bold text-slate-900">
-              <span>Total (lump sum)</span><span>{money(quote.amount)} AUD</span>
+              <span>Total</span><span>{money(total)} AUD</span>
             </div>
-            <p className="mt-1 text-xs text-slate-400 italic">This is a single all-inclusive price, not itemised per service.</p>
           </div>
+        </div>
+
+        {/* Assumptions */}
+        {quote.assumptions?.trim() && (
+          <div className="mt-6">
+            <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 mb-1.5">Assumptions this quote is based on</div>
+            <p className="text-slate-600 text-xs whitespace-pre-line">{quote.assumptions.trim()}</p>
+          </div>
+        )}
+
+        {/* Payment terms */}
+        <div className="mt-4">
+          <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 mb-1.5">Payment terms</div>
+          <p className="text-slate-600 text-xs whitespace-pre-line">{paymentTermsText(quote.paymentTerms)}</p>
         </div>
 
         {/* Terms */}

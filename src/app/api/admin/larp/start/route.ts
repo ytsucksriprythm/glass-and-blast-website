@@ -46,7 +46,7 @@ export async function POST(req: NextRequest) {
   });
   await logActivity(
     'larp.started',
-    `LARP mode on — ${bookings.length} fake jobs, ${invoices.length} fake invoices, ${recurring.length} fake recurring plans, ${pageViews.length} fake page views (~$${target.toLocaleString('en-AU')} target)`,
+    `LARP mode on: ${bookings.length} fake jobs, ${invoices.length} fake invoices, ${recurring.length} fake recurring plans, ${pageViews.length} fake page views (~$${target.toLocaleString('en-AU')} target)`,
     { bookings: bookings.length, invoices: invoices.length, recurring: recurring.length, pageViews: pageViews.length, target },
     'admin',
   );

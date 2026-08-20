@@ -9,7 +9,8 @@ import {
 } from './invoice';
 import { type AppSettings, DEFAULT_SETTINGS } from './settings';
 import { type VaultItem } from './vault';
-import { type Quote, type QuoteInput, type QuoteStatus, QUOTE_PREFIX, QUOTE_START_SEQ } from './quote';
+import { type Quote, type QuoteInput, type QuoteStatus, type QuoteOtherLine, QUOTE_PREFIX, QUOTE_START_SEQ } from './quote';
+import { type PaymentDueTerms, DEFAULT_PAYMENT_DUE_TERMS, isPaymentDueTerms } from './invoice';
 import { type ActivityEntry, type InvoiceViewSession } from './activity';
 import { computePageEngagement, computeScrollBuckets, computeSiteWideTimeStats, computeBookingFunnel } from './analytics';
 
@@ -81,6 +82,9 @@ export interface Booking {
   autoMovedFrom?: BookingStatus | null; // status it was auto-moved from, so "Undo" can restore it
   flaggedAt?: string | null;       // set when something's gone wrong on this job; null = not flagged
   flagNote?: string | null;        // description of what went wrong
+  deletedAt?: string | null;       // soft-delete: set instead of removing the row. Excluded from
+                                    // every normal list/stats query while set. Restorable from
+                                    // Settings -> Deleted bookings for 60 days, then purged for good.
   createdAt: string;
   updatedAt: string;
 }
@@ -149,8 +153,12 @@ export interface BookingPhoto {
   createdAt: string;
 }
 
-// ─── Recurring jobs (plan customers: monthly / quarterly / biannual) ────────
-export type RecurringFrequency = 'monthly' | 'quarterly' | 'biannual';
+// ─── Recurring jobs (plan customers: weekly / fortnightly / monthly / quarterly / biannual / custom) ────────
+export type RecurringFrequency = 'weekly' | 'fortnightly' | 'monthly' | 'quarterly' | 'biannual' | 'custom';
+// How often the customer is actually invoiced — separate from `frequency`
+// (how often the crew shows up). A weekly-visit plan might still be billed
+// once a month, for instance.
+export type BillingCycle = 'per_visit' | 'monthly' | 'custom';
 export interface RecurringJob {
   id: string;         // RJ-timestamp
   name: string;
@@ -161,10 +169,17 @@ export interface RecurringJob {
   service: string;    // comma-separated, same convention as bookings
   propertyType: PropertyType;
   frequency: RecurringFrequency;
+  // Only meaningful when frequency === 'custom' — every N weeks (e.g. 2 = the
+  // same cadence as 'fortnightly', but the picker also covers arbitrary gaps
+  // like "every 3 weeks" or "every other Saturday" — set nextDate to the
+  // right weekday once and every cycle after keeps landing on it).
+  customIntervalWeeks: number | null;
   nextDate: string;   // YYYY-MM-DD of the next visit; advanced by the cron after each auto-create
   preferredTime: string;
   notes: string;
-  discount: number | null;  // $ off per clean under the plan
+  visitPrice: number | null;  // $ charged per visit (what this plan is worth)
+  billingCycle: BillingCycle;
+  customBillingCycle: string | null;  // free text, only used when billingCycle === 'custom'
   active: boolean;
   lastBookingId: string | null;
   createdAt: string;
@@ -252,6 +267,7 @@ function rowToBooking(r: any): Booking {
     autoMovedFrom: r.auto_moved_from ?? null,
     flaggedAt: r.flagged_at == null ? null : (typeof r.flagged_at === 'string' ? r.flagged_at : new Date(r.flagged_at).toISOString()),
     flagNote: r.flag_note ?? null,
+    deletedAt: r.deleted_at == null ? null : (typeof r.deleted_at === 'string' ? r.deleted_at : new Date(r.deleted_at).toISOString()),
     createdAt: typeof r.created_at === 'string' ? r.created_at : new Date(r.created_at).toISOString(),
     updatedAt: typeof r.updated_at === 'string' ? r.updated_at : new Date(r.updated_at).toISOString(),
   };
@@ -317,8 +333,14 @@ export async function ensureSchema(): Promise<void> {
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS flag_note TEXT`;
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS attribution_source TEXT`;
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS external_lead_id TEXT`;
+      await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ`;
       // Backfill customer-link tokens for pre-existing rows.
       await sql`UPDATE bookings SET public_token = 'bk_' || substr(md5(random()::text || id), 1, 20) WHERE public_token IS NULL`;
+      // One-time cleanup: Meta's sheet connector was prefixing phone answers
+      // with "p:" (e.g. "p:+61412345678") — strip it off any rows that
+      // already have it. New imports are stripped at the source (see
+      // stripPhonePrefix, used in addBooking/updateBooking and metaLeads.ts).
+      await sql`UPDATE bookings SET phone = regexp_replace(phone, '^[pP]:\s*', '') WHERE phone ~* '^p:'`;
       await sql`CREATE INDEX IF NOT EXISTS bookings_scheduled_idx ON bookings (scheduled_at)`;
       await sql`CREATE INDEX IF NOT EXISTS bookings_token_idx ON bookings (public_token)`;
       // Partial unique index — only enforced when set, so it never conflicts with the
@@ -407,6 +429,15 @@ export async function ensureSchema(): Promise<void> {
           updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
         )
       `;
+      // Weekly/fortnightly/custom cadences + per-visit price, added after the
+      // original monthly/quarterly/biannual-only design.
+      await sql`ALTER TABLE recurring_jobs ADD COLUMN IF NOT EXISTS custom_interval_weeks INTEGER`;
+      await sql`ALTER TABLE recurring_jobs ADD COLUMN IF NOT EXISTS visit_price NUMERIC`;
+      // Billing cycle (how often invoiced) replaces the old flat $-off-per-clean
+      // discount field — that column is left in place, unused, rather than
+      // dropped (no destructive migration for a field nothing reads anymore).
+      await sql`ALTER TABLE recurring_jobs ADD COLUMN IF NOT EXISTS billing_cycle TEXT NOT NULL DEFAULT 'per_visit'`;
+      await sql`ALTER TABLE recurring_jobs ADD COLUMN IF NOT EXISTS custom_billing_cycle TEXT`;
       // Invoices + an atomic per-prefix number counter
       await sql`
         CREATE TABLE IF NOT EXISTS invoices (
@@ -510,6 +541,17 @@ export async function ensureSchema(): Promise<void> {
           sent_at            TIMESTAMPTZ
         )
       `;
+      // Itemised pricing + scope/assumptions/payment terms, added after the
+      // initial lump-sum-only design (see quote.ts) — ALTER so existing rows
+      // (and existing prod tables) pick these up without a data migration.
+      await sql`ALTER TABLE quotes ADD COLUMN IF NOT EXISTS item_amounts TEXT NOT NULL DEFAULT '{}'`;
+      await sql`ALTER TABLE quotes ADD COLUMN IF NOT EXISTS scope TEXT NOT NULL DEFAULT ''`;
+      await sql`ALTER TABLE quotes ADD COLUMN IF NOT EXISTS assumptions TEXT NOT NULL DEFAULT ''`;
+      await sql`ALTER TABLE quotes ADD COLUMN IF NOT EXISTS payment_terms TEXT NOT NULL DEFAULT ''`;
+      // Other line(s) — replaces the single other_text + item_amounts.other
+      // shape (still read as a fallback in rowToQuote for quotes saved before
+      // this column existed; other_text itself is otherwise unused now).
+      await sql`ALTER TABLE quotes ADD COLUMN IF NOT EXISTS other_lines TEXT NOT NULL DEFAULT '[]'`;
       await sql`CREATE UNIQUE INDEX IF NOT EXISTS quotes_token_idx ON quotes (token)`;
       await sql`CREATE UNIQUE INDEX IF NOT EXISTS quotes_number_idx ON quotes (number)`;
       await sql`CREATE INDEX IF NOT EXISTS quotes_booking_idx ON quotes (booking_id)`;
@@ -614,6 +656,16 @@ export async function ensureSchema(): Promise<void> {
           created_at TIMESTAMPTZ NOT NULL DEFAULT now()
         )
       `;
+      // Meta lead ads dedupe on delete: deleting a facebook-lead-ad booking
+      // records its externalLeadId here so the next sheet poll (which only
+      // dedupes against *existing* bookings) doesn't recreate it. See
+      // src/lib/metaLeads.ts / /api/cron/meta-leads-sheet.
+      await sql`
+        CREATE TABLE IF NOT EXISTS dismissed_leads (
+          external_lead_id TEXT PRIMARY KEY,
+          dismissed_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+      `;
     })();
   }
   return schemaReady;
@@ -640,11 +692,11 @@ export async function getBookings(): Promise<Booking[]> {
   if (sql) {
     return withTimeout((async () => {
       await ensureSchema();
-      const rows = await sql`SELECT * FROM bookings ORDER BY created_at DESC`;
+      const rows = await sql`SELECT * FROM bookings WHERE deleted_at IS NULL ORDER BY created_at DESC`;
       return (rows as any[]).map(rowToBooking);
     })());
   }
-  return readFile().sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  return readFile().filter(b => !b.deletedAt).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
 // Bookings with a calendar slot inside [startISO, endISO). Powers the internal
@@ -656,13 +708,13 @@ export async function getBookingsInRange(startISO: string, endISO: string): Prom
       await ensureSchema();
       const rows = await sql`
         SELECT * FROM bookings
-        WHERE scheduled_at IS NOT NULL AND scheduled_at >= ${startISO} AND scheduled_at < ${endISO}
+        WHERE deleted_at IS NULL AND scheduled_at IS NOT NULL AND scheduled_at >= ${startISO} AND scheduled_at < ${endISO}
         ORDER BY scheduled_at ASC`;
       return (rows as any[]).map(rowToBooking);
     })());
   }
   return readFile()
-    .filter(b => b.scheduledAt && b.scheduledAt >= startISO && b.scheduledAt < endISO)
+    .filter(b => !b.deletedAt && b.scheduledAt && b.scheduledAt >= startISO && b.scheduledAt < endISO)
     .sort((a, b) => (a.scheduledAt ?? '').localeCompare(b.scheduledAt ?? ''));
 }
 
@@ -676,12 +728,20 @@ export async function getBookingById(id: string): Promise<Booking | null> {
   return readFile().find(b => b.id === id) ?? null;
 }
 
+// Meta's Google Sheets connector prefixes phone answers with "p:" (e.g.
+// "p:+61412345678") on some form configurations — strip it on the way in so
+// it never lands in the CRM in the first place. Harmless no-op for numbers
+// that never had it.
+export function stripPhonePrefix(phone: string): string {
+  return (phone ?? '').replace(/^p:\s*/i, '').trim();
+}
+
 export async function addBooking(data: NewBooking): Promise<Booking> {
   const now = new Date().toISOString();
   const booking: Booking = {
     name: data.name,
     email: data.email ?? '',
-    phone: data.phone,
+    phone: stripPhonePrefix(data.phone),
     service: data.service,
     propertyType: data.propertyType,
     address: data.address ?? '',
@@ -839,6 +899,7 @@ function withAutoMoveReset(updates: Partial<Booking>): Partial<Booking> {
 }
 
 export async function updateBooking(id: string, rawUpdates: Partial<Booking>): Promise<Booking | null> {
+  if (typeof rawUpdates.phone === 'string') rawUpdates = { ...rawUpdates, phone: stripPhonePrefix(rawUpdates.phone) };
   if (sql) {
     await ensureSchema();
     const cur = await getBookingById(id);
@@ -988,17 +1049,110 @@ export async function deleteBookingsByIdPrefix(prefix: string): Promise<number> 
   return removed;
 }
 
+// Soft delete — sets deletedAt instead of removing the row. Excluded from
+// every normal list (getBookings, getBookingsInRange, getBookingsForGuest,
+// and everything built on top: stats, exports, the calendar...) but stays
+// recoverable from Settings -> Deleted bookings for DELETED_BOOKING_RETENTION_DAYS,
+// then purgeExpiredDeletedBookings() removes it for real.
+export const DELETED_BOOKING_RETENTION_DAYS = 60;
+
 export async function deleteBooking(id: string): Promise<boolean> {
+  // Facebook lead ads: remember what got deleted so the next sheet poll
+  // (dedup-by-existing-booking only) doesn't bring it back — matters once
+  // this row is eventually purged for real. Read before the delete so we
+  // still have the externalLeadId.
+  const existing = await getBookingById(id);
+  if (existing?.source === 'facebook-lead-ad' && existing.externalLeadId) {
+    await dismissLeadId(existing.externalLeadId);
+  }
   if (sql) {
     await ensureSchema();
-    const rows = await sql`DELETE FROM bookings WHERE id = ${id} RETURNING id`;
+    const rows = await sql`UPDATE bookings SET deleted_at = now() WHERE id = ${id} AND deleted_at IS NULL RETURNING id`;
     return (rows as any[]).length > 0;
   }
   const rows = readFile();
-  const filtered = rows.filter(b => b.id !== id);
-  if (filtered.length === rows.length) return false;
-  writeFile(filtered);
+  const target = rows.find(b => b.id === id);
+  if (!target || target.deletedAt) return false;
+  target.deletedAt = new Date().toISOString();
+  writeFile(rows);
   return true;
+}
+
+// Bookings currently in the trash (not yet purged), newest-deleted first.
+// Purges anything past retention on the way, so the 60-day promise holds
+// even if nobody opens this list for a while.
+export async function getDeletedBookings(): Promise<Booking[]> {
+  await purgeExpiredDeletedBookings();
+  if (sql) {
+    await ensureSchema();
+    const rows = await sql`SELECT * FROM bookings WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC`;
+    return (rows as any[]).map(rowToBooking);
+  }
+  return readFile().filter(b => b.deletedAt).sort((a, b) => (b.deletedAt ?? '').localeCompare(a.deletedAt ?? ''));
+}
+
+// Undo a soft delete — clears deletedAt so it's back in every normal list.
+export async function restoreBooking(id: string): Promise<Booking | null> {
+  if (sql) {
+    await ensureSchema();
+    const rows = await sql`UPDATE bookings SET deleted_at = NULL WHERE id = ${id} AND deleted_at IS NOT NULL RETURNING *`;
+    const arr = rows as any[];
+    return arr.length ? rowToBooking(arr[0]) : null;
+  }
+  const rows = readFile();
+  const target = rows.find(b => b.id === id);
+  if (!target || !target.deletedAt) return null;
+  target.deletedAt = null;
+  writeFile(rows);
+  return target;
+}
+
+// Hard-delete anything that's been in the trash longer than the retention
+// window. Called from getDeletedBookings() (lazy purge) and can also run
+// from a cron if we ever want it on a schedule regardless of admin activity.
+export async function purgeExpiredDeletedBookings(): Promise<number> {
+  const cutoff = new Date(Date.now() - DELETED_BOOKING_RETENTION_DAYS * 86400_000).toISOString();
+  if (sql) {
+    await ensureSchema();
+    const rows = await sql`DELETE FROM bookings WHERE deleted_at IS NOT NULL AND deleted_at < ${cutoff} RETURNING id`;
+    return (rows as any[]).length;
+  }
+  const rows = readFile();
+  const kept = rows.filter(b => !(b.deletedAt && b.deletedAt < cutoff));
+  const removed = rows.length - kept.length;
+  if (removed > 0) writeFile(kept);
+  return removed;
+}
+
+// ─── Dismissed Meta leads (delete-from-CRM should stick) ───────────────────
+const DISMISSED_LEADS_PATH = path.join(process.cwd(), 'data', 'dismissed-leads.json');
+function readDismissedLeads(): string[] {
+  if (!fs.existsSync(DISMISSED_LEADS_PATH)) return [];
+  try { return JSON.parse(fs.readFileSync(DISMISSED_LEADS_PATH, 'utf-8')); } catch { return []; }
+}
+function writeDismissedLeads(ids: string[]): void {
+  const dir = path.dirname(DISMISSED_LEADS_PATH);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(DISMISSED_LEADS_PATH, JSON.stringify(ids, null, 2));
+}
+
+export async function dismissLeadId(externalLeadId: string): Promise<void> {
+  if (sql) {
+    await ensureSchema();
+    await sql`INSERT INTO dismissed_leads (external_lead_id) VALUES (${externalLeadId}) ON CONFLICT DO NOTHING`;
+    return;
+  }
+  const ids = readDismissedLeads();
+  if (!ids.includes(externalLeadId)) writeDismissedLeads([...ids, externalLeadId]);
+}
+
+export async function getDismissedLeadIds(): Promise<Set<string>> {
+  if (sql) {
+    await ensureSchema();
+    const rows = await sql`SELECT external_lead_id FROM dismissed_leads`;
+    return new Set((rows as any[]).map(r => r.external_lead_id as string));
+  }
+  return new Set(readDismissedLeads());
 }
 
 export async function getStats() {
@@ -1478,10 +1632,19 @@ export async function deletePhoto(id: string): Promise<BookingPhoto | null> {
 
 // ─── Recurring jobs ──────────────────────────────────────────────────────────
 
+const BILLING_CYCLES: BillingCycle[] = ['per_visit', 'monthly', 'custom'];
+function coerceBillingCycle(v: unknown): BillingCycle {
+  return BILLING_CYCLES.includes(v as BillingCycle) ? (v as BillingCycle) : 'per_visit';
+}
+
 function readRecurring(): RecurringJob[] {
   try {
     if (!fs.existsSync(RECURRING_PATH)) return [];
-    return JSON.parse(fs.readFileSync(RECURRING_PATH, 'utf-8'));
+    const rows = JSON.parse(fs.readFileSync(RECURRING_PATH, 'utf-8'));
+    // Backfill billingCycle for plans saved before it existed — an old row's
+    // value here is `undefined`, not a valid BillingCycle, and every consumer
+    // (the picker, the badge label lookup) assumes it's always one of the three.
+    return Array.isArray(rows) ? rows.map((r: any) => ({ ...r, billingCycle: coerceBillingCycle(r.billingCycle), customBillingCycle: r.customBillingCycle ?? null })) : [];
   } catch { return []; }
 }
 function writeRecurring(rows: RecurringJob[]): void {
@@ -1501,10 +1664,13 @@ function rowToRecurring(r: any): RecurringJob {
     service: r.service,
     propertyType: r.property_type ?? 'residential',
     frequency: r.frequency,
+    customIntervalWeeks: r.custom_interval_weeks === null || r.custom_interval_weeks === undefined ? null : Number(r.custom_interval_weeks),
     nextDate: r.next_date,
     preferredTime: r.preferred_time ?? '',
     notes: r.notes ?? '',
-    discount: r.discount === null || r.discount === undefined ? null : Number(r.discount),
+    visitPrice: r.visit_price === null || r.visit_price === undefined ? null : Number(r.visit_price),
+    billingCycle: coerceBillingCycle(r.billing_cycle),
+    customBillingCycle: r.custom_billing_cycle ?? null,
     active: r.active === true || r.active === 1,
     lastBookingId: r.last_booking_id ?? null,
     createdAt: typeof r.created_at === 'string' ? r.created_at : new Date(r.created_at).toISOString(),
@@ -1535,10 +1701,13 @@ export async function addRecurringJob(data: NewRecurringJob): Promise<RecurringJ
     service: data.service,
     propertyType: data.propertyType ?? 'residential',
     frequency: data.frequency,
+    customIntervalWeeks: data.customIntervalWeeks ?? null,
     nextDate: data.nextDate,
     preferredTime: data.preferredTime ?? '',
     notes: data.notes ?? '',
-    discount: data.discount ?? null,
+    visitPrice: data.visitPrice ?? null,
+    billingCycle: data.billingCycle ?? 'per_visit',
+    customBillingCycle: data.billingCycle === 'custom' ? (data.customBillingCycle ?? null) : null,
     active: data.active ?? true,
     lastBookingId: null,
     createdAt: now,
@@ -1547,8 +1716,8 @@ export async function addRecurringJob(data: NewRecurringJob): Promise<RecurringJ
   if (sql) {
     await ensureSchema();
     await sql`
-      INSERT INTO recurring_jobs (id, name, phone, email, address, suburb, service, property_type, frequency, next_date, preferred_time, notes, discount, active)
-      VALUES (${job.id}, ${job.name}, ${job.phone}, ${job.email}, ${job.address}, ${job.suburb}, ${job.service}, ${job.propertyType}, ${job.frequency}, ${job.nextDate}, ${job.preferredTime}, ${job.notes}, ${job.discount}, ${job.active})
+      INSERT INTO recurring_jobs (id, name, phone, email, address, suburb, service, property_type, frequency, custom_interval_weeks, next_date, preferred_time, notes, visit_price, billing_cycle, custom_billing_cycle, active)
+      VALUES (${job.id}, ${job.name}, ${job.phone}, ${job.email}, ${job.address}, ${job.suburb}, ${job.service}, ${job.propertyType}, ${job.frequency}, ${job.customIntervalWeeks}, ${job.nextDate}, ${job.preferredTime}, ${job.notes}, ${job.visitPrice}, ${job.billingCycle}, ${job.customBillingCycle}, ${job.active})
     `;
     return job;
   }
@@ -1563,8 +1732,8 @@ export async function insertRawRecurringJob(job: RecurringJob): Promise<void> {
   if (sql) {
     await ensureSchema();
     await sql`
-      INSERT INTO recurring_jobs (id, name, phone, email, address, suburb, service, property_type, frequency, next_date, preferred_time, notes, discount, active, created_at, updated_at)
-      VALUES (${job.id}, ${job.name}, ${job.phone}, ${job.email}, ${job.address}, ${job.suburb}, ${job.service}, ${job.propertyType}, ${job.frequency}, ${job.nextDate}, ${job.preferredTime}, ${job.notes}, ${job.discount}, ${job.active}, ${job.createdAt}, ${job.updatedAt})
+      INSERT INTO recurring_jobs (id, name, phone, email, address, suburb, service, property_type, frequency, custom_interval_weeks, next_date, preferred_time, notes, visit_price, billing_cycle, custom_billing_cycle, active, created_at, updated_at)
+      VALUES (${job.id}, ${job.name}, ${job.phone}, ${job.email}, ${job.address}, ${job.suburb}, ${job.service}, ${job.propertyType}, ${job.frequency}, ${job.customIntervalWeeks}, ${job.nextDate}, ${job.preferredTime}, ${job.notes}, ${job.visitPrice}, ${job.billingCycle}, ${job.customBillingCycle}, ${job.active}, ${job.createdAt}, ${job.updatedAt})
     `;
     return;
   }
@@ -1597,9 +1766,11 @@ export async function updateRecurringJob(id: string, updates: Partial<RecurringJ
       UPDATE recurring_jobs SET
         name = ${m.name}, phone = ${m.phone}, email = ${m.email},
         address = ${m.address}, suburb = ${m.suburb}, service = ${m.service},
-        property_type = ${m.propertyType}, frequency = ${m.frequency},
+        property_type = ${m.propertyType}, frequency = ${m.frequency}, custom_interval_weeks = ${m.customIntervalWeeks ?? null},
         next_date = ${m.nextDate}, preferred_time = ${m.preferredTime},
-        notes = ${m.notes}, discount = ${m.discount ?? null}, active = ${m.active},
+        notes = ${m.notes}, visit_price = ${m.visitPrice ?? null},
+        billing_cycle = ${coerceBillingCycle(m.billingCycle)}, custom_billing_cycle = ${m.billingCycle === 'custom' ? (m.customBillingCycle ?? null) : null},
+        active = ${m.active},
         last_booking_id = ${m.lastBookingId}, updated_at = now()
       WHERE id = ${id}
       RETURNING *
@@ -1628,15 +1799,26 @@ export async function deleteRecurringJob(id: string): Promise<boolean> {
   return true;
 }
 
-// Advance a YYYY-MM-DD date by the plan's cadence. Clamps to end of month
-// (e.g. 31 Jan + 1 month = 28/29 Feb, not 3 Mar).
-export function advanceDate(dateStr: string, frequency: RecurringFrequency): string {
-  const months = frequency === 'monthly' ? 1 : frequency === 'quarterly' ? 3 : 6;
+// Advance a YYYY-MM-DD date by the plan's cadence. Month-based frequencies
+// clamp to end of month (e.g. 31 Jan + 1 month = 28/29 Feb, not 3 Mar).
+// Week-based frequencies (weekly/fortnightly/custom) just add days, which
+// keeps landing on the same weekday every cycle — e.g. nextDate on a
+// Saturday + fortnightly always lands on a Saturday, giving you "every
+// other Saturday" for free without any day-of-week field to manage.
+export function advanceDate(dateStr: string, frequency: RecurringFrequency, customIntervalWeeks?: number | null): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
   const [y, m, d] = dateStr.split('-').map(Number);
+
+  if (frequency === 'weekly' || frequency === 'fortnightly' || frequency === 'custom') {
+    const weeks = frequency === 'weekly' ? 1 : frequency === 'fortnightly' ? 2 : Math.max(1, customIntervalWeeks || 1);
+    const target = new Date(y, m - 1, d + weeks * 7);
+    return `${target.getFullYear()}-${pad(target.getMonth() + 1)}-${pad(target.getDate())}`;
+  }
+
+  const months = frequency === 'monthly' ? 1 : frequency === 'quarterly' ? 3 : 6;
   const target = new Date(y, m - 1 + months, 1);
   const lastDay = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate();
   target.setDate(Math.min(d, lastDay));
-  const pad = (n: number) => String(n).padStart(2, '0');
   return `${target.getFullYear()}-${pad(target.getMonth() + 1)}-${pad(target.getDate())}`;
 }
 
@@ -1665,14 +1847,14 @@ async function createBookingFromPlan(job: RecurringJob): Promise<{ job: Recurrin
     preferredTime: job.preferredTime,
     notes: job.notes,
     quoteAmount: null,
-    adminNotes: `Auto-created from ${job.frequency} plan ${job.id}${job.discount ? ` (plan discount $${job.discount}/clean)` : ''}`,
+    adminNotes: `Auto-created from ${job.frequency} plan ${job.id}${job.visitPrice ? ` (worth $${job.visitPrice}/visit)` : ''}`,
     status: 'confirmed',
     source: 'manual',
     scheduledAt,
     recurringId: job.id,
   });
   const advanced = await updateRecurringJob(job.id, {
-    nextDate: advanceDate(job.nextDate, job.frequency),
+    nextDate: advanceDate(job.nextDate, job.frequency, job.customIntervalWeeks),
     lastBookingId: booking.id,
   });
   return { job: advanced ?? job, booking };
@@ -2155,10 +2337,31 @@ export async function recordInvoiceView(token: string): Promise<Invoice | null> 
 
 // ─── Quotes (see src/lib/quote.ts) ──────────────────────────────────────────
 
+// Backfills fields added after the JSON store's initial (lump-sum-only) Quote
+// shape — see the item_amounts/scope/assumptions/payment_terms/other_lines
+// ALTER TABLEs above for the SQL-side equivalent. Without this, a quote saved
+// before those fields existed comes back with them simply missing (JSON.parse
+// doesn't invent keys), and anything indexing quote.itemAmounts[key] throws.
+// Typed `any` in, not `Quote` — old rows may still carry the retired
+// otherText field, which this reads once to migrate, then drops.
+function normalizeQuote(q: any): Quote {
+  const itemAmounts = q.itemAmounts && typeof q.itemAmounts === 'object' ? q.itemAmounts : {};
+  const otherLines = sanitizeOtherLines(q.otherLines);
+  return {
+    ...q,
+    itemAmounts,
+    otherLines: otherLines.length ? otherLines : migrateLegacyOtherLine(q.otherText, itemAmounts),
+    scope: q.scope ?? '',
+    assumptions: q.assumptions ?? '',
+    paymentTerms: coercePaymentDueTerms(q.paymentTerms),
+  };
+}
+
 function readQuotes(): Quote[] {
   try {
     if (!fs.existsSync(QUOTES_PATH)) return [];
-    return JSON.parse(fs.readFileSync(QUOTES_PATH, 'utf-8'));
+    const rows = JSON.parse(fs.readFileSync(QUOTES_PATH, 'utf-8'));
+    return Array.isArray(rows) ? rows.map(normalizeQuote) : [];
   } catch { return []; }
 }
 function writeQuotes(rows: Quote[]): void {
@@ -2175,6 +2378,47 @@ function parseStringArray(raw: unknown): string[] {
   } catch { return []; }
 }
 
+// Legacy quotes may hold '' or an old free-text sentence (pre-dates the
+// fixed cash/bank-transfer due-terms enum) — fall back to the default rather
+// than storing garbage a <select> can't represent.
+function coercePaymentDueTerms(raw: unknown): PaymentDueTerms {
+  return isPaymentDueTerms(raw) ? raw : DEFAULT_PAYMENT_DUE_TERMS;
+}
+
+function parseNumberRecord(raw: unknown): Record<string, number> {
+  let obj: unknown = raw;
+  if (typeof raw === 'string') { try { obj = JSON.parse(raw || '{}'); } catch { obj = {}; } }
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return {};
+  const out: Record<string, number> = {};
+  for (const [k, v] of Object.entries(obj as Record<string, unknown>)) { const n = Number(v); if (!isNaN(n)) out[k] = n; }
+  return out;
+}
+
+function sanitizeOtherLines(raw: unknown): QuoteOtherLine[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((l): l is Record<string, unknown> => !!l && typeof l === 'object')
+    .map((l, i) => ({
+      id: typeof l.id === 'string' && l.id ? l.id : `ol-${i}`,
+      description: typeof l.description === 'string' ? l.description : '',
+      amount: Number(l.amount) || 0,
+    }));
+}
+
+function parseOtherLines(raw: unknown): QuoteOtherLine[] {
+  if (Array.isArray(raw)) return sanitizeOtherLines(raw);
+  try { return sanitizeOtherLines(JSON.parse((raw as string) ?? '[]')); } catch { return []; }
+}
+
+// Quotes saved before the multi-line "Other" existed had one otherText string
+// + itemAmounts.other — fold that into a single line so older quotes still
+// render/total correctly. Only used when other_lines itself is empty.
+function migrateLegacyOtherLine(legacyOtherText: unknown, itemAmounts: Record<string, number>): QuoteOtherLine[] {
+  const text = typeof legacyOtherText === 'string' ? legacyOtherText.trim() : '';
+  if (!text) return [];
+  return [{ id: 'legacy-other', description: text, amount: itemAmounts.other ?? 0 }];
+}
+
 // SQL-row mapper only (snake_case columns) — the JSON fallback store already
 // holds plain camelCase Quote objects, same as every other entity in this file.
 function rowToQuote(r: any): Quote {
@@ -2187,8 +2431,15 @@ function rowToQuote(r: any): Quote {
     status: (r.status as QuoteStatus) ?? 'draft',
     services: parseStringArray(r.services),
     extras: parseStringArray(r.extras),
-    otherText: r.other_text ?? '',
+    itemAmounts: parseNumberRecord(r.item_amounts),
+    otherLines: (() => {
+      const lines = parseOtherLines(r.other_lines);
+      return lines.length ? lines : migrateLegacyOtherLine(r.other_text, parseNumberRecord(r.item_amounts));
+    })(),
     amount: r.amount == null ? 0 : Number(r.amount),
+    scope: r.scope ?? '',
+    assumptions: r.assumptions ?? '',
+    paymentTerms: coercePaymentDueTerms(r.payment_terms),
     propertyType: r.property_type ?? 'residential',
     billToName: r.bill_to_name ?? '',
     billToAddress: r.bill_to_address ?? '',
@@ -2286,8 +2537,10 @@ export async function createQuote(input: QuoteInput): Promise<Quote> {
       status: input.status ?? 'draft',
       services: input.services ?? [],
       extras: input.extras ?? [],
-      otherText: input.otherText ?? '',
+      itemAmounts: input.itemAmounts ?? {},
+      otherLines: sanitizeOtherLines(input.otherLines),
       amount: Number(input.amount) || 0,
+      scope: input.scope ?? '', assumptions: input.assumptions ?? '', paymentTerms: coercePaymentDueTerms(input.paymentTerms),
       propertyType: input.propertyType ?? 'residential',
       billToName: input.billToName ?? '', billToAddress: input.billToAddress ?? '',
       fromName: input.fromName ?? '', fromTradingAs: input.fromTradingAs ?? '', fromAbn: input.fromAbn ?? '',
@@ -2298,16 +2551,16 @@ export async function createQuote(input: QuoteInput): Promise<Quote> {
     };
     await sql`
       INSERT INTO quotes (
-        id, number, seq, status, booking_id, services, extras, other_text, amount, property_type,
+        id, number, seq, status, booking_id, services, extras, item_amounts, other_lines, amount, property_type,
         bill_to_name, bill_to_address,
         from_name, from_trading_as, from_abn, from_address, from_email, from_phone,
-        quote_date, valid_until, notes, terms_text, token
+        quote_date, valid_until, notes, scope, assumptions, payment_terms, terms_text, token
       ) VALUES (
         ${quote.id}, ${quote.number}, ${quote.seq}, ${quote.status}, ${quote.bookingId},
-        ${JSON.stringify(quote.services)}, ${JSON.stringify(quote.extras)}, ${quote.otherText}, ${quote.amount}, ${quote.propertyType},
+        ${JSON.stringify(quote.services)}, ${JSON.stringify(quote.extras)}, ${JSON.stringify(quote.itemAmounts)}, ${JSON.stringify(quote.otherLines)}, ${quote.amount}, ${quote.propertyType},
         ${quote.billToName}, ${quote.billToAddress},
         ${quote.fromName}, ${quote.fromTradingAs}, ${quote.fromAbn}, ${quote.fromAddress}, ${quote.fromEmail}, ${quote.fromPhone},
-        ${quote.quoteDate}, ${quote.validUntil}, ${quote.notes}, ${quote.termsText}, ${quote.token}
+        ${quote.quoteDate}, ${quote.validUntil}, ${quote.notes}, ${quote.scope}, ${quote.assumptions}, ${quote.paymentTerms}, ${quote.termsText}, ${quote.token}
       )
     `;
     await syncQuoteAmountToBooking(quote);
@@ -2325,8 +2578,10 @@ export async function createQuote(input: QuoteInput): Promise<Quote> {
     status: input.status ?? 'draft',
     services: input.services ?? [],
     extras: input.extras ?? [],
-    otherText: input.otherText ?? '',
+    itemAmounts: input.itemAmounts ?? {},
+    otherLines: sanitizeOtherLines(input.otherLines),
     amount: Number(input.amount) || 0,
+    scope: input.scope ?? '', assumptions: input.assumptions ?? '', paymentTerms: coercePaymentDueTerms(input.paymentTerms),
     propertyType: input.propertyType ?? 'residential',
     billToName: input.billToName ?? '', billToAddress: input.billToAddress ?? '',
     fromName: input.fromName ?? '', fromTradingAs: input.fromTradingAs ?? '', fromAbn: input.fromAbn ?? '',
@@ -2360,15 +2615,18 @@ export async function updateQuote(id: string, rawUpdates: Partial<Quote>): Promi
     const m = { ...cur, ...updates };
     // Never let the caller rewrite identity/number/seq/token/bookingId.
     m.id = cur.id; m.number = cur.number; m.seq = cur.seq; m.token = cur.token; m.bookingId = cur.bookingId;
+    m.paymentTerms = coercePaymentDueTerms(m.paymentTerms);
+    m.otherLines = sanitizeOtherLines(m.otherLines);
     const rows = await sql`
       UPDATE quotes SET
         status = ${m.status},
-        services = ${JSON.stringify(m.services)}, extras = ${JSON.stringify(m.extras)}, other_text = ${m.otherText},
-        amount = ${m.amount}, property_type = ${m.propertyType},
+        services = ${JSON.stringify(m.services)}, extras = ${JSON.stringify(m.extras)},
+        item_amounts = ${JSON.stringify(m.itemAmounts)}, other_lines = ${JSON.stringify(m.otherLines)}, amount = ${m.amount}, property_type = ${m.propertyType},
         bill_to_name = ${m.billToName}, bill_to_address = ${m.billToAddress},
         from_name = ${m.fromName}, from_trading_as = ${m.fromTradingAs}, from_abn = ${m.fromAbn},
         from_address = ${m.fromAddress}, from_email = ${m.fromEmail}, from_phone = ${m.fromPhone},
-        quote_date = ${m.quoteDate}, valid_until = ${m.validUntil}, notes = ${m.notes}, terms_text = ${m.termsText},
+        quote_date = ${m.quoteDate}, valid_until = ${m.validUntil}, notes = ${m.notes},
+        scope = ${m.scope}, assumptions = ${m.assumptions}, payment_terms = ${m.paymentTerms}, terms_text = ${m.termsText},
         sent_at = ${m.sentAt ?? null},
         updated_at = now()
       WHERE id = ${id}
@@ -2387,6 +2645,8 @@ export async function updateQuote(id: string, rawUpdates: Partial<Quote>): Promi
   const updates = withQuoteStamps(cur, rawUpdates);
   const m = { ...cur, ...updates };
   m.id = cur.id; m.number = cur.number; m.seq = cur.seq; m.token = cur.token; m.bookingId = cur.bookingId;
+  m.paymentTerms = coercePaymentDueTerms(m.paymentTerms);
+  m.otherLines = sanitizeOtherLines(m.otherLines);
   m.updatedAt = new Date().toISOString();
   rows[idx] = m;
   writeQuotes(rows);
@@ -3074,11 +3334,15 @@ export async function deleteBookingGroup(id: string): Promise<boolean> {
   return true;
 }
 
-// Delete a group AND every booking inside it (destructive — confirmed in the UI).
+// Delete a group AND every booking inside it (confirmed in the UI). Soft
+// deletes the bookings — same as deleteBooking(), they land in the trash
+// (Settings -> Deleted bookings) for 60 days.
 export async function deleteBookingGroupWithBookings(id: string): Promise<{ ok: boolean; deletedBookings: number }> {
   if (sql) {
     await ensureSchema();
-    const del = await sql`DELETE FROM bookings WHERE group_id = ${id} RETURNING id`;
+    const leads = await sql`SELECT external_lead_id FROM bookings WHERE group_id = ${id} AND source = 'facebook-lead-ad' AND external_lead_id IS NOT NULL`;
+    for (const r of leads as any[]) await dismissLeadId(r.external_lead_id);
+    const del = await sql`UPDATE bookings SET deleted_at = now() WHERE group_id = ${id} AND deleted_at IS NULL RETURNING id`;
     const rows = await sql`DELETE FROM booking_groups WHERE id = ${id} RETURNING id`;
     return { ok: (rows as any[]).length > 0, deletedBookings: (del as any[]).length };
   }
@@ -3086,9 +3350,16 @@ export async function deleteBookingGroupWithBookings(id: string): Promise<{ ok: 
   const filtered = groups.filter(g => g.id !== id);
   if (filtered.length === groups.length) return { ok: false, deletedBookings: 0 };
   const bks = readFile();
-  const remaining = bks.filter(b => b.groupId !== id);
-  const deletedBookings = bks.length - remaining.length;
-  writeFile(remaining);
+  const now = new Date().toISOString();
+  let deletedBookings = 0;
+  for (const b of bks) {
+    if (b.groupId === id && !b.deletedAt) {
+      if (b.source === 'facebook-lead-ad' && b.externalLeadId) await dismissLeadId(b.externalLeadId);
+      b.deletedAt = now;
+      deletedBookings++;
+    }
+  }
+  writeFile(bks);
   writeGroups(filtered);
   return { ok: true, deletedBookings };
 }
@@ -3098,11 +3369,11 @@ export async function getBookingsForGuest(guestId: string): Promise<Booking[]> {
   if (sql) {
     return withTimeout((async () => {
       await ensureSchema();
-      const rows = await sql`SELECT * FROM bookings WHERE assigned_guest_id = ${guestId} ORDER BY created_at DESC`;
+      const rows = await sql`SELECT * FROM bookings WHERE assigned_guest_id = ${guestId} AND deleted_at IS NULL ORDER BY created_at DESC`;
       return (rows as any[]).map(rowToBooking);
     })());
   }
-  return readFile().filter(b => b.assignedGuestId === guestId).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  return readFile().filter(b => b.assignedGuestId === guestId && !b.deletedAt).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
 // Editing is allowed on any profile, built-in included — only deletion is

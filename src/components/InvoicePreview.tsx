@@ -45,7 +45,7 @@ export default function InvoicePreview({ invoice }: { invoice: InvoicePreviewDat
               {invoice.fromTradingAs || 'Glass and Blast'}
             </div>
             <div className="text-slate-500 text-xs sm:text-sm mt-1">
-              Window Cleaning &nbsp;|&nbsp; North Canberra &amp; Greater ACT
+              Window Cleaning &nbsp;|&nbsp; Canberra, Queanbeyan &amp; Googong
             </div>
           </div>
           <div className="text-right">
@@ -154,7 +154,7 @@ export default function InvoicePreview({ invoice }: { invoice: InvoicePreviewDat
             <p className="text-sm text-emerald-900">
               This invoice has been paid in full
               {invoice.paymentMethod ? <> via <span className="font-bold">{PAYMENT_METHOD_LABEL[invoice.paymentMethod]}</span></> : ''}.
-              Thank you — this document serves as your receipt.
+              Thank you, this document serves as your receipt.
             </p>
           </div>
         ) : (

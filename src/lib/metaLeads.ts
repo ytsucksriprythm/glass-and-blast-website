@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import type { Booking, NewBooking, ServiceType } from './db';
+import { stripPhonePrefix } from './db';
 import { listSheetTabs, fetchSheetRows, writeSheetCell } from './googleSheets';
 
 // ─── Field mapping ───────────────────────────────────────────────────────────
@@ -74,7 +75,7 @@ export function mapSheetRowToBooking(headers: string[], row: string[], fallbackF
   const lastName = take(findColumn(headers, LASTNAME_CANDIDATES));
   const name = fullName || [firstName, lastName].filter(Boolean).join(' ') || 'Facebook lead (no name given)';
 
-  const phone = take(findColumn(headers, PHONE_CANDIDATES));
+  const phone = stripPhonePrefix(take(findColumn(headers, PHONE_CANDIDATES)));
   const email = take(findColumn(headers, EMAIL_CANDIDATES));
   const address = take(findColumn(headers, ADDRESS_CANDIDATES, 'address'));
   const suburb = take(findColumn(headers, SUBURB_CANDIDATES));

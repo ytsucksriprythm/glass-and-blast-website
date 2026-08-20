@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { addBooking, getBookingByExternalLeadId, logActivity } from '@/lib/db';
+import { addBooking, getBookingByExternalLeadId, getDismissedLeadIds, logActivity } from '@/lib/db';
 import { isAdminAuthenticated } from '@/lib/auth';
 import { sendBookingNotifications } from '@/lib/notifications';
 import { listSheetTabs, fetchSheetRows } from '@/lib/googleSheets';
@@ -39,6 +39,8 @@ export async function GET(req: NextRequest) {
 
   const created: { id: string; name: string; form: string }[] = [];
   let checked = 0;
+  let skippedDismissed = 0;
+  const dismissed = await getDismissedLeadIds();
 
   for (const tab of tabs) {
     let rows: string[][];
@@ -56,13 +58,14 @@ export async function GET(req: NextRequest) {
       checked++;
       try {
         const mapped = mapSheetRowToBooking(headerRow, row, tab);
+        if (dismissed.has(mapped.externalLeadId)) { skippedDismissed++; continue; } // deleted from CRM before — stay deleted
         if (await getBookingByExternalLeadId(mapped.externalLeadId)) continue; // already imported
 
         const booking = await addBooking({ ...mapped, source: 'facebook-lead-ad', status: 'pending' });
         created.push({ id: booking.id, name: booking.name, form: tab });
 
         sendBookingNotifications(booking).catch(console.error);
-        logActivity('booking.created', `${booking.name} — Facebook lead ad (${booking.service})`, { bookingId: booking.id }, 'customer').catch(() => {});
+        logActivity('booking.created', `${booking.name} · Facebook lead ad (${booking.service})`, { bookingId: booking.id }, 'customer').catch(() => {});
       } catch (err) {
         // One bad row shouldn't stop the rest of the sheet from importing.
         console.error(`Meta leads sheet sync: row failed in tab "${tab}"`, err);
@@ -70,5 +73,5 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  return NextResponse.json({ imported: created.length, checked, tabs, bookings: created });
+  return NextResponse.json({ imported: created.length, checked, skippedDismissed, tabs, bookings: created });
 }
