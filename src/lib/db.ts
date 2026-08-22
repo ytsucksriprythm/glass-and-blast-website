@@ -1013,6 +1013,28 @@ export async function bulkReorderBookings(ids: string[]): Promise<number> {
   return n;
 }
 
+// Clear every booking's manual sort_order back to unset, so the list falls
+// back to plain newest-first (createdAt desc) for everyone until someone
+// drags again. For undoing a stale/accidental bulk reorder — e.g. the sort
+// numbers a select-mode drag stamps onto the whole visible list can end up
+// parked ahead of every new arrival (Facebook leads included) if nobody
+// ever drags again afterward. Returns how many rows actually had one set.
+export async function resetBookingSortOrder(): Promise<number> {
+  if (sql) {
+    await ensureSchema();
+    const rows = await sql`UPDATE bookings SET sort_order = NULL WHERE sort_order IS NOT NULL RETURNING id`;
+    return (rows as any[]).length;
+  }
+  const all = readFile();
+  let n = 0;
+  const next = all.map(b => {
+    if (b.sortOrder != null) n++;
+    return { ...b, sortOrder: null };
+  });
+  writeFile(next);
+  return n;
+}
+
 const STALE_LEAD_DAYS = 14;
 
 // An uncontacted/contacted job nobody has actioned (quoted or confirmed) in

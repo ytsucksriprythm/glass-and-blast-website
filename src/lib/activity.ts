@@ -38,6 +38,7 @@ export const ACTIVITY_TYPE_LABEL: Record<string, string> = {
   'booking.status_changed': 'Booking status changed',
   'booking.auto_moved_cold': 'Auto-moved to Cold Lead',
   'booking.auto_moved_leads': 'Auto-moved back to Leads (unscheduled)',
+  'booking.sort_reset': 'Manual sort order cleared',
   'booking.contacted': 'Lead marked contacted',
   'invoice.created': 'Invoice created',
   'invoice.deleted': 'Invoice deleted',

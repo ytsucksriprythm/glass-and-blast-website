@@ -92,17 +92,21 @@ export async function GET(req: NextRequest) {
     );
 
     if (sort === 'sortOrder') {
-      // Manual drag order (Bookings tab, select mode) — numeric, unset sinks
-      // to the bottom. Two unset rows must compare as a clean 0, not
-      // `Infinity - Infinity` (= NaN) — a NaN comparator return is exactly
-      // what was making new/unset bookings (including every incoming
-      // Facebook lead) land in whatever order they happened to already be
-      // in rather than staying newest-first like getBookings()' underlying
-      // created_at DESC order already has them.
+      // Manual drag order (Bookings tab, select mode) — numeric, unset FLOATS
+      // TO THE TOP. A booking only gets a sortOrder once someone drags it (or
+      // anything else in the same view — a drag stamps the whole visible
+      // list), so "unset" means "arrived after the last manual arrangement".
+      // Sinking those to the bottom would bury every new lead (including
+      // every incoming Facebook lead) below a manually-arranged block
+      // forever; floating them to the top keeps "newest first" as the
+      // default and lets a manual drag hold its position underneath. Two
+      // unset rows must compare as a clean 0, not `Infinity - Infinity`
+      // (= NaN, an invalid comparator return) — they then keep getBookings()'
+      // underlying created_at DESC order via Array.sort's stability.
       filtered = [...filtered].sort((a, b) => {
         if (a.sortOrder == null && b.sortOrder == null) return 0;
-        if (a.sortOrder == null) return 1;
-        if (b.sortOrder == null) return -1;
+        if (a.sortOrder == null) return -1;
+        if (b.sortOrder == null) return 1;
         return a.sortOrder - b.sortOrder;
       });
     } else {

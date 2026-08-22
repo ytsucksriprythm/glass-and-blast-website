@@ -963,11 +963,11 @@ export default function Dashboard() {
   const switchBookingsView = (v: 'leads' | 'pipeline') => { setBookingsView(v); setStatusFilter([]); };
   const [showPaid, setShowPaid] = useState(true);
   // Default to the manual drag order, not createdAt — a booking's sortOrder
-  // is null until someone drags it, and the API's sortOrder sort already
-  // falls unset ones to the bottom in their normal createdAt-desc order (see
+  // is null until someone drags it, and the API's sortOrder sort floats
+  // unset ones to the top in their normal createdAt-desc order (see
   // /api/admin/bookings), so this looks identical to before until a drag
-  // actually happens, and then it's the one that survives a refresh instead
-  // of always snapping back to chronological.
+  // actually happens, and then that manual arrangement holds underneath
+  // — new/unset bookings (including Facebook leads) still land above it.
   const [sortField, setSortField] = useState('sortOrder');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
 
@@ -1224,6 +1224,21 @@ export default function Dashboard() {
     let k = 0;
     setBookings(bookings.map(b => visibleIdSet.has(b.id) ? byId.get(ids[k++])! : b));
     persistOrder(ids);
+  };
+  const [resettingOrder, setResettingOrder] = useState(false);
+  // Clears every booking's manual sort_order — undoes a drag (this one or any
+  // earlier one) that's parked its whole visible list ahead of new arrivals,
+  // Facebook leads included. Back to plain newest-first until someone drags again.
+  const resetSortOrder = async () => {
+    if (!window.confirm('Clear the manual drag order on every booking? The list goes back to newest-first until you drag again.')) return;
+    setResettingOrder(true);
+    try {
+      const res = await fetch('/api/admin/bookings/reset-order', { method: 'POST' });
+      const data = await res.json();
+      toast.success(data.cleared > 0 ? `Order reset on ${data.cleared} booking${data.cleared !== 1 ? 's' : ''}` : 'Already newest-first — nothing to reset');
+      await fetchData();
+    } catch { toast.error('Could not reset order'); }
+    setResettingOrder(false);
   };
 
   const toggleSort = (field: string) => {
@@ -1670,9 +1685,12 @@ export default function Dashboard() {
                 {/* Bulk select list + action bar */}
                 {selectMode && (
                   <div className="space-y-2 pb-24">
-                    <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-3 flex-wrap">
                       <button onClick={() => setSelected(new Set(viewBookings.map(b => b.id)))} className="text-sky-400 text-xs font-semibold cursor-pointer">Select all ({viewBookings.length})</button>
                       <span className="text-slate-600 text-xs inline-flex items-center gap-1"><GripVertical className="w-3 h-3" /> Drag to reorder</span>
+                      <button onClick={resetSortOrder} disabled={resettingOrder} className="ml-auto text-slate-500 hover:text-slate-300 text-xs font-semibold cursor-pointer disabled:opacity-50">
+                        {resettingOrder ? 'Resetting…' : 'Reset to newest-first'}
+                      </button>
                     </div>
                     <SelectModeList
                       items={dragItems}
