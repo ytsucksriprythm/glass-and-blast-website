@@ -30,7 +30,7 @@ import { FlagButton, FlagBadge, FlagModal, flagHighlightClass } from '@/componen
 
 interface Stats {
   total: number; thisMonth: number; lastMonth: number;
-  pending: number; quoted: number; confirmed: number; completed: number; cancelled: number; cold: number;
+  uncontacted: number; contacted: number; quoted: number; confirmed: number; completed: number; cancelled: number; cold: number;
   quotedCount: number; quotedValue: number;
   paidValue: number; owedValue: number; owedCount: number;
   wonValue: number; estimatedRevenue: number;
@@ -75,17 +75,23 @@ interface SiteStats {
 // ─── Constants ───────────────────────────────────────────────────────────
 
 const STATUS_CONFIG: Record<BookingStatus, { label: string; color: string; icon: React.FC<{ className?: string; style?: React.CSSProperties }> }> = {
-  pending:   { label: 'Pending',   color: '#F59E0B', icon: Clock },
-  quoted:    { label: 'Quoted',    color: '#A78BFA', icon: DollarSign },
-  confirmed: { label: 'Confirmed', color: '#38BDF8', icon: CheckCircle },
-  completed: { label: 'Completed', color: '#34D399', icon: Check },
-  cancelled: { label: 'Cancelled', color: '#F87171', icon: XCircle },
-  cold:      { label: 'Cold Lead', color: '#94A3B8', icon: Snowflake },
+  uncontacted: { label: 'Uncontacted', color: '#F59E0B', icon: Clock },
+  contacted:   { label: 'Contacted',   color: '#2DD4BF', icon: PhoneCall },
+  quoted:      { label: 'Quoted',      color: '#A78BFA', icon: DollarSign },
+  confirmed:   { label: 'Confirmed',   color: '#38BDF8', icon: CheckCircle },
+  completed:   { label: 'Completed',   color: '#34D399', icon: Check },
+  cancelled:   { label: 'Cancelled',   color: '#F87171', icon: XCircle },
+  cold:        { label: 'Cold Lead',   color: '#94A3B8', icon: Snowflake },
 };
 const STATUS_KEYS = Object.keys(STATUS_CONFIG) as BookingStatus[];
 // Everything except "cold" — the Bookings tab's main list only ever shows
 // these; cold leads live in their own collapsible section further down.
 const ACTIVE_STATUS_KEYS = STATUS_KEYS.filter(s => s !== 'cold');
+// Leads/Pipeline sub-tabs (Bookings tab): "has this job ever been quoted?"
+// splits the statuses cleanly in two. Cold rides along with Leads — a cold
+// lead is still fundamentally a lead, just a stale one.
+const LEADS_STATUSES: BookingStatus[] = ['uncontacted', 'contacted', 'cold'];
+const PIPELINE_STATUSES: BookingStatus[] = ['quoted', 'confirmed', 'completed', 'cancelled'];
 
 const SERVICE_LABELS: Record<string, string> = {
   'window-washing':       'Window Washing',
@@ -136,7 +142,7 @@ const fromLocalInput = (v: string) => (v ? new Date(v).toISOString() : null);
 
 const emptyForm = {
   name: '', phone: '', email: '', service: 'window-washing', propertyType: 'residential',
-  suburb: '', address: '', preferredDate: '', preferredTime: '', status: 'pending',
+  suburb: '', address: '', preferredDate: '', preferredTime: '', status: 'uncontacted',
   quoteAmount: '', notes: '', adminNotes: '', leadSource: '',
 };
 
@@ -949,6 +955,12 @@ export default function Dashboard() {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<string[]>([]);
   const [serviceFilter, setServiceFilter] = useState<string[]>([]);
+  // Bookings tab splits into two sub-tabs: Leads (not yet quoted — including
+  // Cold) and Pipeline (quoted onward). Purely a client-side filter over the
+  // already-fetched `bookings` — see viewBookings below — so it can't starve
+  // Overview's widgets (they read the same shared, unscoped fetch).
+  const [bookingsView, setBookingsView] = useState<'leads' | 'pipeline'>('leads');
+  const switchBookingsView = (v: 'leads' | 'pipeline') => { setBookingsView(v); setStatusFilter([]); };
   const [showPaid, setShowPaid] = useState(true);
   // Default to the manual drag order, not createdAt — a booking's sortOrder
   // is null until someone drags it, and the API's sortOrder sort already
@@ -979,8 +991,8 @@ export default function Dashboard() {
   // Cold-leads collapsible section + "move back to active" modal
   const [coldOpen, setColdOpen] = useState(false);
   const [revive, setRevive] = useState<Booking | null>(null);
-  const [reviveStatus, setReviveStatus] = useState<BookingStatus>('pending');
-  const openRevive = (b: Booking) => { setRevive(b); setReviveStatus('pending'); };
+  const [reviveStatus, setReviveStatus] = useState<BookingStatus>('uncontacted');
+  const openRevive = (b: Booking) => { setRevive(b); setReviveStatus('uncontacted'); };
 
   // Jobs the 14-day stale-lead check JUST auto-moved to Cold Lead this load —
   // shown as a one-time "moved to Cold Lead" popup with Undo.
@@ -1157,9 +1169,10 @@ export default function Dashboard() {
     } catch { toast.error('Could not mark paid'); }
   };
 
-  // Website lead followed up — drops it from "Leads to call back" without
-  // touching status (still pending until it's actually quoted/confirmed).
-  const markContacted = (b: Booking) => saveBooking(b.id, { contactedAt: new Date().toISOString() });
+  // Website lead followed up — flips it from "Uncontacted" to "Contacted",
+  // which drops it out of "Leads to call back" (contactedAt auto-stamps
+  // server-side, same pattern as completedAt — see withContactedAt in db.ts).
+  const markContacted = (b: Booking) => saveBooking(b.id, { status: 'contacted' });
 
   const saveBooking = async (id: string, patch: Partial<Booking>) => {
     try {
@@ -1207,7 +1220,7 @@ export default function Dashboard() {
   };
   const onReorderDragItems = (ids: string[]) => {
     const byId = new Map(bookings.map(b => [b.id, b]));
-    const visibleIdSet = new Set(visibleBookings.map(b => b.id));
+    const visibleIdSet = new Set(viewBookings.map(b => b.id));
     let k = 0;
     setBookings(bookings.map(b => visibleIdSet.has(b.id) ? byId.get(ids[k++])! : b));
     persistOrder(ids);
@@ -1230,7 +1243,7 @@ export default function Dashboard() {
     ? Math.round(((stats.thisMonth - stats.lastMonth) / stats.lastMonth) * 100)
     : undefined;
 
-  const navItems = adminNavItems({ onTab: setActiveTab, pending: stats?.pending ?? 0 });
+  const navItems = adminNavItems({ onTab: setActiveTab, pending: stats?.uncontacted ?? 0 });
 
   // Grouped bookings collapse into one row instead of showing as separate
   // lines — fewer rows to scan. The group sits inline with everything else,
@@ -1238,11 +1251,20 @@ export default function Dashboard() {
   // in the current sort order, so the first member hit while walking that
   // order IS the group's most-recent job (default sort is createdAt desc).
   const visibleBookings = showPaid ? bookings : bookings.filter(b => !b.paid);
+  // Leads vs Pipeline sub-tab, applied client-side on top of the shared fetch
+  // (see bookingsView above) — never touches `bookings` itself, so Overview's
+  // widgets (which read the same state) keep seeing everything.
+  const viewStatuses = bookingsView === 'leads' ? LEADS_STATUSES : PIPELINE_STATUSES;
+  const viewBookings = visibleBookings.filter(b => viewStatuses.includes(b.status));
+  // Counts for the Leads/Pipeline toggle badges — always both, regardless of
+  // which view is currently active, so the count on the OTHER tab is visible too.
+  const leadsCount = visibleBookings.filter(b => LEADS_STATUSES.includes(b.status)).length;
+  const pipelineCount = visibleBookings.filter(b => PIPELINE_STATUSES.includes(b.status)).length;
   // Cold leads get pulled out of the main list into their own collapsible
   // section below it — but only when browsing "All Status"; picking the
   // "Cold Lead" filter explicitly should still show them inline as normal.
-  const coldBookings = statusFilter.length === 0 ? visibleBookings.filter(b => b.status === 'cold') : [];
-  const mainBookings = statusFilter.length === 0 ? visibleBookings.filter(b => b.status !== 'cold') : visibleBookings;
+  const coldBookings = statusFilter.length === 0 ? viewBookings.filter(b => b.status === 'cold') : [];
+  const mainBookings = statusFilter.length === 0 ? viewBookings.filter(b => b.status !== 'cold') : viewBookings;
   const bookingsByGroup = new Map<string, Booking[]>();
   for (const b of mainBookings) {
     if (!b.groupId) continue;
@@ -1266,14 +1288,14 @@ export default function Dashboard() {
   // selected/dragged too) — a grouped booking drags as its whole group.
   const dragItems: ListItem[] = (() => {
     const byGroup = new Map<string, Booking[]>();
-    for (const b of visibleBookings) {
+    for (const b of viewBookings) {
       if (!b.groupId) continue;
       const list = byGroup.get(b.groupId) ?? [];
       list.push(b); byGroup.set(b.groupId, list);
     }
     const items: ListItem[] = [];
     const seen = new Set<string>();
-    for (const b of visibleBookings) {
+    for (const b of viewBookings) {
       if (!b.groupId) { items.push({ kind: 'booking', booking: b }); continue; }
       if (seen.has(b.groupId)) continue;
       seen.add(b.groupId);
@@ -1323,6 +1345,18 @@ export default function Dashboard() {
                 <button onClick={() => setActiveTab('site')} className={`px-3 py-1.5 rounded-md text-xs font-semibold cursor-pointer transition-colors ${activeTab === 'site' ? 'bg-sky-500 text-white' : 'text-slate-400 hover:text-white'}`}>Site</button>
               </div>
             )}
+            {activeTab === 'bookings' && (
+              <div className="hidden sm:inline-flex items-center gap-1 rounded-xl border border-white/10 bg-navy-900/60 p-1">
+                <button onClick={() => switchBookingsView('leads')} className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-bold cursor-pointer transition-all ${bookingsView === 'leads' ? 'bg-sky-500 text-white shadow-sm shadow-sky-500/30' : 'text-slate-400 hover:text-white'}`}>
+                  <PhoneCall className="w-3.5 h-3.5" /> Leads
+                  <span className={`px-1.5 py-0.5 rounded-full text-[10px] leading-none ${bookingsView === 'leads' ? 'bg-white/20' : 'bg-white/10'}`}>{leadsCount}</span>
+                </button>
+                <button onClick={() => switchBookingsView('pipeline')} className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-bold cursor-pointer transition-all ${bookingsView === 'pipeline' ? 'bg-sky-500 text-white shadow-sm shadow-sky-500/30' : 'text-slate-400 hover:text-white'}`}>
+                  <Layers className="w-3.5 h-3.5" /> Pipeline
+                  <span className={`px-1.5 py-0.5 rounded-full text-[10px] leading-none ${bookingsView === 'pipeline' ? 'bg-white/20' : 'bg-white/10'}`}>{pipelineCount}</span>
+                </button>
+              </div>
+            )}
             <button onClick={() => { setActiveTab('bookings'); setShowAdd(true); }} className="hidden sm:inline-flex items-center gap-2 px-4 py-2 bg-sky-500 hover:bg-sky-400 text-white text-sm font-semibold rounded-xl transition-all cursor-pointer">
               <Plus className="w-4 h-4" /> Add Booking
             </button>
@@ -1339,6 +1373,26 @@ export default function Dashboard() {
             <div className="inline-flex rounded-lg border border-white/10 bg-navy-900/60 p-1">
               <button onClick={() => setActiveTab('business')} className={`px-3 py-1.5 rounded-md text-xs font-semibold cursor-pointer transition-colors ${activeTab === 'business' ? 'bg-sky-500 text-white' : 'text-slate-400 hover:text-white'}`}>Business</button>
               <button onClick={() => setActiveTab('site')} className={`px-3 py-1.5 rounded-md text-xs font-semibold cursor-pointer transition-colors ${activeTab === 'site' ? 'bg-sky-500 text-white' : 'text-slate-400 hover:text-white'}`}>Site</button>
+            </div>
+          </div>
+        )}
+        {activeTab === 'bookings' && (
+          <div className="sm:hidden px-4 pt-3">
+            <div className="grid grid-cols-2 gap-1.5 rounded-2xl border border-white/10 bg-navy-900/60 p-1.5">
+              <button
+                onClick={() => switchBookingsView('leads')}
+                className={`flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-bold cursor-pointer transition-all ${bookingsView === 'leads' ? 'bg-sky-500 text-white shadow-lg shadow-sky-500/25' : 'text-slate-400'}`}
+              >
+                <PhoneCall className="w-4 h-4" /> Leads
+                <span className={`min-w-[1.35rem] h-[1.35rem] px-1 rounded-full text-[11px] font-bold flex items-center justify-center ${bookingsView === 'leads' ? 'bg-white/20 text-white' : 'bg-white/10 text-slate-400'}`}>{leadsCount}</span>
+              </button>
+              <button
+                onClick={() => switchBookingsView('pipeline')}
+                className={`flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-bold cursor-pointer transition-all ${bookingsView === 'pipeline' ? 'bg-sky-500 text-white shadow-lg shadow-sky-500/25' : 'text-slate-400'}`}
+              >
+                <Layers className="w-4 h-4" /> Pipeline
+                <span className={`min-w-[1.35rem] h-[1.35rem] px-1 rounded-full text-[11px] font-bold flex items-center justify-center ${bookingsView === 'pipeline' ? 'bg-white/20 text-white' : 'bg-white/10 text-slate-400'}`}>{pipelineCount}</span>
+              </button>
             </div>
           </div>
         )}
@@ -1383,7 +1437,7 @@ export default function Dashboard() {
 
                 {/* Action needed: fresh leads to call + money owed — the two lists that make you money */}
                 {!loading && (() => {
-                  const leads = bookings.filter(b => b.status === 'pending' && !b.contactedAt).sort((a, b) => a.createdAt.localeCompare(b.createdAt)).slice(0, 5);
+                  const leads = bookings.filter(b => b.status === 'uncontacted').sort((a, b) => a.createdAt.localeCompare(b.createdAt)).slice(0, 5);
                   const owed = bookings.filter(b => b.status === 'completed' && !b.paid && typeof b.quoteAmount === 'number' && (b.quoteAmount ?? 0) > 0).slice(0, 5);
                   const dueSoonCount = recurring.filter(j => j.active && j.nextDate <= new Date(Date.now() + 14 * 86400000).toISOString().slice(0, 10)).length;
                   const ageDays = (iso: string) => Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
@@ -1572,7 +1626,7 @@ export default function Dashboard() {
                   <div className="grid grid-cols-2 sm:flex gap-2">
                     <MultiSelectDropdown
                       label="Status"
-                      options={[...STATUS_KEYS.map(s => ({ value: s, label: STATUS_CONFIG[s].label })), { value: 'facebook-lead-ad', label: 'Facebook Lead' }]}
+                      options={[...viewStatuses.map(s => ({ value: s, label: STATUS_CONFIG[s].label })), { value: 'facebook-lead-ad', label: 'Facebook Lead' }]}
                       selected={statusFilter}
                       onChange={setStatusFilter}
                     />
@@ -1606,7 +1660,7 @@ export default function Dashboard() {
 
                 <div className="flex items-center justify-between px-1">
                   <div className="text-slate-500 text-sm">
-                    {loading ? 'Loading...' : `${mainBookings.length} booking${mainBookings.length !== 1 ? 's' : ''}`}
+                    {loading ? 'Loading...' : `${mainBookings.length} ${bookingsView === 'leads' ? 'lead' : 'job'}${mainBookings.length !== 1 ? 's' : ''}`}
                   </div>
                   <button onClick={() => { setSelectMode(m => !m); setSelected(new Set()); }} className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold cursor-pointer transition-colors ${selectMode ? 'bg-sky-500 text-white' : 'glass border border-white/10 text-slate-300 hover:text-white'}`}>
                     <CheckSquare className="w-4 h-4" /> {selectMode ? 'Done' : 'Select'}
@@ -1617,7 +1671,7 @@ export default function Dashboard() {
                 {selectMode && (
                   <div className="space-y-2 pb-24">
                     <div className="flex items-center gap-3">
-                      <button onClick={() => setSelected(new Set(visibleBookings.map(b => b.id)))} className="text-sky-400 text-xs font-semibold cursor-pointer">Select all ({visibleBookings.length})</button>
+                      <button onClick={() => setSelected(new Set(viewBookings.map(b => b.id)))} className="text-sky-400 text-xs font-semibold cursor-pointer">Select all ({viewBookings.length})</button>
                       <span className="text-slate-600 text-xs inline-flex items-center gap-1"><GripVertical className="w-3 h-3" /> Drag to reorder</span>
                     </div>
                     <SelectModeList
@@ -2058,7 +2112,7 @@ export default function Dashboard() {
             bookings={staleMoved}
             onOk={id => setStaleMoved(prev => prev.filter(b => b.id !== id))}
             onUndo={async (b) => {
-              await saveBooking(b.id, { status: b.autoMovedFrom ?? 'pending', autoMoved: false, autoMovedAt: null, autoMovedFrom: null });
+              await saveBooking(b.id, { status: b.autoMovedFrom ?? 'uncontacted', autoMoved: false, autoMovedAt: null, autoMovedFrom: null });
               setStaleMoved(prev => prev.filter(x => x.id !== b.id));
             }}
           />
@@ -2097,7 +2151,7 @@ function PayInvoiceModal({ booking, invoice, onClose, onConfirm }: {
 }
 
 // "Move back to active" — asks what status a cold lead should go back to,
-// since there's no single obvious answer (could be pending again, or
+// since there's no single obvious answer (could be uncontacted again, or
 // straight to confirmed if you already know they're back on).
 function ReviveModal({ booking, status, onChangeStatus, onClose, onSave }: {
   booking: Booking; status: BookingStatus; onChangeStatus: (s: BookingStatus) => void; onClose: () => void; onSave: () => void;
@@ -2120,21 +2174,26 @@ function ReviveModal({ booking, status, onChangeStatus, onClose, onSave }: {
   );
 }
 
-// One-time popup for whatever the 14-day stale-lead check just auto-moved to
-// Cold Lead on this page load — OK dismisses, Undo puts it straight back.
+// One-time popup for whatever the auto-move checks just moved on this page
+// load — OK dismisses, Undo puts it straight back. Two different moves can
+// show up in the same list: Pipeline -> Leads (quoted/confirmed, unscheduled
+// a week) and Leads -> Cold (uncontacted/contacted, untouched 14 days) —
+// told apart by the booking's new .status (see checkUnscheduledPipeline /
+// checkStaleLeads in db.ts), each with its own heading and reason.
 function StaleMovedModal({ bookings, onOk, onUndo }: {
   bookings: Booking[]; onOk: (id: string) => void; onUndo: (b: Booking) => void;
 }) {
-  return (
-    <Overlay onClose={() => bookings.forEach(b => onOk(b.id))}>
-      <div className="flex items-center justify-between mb-4">
-        <h3 className="font-display text-lg font-bold text-white flex items-center gap-2"><Snowflake className="w-5 h-5 text-slate-400" /> Moved to Cold Lead</h3>
-      </div>
-      <p className="text-slate-400 text-sm mb-4">
-        {bookings.length === 1 ? 'This job has' : `These ${bookings.length} jobs have`} been pending for 14 days with no update, so {bookings.length === 1 ? 'it was' : 'they were'} automatically moved to Cold Lead.
+  const toLeads = bookings.filter(b => b.status === 'uncontacted' || b.status === 'contacted');
+  const toCold = bookings.filter(b => b.status === 'cold');
+
+  const Group = ({ title, icon: Icon, reason, items }: { title: string; icon: React.FC<{ className?: string }>; reason: string; items: Booking[] }) => items.length === 0 ? null : (
+    <div className="mb-4 last:mb-0">
+      <h3 className="font-display text-base font-bold text-white flex items-center gap-2 mb-1"><Icon className="w-4 h-4 text-slate-400" /> {title}</h3>
+      <p className="text-slate-400 text-sm mb-3">
+        {items.length === 1 ? 'This job has' : `These ${items.length} jobs have`} {reason}, so {items.length === 1 ? 'it was' : 'they were'} automatically moved.
       </p>
       <div className="space-y-2">
-        {bookings.map(b => (
+        {items.map(b => (
           <div key={b.id} className="glass rounded-xl border border-white/8 p-3">
             <div className="text-white text-sm font-medium">{b.name}</div>
             <div className="text-slate-500 text-xs mb-2">{serviceText(b.service)}{b.suburb ? ` · ${b.suburb}` : ''}</div>
@@ -2147,6 +2206,13 @@ function StaleMovedModal({ bookings, onOk, onUndo }: {
           </div>
         ))}
       </div>
+    </div>
+  );
+
+  return (
+    <Overlay onClose={() => bookings.forEach(b => onOk(b.id))}>
+      <Group title="Back to Leads" icon={PhoneCall} reason="sat quoted with no calendar slot for 7 days" items={toLeads} />
+      <Group title="Moved to Cold Lead" icon={Snowflake} reason="sat for 14 days with no update" items={toCold} />
     </Overlay>
   );
 }

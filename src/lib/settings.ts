@@ -43,6 +43,9 @@ export interface AppSettings {
   // Default for whether a new NORMAL invoice shows the business address.
   // Tax invoices always show it, regardless of this setting.
   defaultShowAddressOnInvoice: boolean;
+  // Same idea for quotes — no tax-invoice-style forced override, since a
+  // quote is never a tax invoice.
+  defaultShowAddressOnQuote: boolean;
 
   // LARP mode (src/lib/larp.ts) — a joke "make us look busy and rich" button.
   // Fills the CRM with fake, clearly-tagged bookings; turning it off deletes
@@ -86,6 +89,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   autofillPaymentDetails: true,
 
   defaultShowAddressOnInvoice: true,
+  defaultShowAddressOnQuote: false,
 
   larpModeActive: false,
   larpRevenueTarget: 250000,

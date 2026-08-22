@@ -161,7 +161,7 @@ async function loadRealData() {
 function buildDashboardStats(bookings: Booking[]) {
   const now = new Date();
   const statusBreakdown: Record<BookingStatus, number> = {
-    pending: 0, quoted: 0, confirmed: 0, completed: 0, cancelled: 0, cold: 0,
+    uncontacted: 0, contacted: 0, quoted: 0, confirmed: 0, completed: 0, cancelled: 0, cold: 0,
   };
   bookings.forEach(b => { statusBreakdown[b.status] = (statusBreakdown[b.status] ?? 0) + 1; });
 
@@ -272,7 +272,7 @@ function buildSiteStats(views: PageView[], funnelEvents: FunnelEvent[]) {
   };
 }
 
-const BOOKING_STATUS_VALUES = ['pending', 'quoted', 'confirmed', 'completed', 'cancelled', 'cold'] as const;
+const BOOKING_STATUS_VALUES = ['uncontacted', 'contacted', 'quoted', 'confirmed', 'completed', 'cancelled', 'cold'] as const;
 const INVOICE_STATUS_VALUES = ['draft', 'sent', 'paid', 'cancelled'] as const;
 
 function bookingSummary(b: Booking) {

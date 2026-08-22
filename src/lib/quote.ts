@@ -81,6 +81,9 @@ export interface Quote {
   fromAddress: string;
   fromEmail: string;
   fromPhone: string;
+  // Whether fromAddress renders on the quote document. Unlike Invoice there's
+  // no tax-invoice-style forced override — a quote is never a tax invoice.
+  showFromAddress: boolean;
 
   quoteDate: string;        // YYYY-MM-DD
   validUntil: string;       // YYYY-MM-DD, quoteDate + QUOTE_VALID_DAYS by default
@@ -104,14 +107,47 @@ export const QUOTE_START_SEQ = 1000;
 export const QUOTE_VALID_DAYS = 30;
 
 export const DEFAULT_QUOTE_TERMS =
-  'This is a quote, not a tax invoice. No GST has been charged, as we are not registered for GST. ' +
+  'No GST has been charged. ' +
   `This price is valid for ${QUOTE_VALID_DAYS} days from the quote date above. After that, please ask us to reissue it. ` +
   "The final price may change if the property's condition or access differs from what was described or observed at the time of quoting, or from the assumptions stated above. " +
   'We will always confirm any change with you before the job starts.';
 
-export const DEFAULT_QUOTE_ASSUMPTIONS =
-  'Assumed ground-level access and no excessive dirt, mineral buildup, or damage beyond normal wear. ' +
-  'If the property differs once we’re on site, we’ll let you know before doing any extra work.';
+// Checkbox presets for Scope of Work / Assumptions — the modal lets the admin
+// tick boxes to build these up sentence-by-sentence, or drop in their own
+// text via a "Custom" box that overrides (negates) whatever's checked. Order
+// here is the order the generated text renders in, not click order.
+export interface TextPreset { key: string; label: string; text: string; }
+
+export const SCOPE_PRESETS: TextPreset[] = [
+  { key: 'inside', label: 'Inside windows', text: 'Inside glass surfaces cleaned.' },
+  { key: 'outside', label: 'Outside windows', text: 'Outside glass surfaces cleaned.' },
+  { key: 'tracks', label: 'Window tracks & sills', text: 'Window tracks and sills wiped down as a complimentary extra. This does not include removal of heavy built-up grime or caked-on dirt.' },
+  { key: 'flyscreens', label: 'Flyscreens (cleaned in place)', text: 'Flyscreens cleaned in place, not removed.' },
+  { key: 'gutters', label: 'Gutters', text: 'Gutters cleared of leaves and debris.' },
+  { key: 'solar', label: 'Solar panels', text: 'Solar panels cleaned with pure water, no harsh chemicals.' },
+  { key: 'driveway', label: 'Driveway / paths', text: 'Driveway and paths pressure washed.' },
+  { key: 'singleStorey', label: 'Single storey / ground level only', text: 'Ground-level, single-storey access only, upper storeys not included unless stated otherwise.' },
+  { key: 'excludesStaining', label: 'Excludes hard water/mineral staining', text: "Does not include removal of hard water marks, mineral deposits, or restoration of scratched or otherwise damaged glass." },
+];
+
+export const ASSUMPTION_PRESETS: TextPreset[] = [
+  { key: 'groundAccess', label: 'Ground-level access assumed', text: 'Assumed ground-level access with no ladder or scaffolding beyond a standard extension pole.' },
+  { key: 'normalCondition', label: 'Normal condition, no excessive buildup', text: 'Assumed the property is in normal condition with no excessive dirt, mineral buildup, or damage beyond normal wear.' },
+  { key: 'accessible', label: 'Property accessible on the day', text: 'Assumed all areas to be cleaned are accessible on the day (gates unlocked, pets restrained, vehicles moved if needed).' },
+  { key: 'weather', label: 'Weather permitting', text: 'Weather permitting, the job may need to be rescheduled in unsafe conditions (high wind, rain, storms), especially for height or solar work.' },
+  { key: 'countAccuracy', label: 'Price assumes the stated window/pane count is accurate', text: "Assumed the window/pane count and property size described match what's on site; the price may be revised if it differs." },
+  { key: 'preExistingDamage', label: 'No responsibility for pre-existing damage', text: "We're not responsible for pre-existing damage (cracked glass, loose flyscreens, failed seals) not caused by our work." },
+];
+
+// All of them, by default — every one is a genuine protection worth having
+// on every quote; unchecking one is a deliberate per-quote choice.
+export const DEFAULT_ASSUMPTION_PRESET_KEYS = ASSUMPTION_PRESETS.map(p => p.key);
+
+export function buildFromPresets(presets: TextPreset[], checkedKeys: string[]): string {
+  return presets.filter(p => checkedKeys.includes(p.key)).map(p => p.text).join(' ');
+}
+
+export const DEFAULT_QUOTE_ASSUMPTIONS = buildFromPresets(ASSUMPTION_PRESETS, DEFAULT_ASSUMPTION_PRESET_KEYS);
 
 // Sum of the per-item prices in itemAmounts for whichever services/extras are
 // actually checked (unchecking one drops its price from the total even if a
@@ -136,6 +172,7 @@ export function emptyQuoteDraft(fromDefaults: { fromName: string; fromTradingAs:
     propertyType: 'residential',
     billToName: '',
     billToAddress: '',
+    showFromAddress: true,
     ...fromDefaults,
     quoteDate: todayStr,
     validUntil: addDays(todayStr, QUOTE_VALID_DAYS),

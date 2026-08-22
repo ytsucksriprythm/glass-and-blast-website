@@ -10,9 +10,9 @@ import {
 } from 'lucide-react';
 import type { Booking, BookingStatus } from '@/lib/db';
 
-const STATUS_KEYS: BookingStatus[] = ['pending', 'quoted', 'confirmed', 'completed', 'cancelled'];
+const STATUS_KEYS: BookingStatus[] = ['uncontacted', 'contacted', 'quoted', 'confirmed', 'completed', 'cancelled'];
 const STATUS_LABEL: Record<BookingStatus, string> = {
-  pending: 'Pending', quoted: 'Quoted', confirmed: 'Confirmed', completed: 'Completed', cancelled: 'Cancelled', cold: 'Cold Lead',
+  uncontacted: 'Uncontacted', contacted: 'Contacted', quoted: 'Quoted', confirmed: 'Confirmed', completed: 'Completed', cancelled: 'Cancelled', cold: 'Cold Lead',
 };
 
 const SERVICE_LABELS: Record<string, string> = {

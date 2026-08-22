@@ -31,7 +31,7 @@ const VAULT_PATH = path.join(process.cwd(), 'data', 'vault.json');
 const QUOTES_PATH = path.join(process.cwd(), 'data', 'quotes.json');
 const ACTIVITY_MAX_ROWS = 2000; // local JSON store only — Neon has no cap
 
-export type BookingStatus = 'pending' | 'quoted' | 'confirmed' | 'completed' | 'cancelled' | 'cold';
+export type BookingStatus = 'uncontacted' | 'contacted' | 'quoted' | 'confirmed' | 'completed' | 'cancelled' | 'cold';
 export type ServiceType = 'window-washing' | 'pressure-washing' | 'both' | 'flyscreen-repair' | 'solar-panel-cleaning' | 'other';
 export type PropertyType = 'residential' | 'commercial';
 export type BookingSource = 'website' | 'manual' | 'facebook-lead-ad';
@@ -72,8 +72,11 @@ export interface Booking {
   feedbackStars?: number | null;   // customer rating 1-5 (from the thank-you page)
   feedbackText?: string | null;    // written feedback (shown for 1-3 stars)
   feedbackAt?: string | null;      // when feedback was left
-  contactedAt?: string | null;     // website lead has been followed up — clears it from
-                                    // "Leads to call back" without needing a status change
+  contactedAt?: string | null;     // auto-stamped the first time status flips to "contacted"
+                                    // (mirrors completedAt) — when the lead was first followed up
+  quotedAt?: string | null;        // auto-stamped every time status enters "quoted" (resets on
+                                    // re-quote, unlike the "first time only" fields above) — powers
+                                    // the "unscheduled a week after quoting" Pipeline -> Leads auto-revert
   sortOrder?: number | null;       // manual drag order (Bookings tab, select mode). null = unset
   autoMoved?: boolean;             // true while the CURRENT status was set by the stale-lead
                                     // job, not a person — cleared the moment anyone changes
@@ -261,6 +264,7 @@ function rowToBooking(r: any): Booking {
     feedbackText: r.feedback_text ?? null,
     feedbackAt: r.feedback_at == null ? null : (typeof r.feedback_at === 'string' ? r.feedback_at : new Date(r.feedback_at).toISOString()),
     contactedAt: r.contacted_at == null ? null : (typeof r.contacted_at === 'string' ? r.contacted_at : new Date(r.contacted_at).toISOString()),
+    quotedAt: r.quoted_at == null ? null : (typeof r.quoted_at === 'string' ? r.quoted_at : new Date(r.quoted_at).toISOString()),
     sortOrder: r.sort_order == null ? null : Number(r.sort_order),
     autoMoved: r.auto_moved === true || r.auto_moved === 1,
     autoMovedAt: r.auto_moved_at == null ? null : (typeof r.auto_moved_at === 'string' ? r.auto_moved_at : new Date(r.auto_moved_at).toISOString()),
@@ -296,7 +300,7 @@ export async function ensureSchema(): Promise<void> {
           preferred_date TEXT NOT NULL DEFAULT '',
           preferred_time TEXT NOT NULL DEFAULT '',
           notes         TEXT DEFAULT '',
-          status        TEXT NOT NULL DEFAULT 'pending',
+          status        TEXT NOT NULL DEFAULT 'uncontacted',
           quote_amount  NUMERIC,
           admin_notes   TEXT DEFAULT '',
           paid          BOOLEAN NOT NULL DEFAULT false,
@@ -325,6 +329,7 @@ export async function ensureSchema(): Promise<void> {
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS feedback_text TEXT`;
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS feedback_at TIMESTAMPTZ`;
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS contacted_at TIMESTAMPTZ`;
+      await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS quoted_at TIMESTAMPTZ`;
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS sort_order NUMERIC`;
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS auto_moved BOOLEAN NOT NULL DEFAULT false`;
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS auto_moved_at TIMESTAMPTZ`;
@@ -341,6 +346,11 @@ export async function ensureSchema(): Promise<void> {
       // already have it. New imports are stripped at the source (see
       // stripPhonePrefix, used in addBooking/updateBooking and metaLeads.ts).
       await sql`UPDATE bookings SET phone = regexp_replace(phone, '^[pP]:\s*', '') WHERE phone ~* '^p:'`;
+      // "pending" split into uncontacted/contacted. A pending row that already
+      // had contactedAt set (the old side-flag, pre-dating this split)
+      // becomes "contacted" so that existing follow-up work isn't lost;
+      // everything else becomes "uncontacted".
+      await sql`UPDATE bookings SET status = CASE WHEN contacted_at IS NOT NULL THEN 'contacted' ELSE 'uncontacted' END WHERE status = 'pending'`;
       await sql`CREATE INDEX IF NOT EXISTS bookings_scheduled_idx ON bookings (scheduled_at)`;
       await sql`CREATE INDEX IF NOT EXISTS bookings_token_idx ON bookings (public_token)`;
       // Partial unique index — only enforced when set, so it never conflicts with the
@@ -552,6 +562,7 @@ export async function ensureSchema(): Promise<void> {
       // shape (still read as a fallback in rowToQuote for quotes saved before
       // this column existed; other_text itself is otherwise unused now).
       await sql`ALTER TABLE quotes ADD COLUMN IF NOT EXISTS other_lines TEXT NOT NULL DEFAULT '[]'`;
+      await sql`ALTER TABLE quotes ADD COLUMN IF NOT EXISTS show_from_address BOOLEAN NOT NULL DEFAULT true`;
       await sql`CREATE UNIQUE INDEX IF NOT EXISTS quotes_token_idx ON quotes (token)`;
       await sql`CREATE UNIQUE INDEX IF NOT EXISTS quotes_number_idx ON quotes (number)`;
       await sql`CREATE INDEX IF NOT EXISTS quotes_booking_idx ON quotes (booking_id)`;
@@ -679,7 +690,14 @@ function ensureFile(): void {
 }
 function readFile(): Booking[] {
   ensureFile();
-  try { return JSON.parse(fs.readFileSync(DB_PATH, 'utf-8')); } catch { return []; }
+  try {
+    const rows = JSON.parse(fs.readFileSync(DB_PATH, 'utf-8'));
+    // "pending" split into uncontacted/contacted — see the matching SQL
+    // migration in ensureSchema() above for why contactedAt decides which.
+    return Array.isArray(rows)
+      ? rows.map((b: any) => b.status === 'pending' ? { ...b, status: b.contactedAt ? 'contacted' : 'uncontacted' } : b)
+      : [];
+  } catch { return []; }
 }
 function writeFile(rows: Booking[]): void {
   ensureFile();
@@ -766,6 +784,7 @@ export async function addBooking(data: NewBooking): Promise<Booking> {
     feedbackText: null,
     feedbackAt: null,
     contactedAt: null,
+    quotedAt: data.status === 'quoted' ? now : null,
     sortOrder: null,
     autoMoved: false,
     autoMovedAt: null,
@@ -773,7 +792,7 @@ export async function addBooking(data: NewBooking): Promise<Booking> {
     flaggedAt: null,
     flagNote: null,
     id: `BK-${Date.now()}`,
-    status: data.status ?? 'pending',
+    status: data.status ?? 'uncontacted',
     source: data.source ?? 'website',
     createdAt: now,
     updatedAt: now,
@@ -782,8 +801,8 @@ export async function addBooking(data: NewBooking): Promise<Booking> {
   if (sql) {
     await ensureSchema();
     await sql`
-      INSERT INTO bookings (id, name, email, phone, service, property_type, address, suburb, preferred_date, preferred_time, notes, status, quote_amount, admin_notes, paid, source, assigned_guest_id, assigned_at, scheduled_at, scheduled_end, recurring_id, lead_source, attribution_source, group_id, external_lead_id, public_token)
-      VALUES (${booking.id}, ${booking.name}, ${booking.email}, ${booking.phone}, ${booking.service}, ${booking.propertyType}, ${booking.address}, ${booking.suburb}, ${booking.preferredDate}, ${booking.preferredTime}, ${booking.notes}, ${booking.status}, ${booking.quoteAmount}, ${booking.adminNotes}, ${booking.paid}, ${booking.source}, ${booking.assignedGuestId}, ${booking.assignedAt}, ${booking.scheduledAt}, ${booking.scheduledEnd}, ${booking.recurringId}, ${booking.leadSource}, ${booking.attributionSource}, ${booking.groupId}, ${booking.externalLeadId}, ${booking.publicToken})
+      INSERT INTO bookings (id, name, email, phone, service, property_type, address, suburb, preferred_date, preferred_time, notes, status, quote_amount, admin_notes, paid, source, assigned_guest_id, assigned_at, scheduled_at, scheduled_end, recurring_id, lead_source, attribution_source, group_id, external_lead_id, public_token, quoted_at)
+      VALUES (${booking.id}, ${booking.name}, ${booking.email}, ${booking.phone}, ${booking.service}, ${booking.propertyType}, ${booking.address}, ${booking.suburb}, ${booking.preferredDate}, ${booking.preferredTime}, ${booking.notes}, ${booking.status}, ${booking.quoteAmount}, ${booking.adminNotes}, ${booking.paid}, ${booking.source}, ${booking.assignedGuestId}, ${booking.assignedAt}, ${booking.scheduledAt}, ${booking.scheduledEnd}, ${booking.recurringId}, ${booking.leadSource}, ${booking.attributionSource}, ${booking.groupId}, ${booking.externalLeadId}, ${booking.publicToken}, ${booking.quotedAt})
     `;
     return booking;
   }
@@ -867,6 +886,29 @@ function withCompletedAt(cur: Booking, updates: Partial<Booking>): Partial<Booki
   return updates;
 }
 
+// Stamp contactedAt the first time a booking flips to "contacted" — same
+// pattern as withCompletedAt above.
+function withContactedAt(cur: Booking, updates: Partial<Booking>): Partial<Booking> {
+  if ('contactedAt' in updates) return updates; // explicit edit (incl. clearing it)
+  if (updates.status === 'contacted' && cur.status !== 'contacted' && !cur.contactedAt) {
+    return { ...updates, contactedAt: new Date().toISOString() };
+  }
+  return updates;
+}
+
+// Stamp quotedAt every time a booking ENTERS "quoted" — unlike the "first
+// time only" stamps above, this resets on every re-quote (revert to Leads,
+// then quote again later), since it's measuring "how long has it been
+// quoted THIS time" for the Pipeline -> Leads auto-revert, not a one-off
+// historical fact.
+function withQuotedAt(cur: Booking, updates: Partial<Booking>): Partial<Booking> {
+  if ('quotedAt' in updates) return updates; // explicit edit (incl. clearing it)
+  if (updates.status === 'quoted' && cur.status !== 'quoted') {
+    return { ...updates, quotedAt: new Date().toISOString() };
+  }
+  return updates;
+}
+
 // Stamp paidAt the first time a booking flips to paid, unless the caller passed
 // an explicit value (e.g. the owner edited or cleared the paid date).
 function withPaidAt(cur: Booking, updates: Partial<Booking>): Partial<Booking> {
@@ -904,7 +946,7 @@ export async function updateBooking(id: string, rawUpdates: Partial<Booking>): P
     await ensureSchema();
     const cur = await getBookingById(id);
     if (!cur) return null;
-    const updates = withAutoMoveReset(withAssignedAt(cur, withPaidAt(cur, withCompletedAt(cur, rawUpdates))));
+    const updates = withAutoMoveReset(withAssignedAt(cur, withPaidAt(cur, withCompletedAt(cur, withContactedAt(cur, withQuotedAt(cur, rawUpdates))))));
     const m = { ...cur, ...updates };
     const rows = await sql`
       UPDATE bookings SET
@@ -938,6 +980,7 @@ export async function updateBooking(id: string, rawUpdates: Partial<Booking>): P
         feedback_text = ${m.feedbackText ?? null},
         feedback_at = ${m.feedbackAt ?? null},
         contacted_at = ${m.contactedAt ?? null},
+        quoted_at = ${m.quotedAt ?? null},
         sort_order = ${m.sortOrder ?? null},
         auto_moved = ${m.autoMoved ?? false},
         auto_moved_at = ${m.autoMovedAt ?? null},
@@ -955,7 +998,7 @@ export async function updateBooking(id: string, rawUpdates: Partial<Booking>): P
   const rows = readFile();
   const idx = rows.findIndex(b => b.id === id);
   if (idx === -1) return null;
-  const updates = withAutoMoveReset(withAssignedAt(rows[idx], withPaidAt(rows[idx], withCompletedAt(rows[idx], rawUpdates))));
+  const updates = withAutoMoveReset(withAssignedAt(rows[idx], withPaidAt(rows[idx], withCompletedAt(rows[idx], withContactedAt(rows[idx], withQuotedAt(rows[idx], rawUpdates))))));
   rows[idx] = { ...rows[idx], ...updates, updatedAt: new Date().toISOString() };
   writeFile(rows);
   return rows[idx];
@@ -972,16 +1015,17 @@ export async function bulkReorderBookings(ids: string[]): Promise<number> {
 
 const STALE_LEAD_DAYS = 14;
 
-// A "pending" job nobody has actioned in 14 days gets auto-moved to "cold"
-// so it drops out of the active list instead of quietly rotting at the top.
-// Runs on-demand (called once when the dashboard loads) rather than on a
-// cron, so "next time someone checks the site" is literally true. Returns
-// only the bookings THIS call just moved, which is exactly what the
-// dashboard needs to show the one-time "moved to cold" popup.
+// An uncontacted/contacted job nobody has actioned (quoted or confirmed) in
+// 14 days gets auto-moved to "cold" so it drops out of the active list
+// instead of quietly rotting at the top. Runs on-demand (called once when
+// the dashboard loads) rather than on a cron, so "next time someone checks
+// the site" is literally true. Returns only the bookings THIS call just
+// moved, which is exactly what the dashboard needs to show the one-time
+// "moved to cold" popup.
 export async function checkStaleLeads(): Promise<Booking[]> {
   const all = await getBookings();
   const cutoff = Date.now() - STALE_LEAD_DAYS * 24 * 60 * 60 * 1000;
-  const stale = all.filter(b => b.status === 'pending' && new Date(b.createdAt).getTime() <= cutoff);
+  const stale = all.filter(b => (b.status === 'uncontacted' || b.status === 'contacted') && new Date(b.createdAt).getTime() <= cutoff);
   const moved: Booking[] = [];
   for (const b of stale) {
     const updated = await updateBooking(b.id, {
@@ -989,7 +1033,39 @@ export async function checkStaleLeads(): Promise<Booking[]> {
     });
     if (updated) {
       moved.push(updated);
-      void logActivity('booking.auto_moved_cold', `${updated.name}: pending ${STALE_LEAD_DAYS}d with no update, auto-moved to Cold Lead`, { bookingId: updated.id }, 'system');
+      void logActivity('booking.auto_moved_cold', `${updated.name}: ${b.status} ${STALE_LEAD_DAYS}d with no update, auto-moved to Cold Lead`, { bookingId: updated.id }, 'system');
+    }
+  }
+  return moved;
+}
+
+const PIPELINE_UNSCHEDULED_DAYS = 7;
+
+// A quoted/confirmed job that still has no calendar slot a week after being
+// quoted drops back to Leads — a quote that's gone quiet without landing a
+// booked-in date is really just a lead again, not something actively moving
+// through the Pipeline. Reverts to "contacted" if they'd already been
+// contacted before (don't lose that history), else "uncontacted". Same
+// on-demand/one-time-popup pattern as checkStaleLeads, and reuses the same
+// autoMoved/undo mechanism — Undo restores whichever status (quoted or
+// confirmed) it was reverted from.
+export async function checkUnscheduledPipeline(): Promise<Booking[]> {
+  const all = await getBookings();
+  const cutoff = Date.now() - PIPELINE_UNSCHEDULED_DAYS * 24 * 60 * 60 * 1000;
+  const stale = all.filter(b =>
+    (b.status === 'quoted' || b.status === 'confirmed') &&
+    !b.scheduledAt &&
+    !!b.quotedAt && new Date(b.quotedAt).getTime() <= cutoff
+  );
+  const moved: Booking[] = [];
+  for (const b of stale) {
+    const revertTo: BookingStatus = b.contactedAt ? 'contacted' : 'uncontacted';
+    const updated = await updateBooking(b.id, {
+      status: revertTo, autoMoved: true, autoMovedAt: new Date().toISOString(), autoMovedFrom: b.status,
+    });
+    if (updated) {
+      moved.push(updated);
+      void logActivity('booking.auto_moved_leads', `${updated.name}: ${b.status} ${PIPELINE_UNSCHEDULED_DAYS}d unscheduled, auto-moved back to Leads`, { bookingId: updated.id }, 'system');
     }
   }
   return moved;
@@ -1195,7 +1271,8 @@ export async function getStats() {
   };
 
   const statusBreakdown = {
-    pending: bookings.filter(b => b.status === 'pending').length,
+    uncontacted: bookings.filter(b => b.status === 'uncontacted').length,
+    contacted: bookings.filter(b => b.status === 'contacted').length,
     quoted: bookings.filter(b => b.status === 'quoted').length,
     confirmed: bookings.filter(b => b.status === 'confirmed').length,
     completed: bookings.filter(b => b.status === 'completed').length,
@@ -1221,7 +1298,8 @@ export async function getStats() {
     total: bookings.length,
     thisMonth: thisMonth.length,
     lastMonth: lastMonth.length,
-    pending: statusBreakdown.pending,
+    uncontacted: statusBreakdown.uncontacted,
+    contacted: statusBreakdown.contacted,
     quoted: statusBreakdown.quoted,
     confirmed: statusBreakdown.confirmed,
     completed: statusBreakdown.completed,
@@ -2354,6 +2432,7 @@ function normalizeQuote(q: any): Quote {
     scope: q.scope ?? '',
     assumptions: q.assumptions ?? '',
     paymentTerms: coercePaymentDueTerms(q.paymentTerms),
+    showFromAddress: q.showFromAddress !== false,
   };
 }
 
@@ -2449,6 +2528,7 @@ function rowToQuote(r: any): Quote {
     fromAddress: r.from_address ?? '',
     fromEmail: r.from_email ?? '',
     fromPhone: r.from_phone ?? '',
+    showFromAddress: r.show_from_address !== false && r.show_from_address !== 0,
     quoteDate: r.quote_date ?? '',
     validUntil: r.valid_until ?? '',
     notes: r.notes ?? '',
@@ -2510,15 +2590,15 @@ export async function getQuoteByToken(token: string): Promise<Quote | null> {
 
 // The "drive the booking's existing quote fields" sync — the single source of
 // truth for booking.quoteAmount/status once a Quote exists. Best-effort, never
-// throws. Never downgrades a booking already past 'pending'. Deliberately NOT
-// called on delete — booking.quoteAmount is left as-is (one-way sync, same
-// house style as syncInvoicePaidToBookings above).
+// throws. Never downgrades a booking already past uncontacted/contacted.
+// Deliberately NOT called on delete — booking.quoteAmount is left as-is
+// (one-way sync, same house style as syncInvoicePaidToBookings above).
 async function syncQuoteAmountToBooking(quote: Quote): Promise<void> {
   try {
     const b = await getBookingById(quote.bookingId);
     if (!b) return;
     const updates: Partial<Booking> = { quoteAmount: quote.amount };
-    if (b.status === 'pending') updates.status = 'quoted';
+    if (b.status === 'uncontacted' || b.status === 'contacted') updates.status = 'quoted';
     await updateBooking(quote.bookingId, updates);
   } catch { /* best-effort */ }
 }
@@ -2545,6 +2625,7 @@ export async function createQuote(input: QuoteInput): Promise<Quote> {
       billToName: input.billToName ?? '', billToAddress: input.billToAddress ?? '',
       fromName: input.fromName ?? '', fromTradingAs: input.fromTradingAs ?? '', fromAbn: input.fromAbn ?? '',
       fromAddress: input.fromAddress ?? '', fromEmail: input.fromEmail ?? '', fromPhone: input.fromPhone ?? '',
+      showFromAddress: input.showFromAddress ?? true,
       quoteDate: input.quoteDate ?? '', validUntil: input.validUntil ?? '',
       notes: input.notes ?? '', termsText: input.termsText ?? '',
       createdAt: now, updatedAt: now, sentAt: null,
@@ -2553,13 +2634,13 @@ export async function createQuote(input: QuoteInput): Promise<Quote> {
       INSERT INTO quotes (
         id, number, seq, status, booking_id, services, extras, item_amounts, other_lines, amount, property_type,
         bill_to_name, bill_to_address,
-        from_name, from_trading_as, from_abn, from_address, from_email, from_phone,
+        from_name, from_trading_as, from_abn, from_address, from_email, from_phone, show_from_address,
         quote_date, valid_until, notes, scope, assumptions, payment_terms, terms_text, token
       ) VALUES (
         ${quote.id}, ${quote.number}, ${quote.seq}, ${quote.status}, ${quote.bookingId},
         ${JSON.stringify(quote.services)}, ${JSON.stringify(quote.extras)}, ${JSON.stringify(quote.itemAmounts)}, ${JSON.stringify(quote.otherLines)}, ${quote.amount}, ${quote.propertyType},
         ${quote.billToName}, ${quote.billToAddress},
-        ${quote.fromName}, ${quote.fromTradingAs}, ${quote.fromAbn}, ${quote.fromAddress}, ${quote.fromEmail}, ${quote.fromPhone},
+        ${quote.fromName}, ${quote.fromTradingAs}, ${quote.fromAbn}, ${quote.fromAddress}, ${quote.fromEmail}, ${quote.fromPhone}, ${quote.showFromAddress},
         ${quote.quoteDate}, ${quote.validUntil}, ${quote.notes}, ${quote.scope}, ${quote.assumptions}, ${quote.paymentTerms}, ${quote.termsText}, ${quote.token}
       )
     `;
@@ -2586,6 +2667,7 @@ export async function createQuote(input: QuoteInput): Promise<Quote> {
     billToName: input.billToName ?? '', billToAddress: input.billToAddress ?? '',
     fromName: input.fromName ?? '', fromTradingAs: input.fromTradingAs ?? '', fromAbn: input.fromAbn ?? '',
     fromAddress: input.fromAddress ?? '', fromEmail: input.fromEmail ?? '', fromPhone: input.fromPhone ?? '',
+    showFromAddress: input.showFromAddress ?? true,
     quoteDate: input.quoteDate ?? '', validUntil: input.validUntil ?? '',
     notes: input.notes ?? '', termsText: input.termsText ?? '',
     createdAt: now, updatedAt: now, sentAt: null,
@@ -2624,7 +2706,7 @@ export async function updateQuote(id: string, rawUpdates: Partial<Quote>): Promi
         item_amounts = ${JSON.stringify(m.itemAmounts)}, other_lines = ${JSON.stringify(m.otherLines)}, amount = ${m.amount}, property_type = ${m.propertyType},
         bill_to_name = ${m.billToName}, bill_to_address = ${m.billToAddress},
         from_name = ${m.fromName}, from_trading_as = ${m.fromTradingAs}, from_abn = ${m.fromAbn},
-        from_address = ${m.fromAddress}, from_email = ${m.fromEmail}, from_phone = ${m.fromPhone},
+        from_address = ${m.fromAddress}, from_email = ${m.fromEmail}, from_phone = ${m.fromPhone}, show_from_address = ${m.showFromAddress},
         quote_date = ${m.quoteDate}, valid_until = ${m.validUntil}, notes = ${m.notes},
         scope = ${m.scope}, assumptions = ${m.assumptions}, payment_terms = ${m.paymentTerms}, terms_text = ${m.termsText},
         sent_at = ${m.sentAt ?? null},

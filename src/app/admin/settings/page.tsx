@@ -693,7 +693,7 @@ function DeletedBookings() {
 }
 
 const EXPORT_STATUS_LABEL: Record<BookingStatus, string> = {
-  pending: 'Pending', quoted: 'Quoted', confirmed: 'Confirmed', completed: 'Completed', cancelled: 'Cancelled', cold: 'Cold Lead',
+  uncontacted: 'Uncontacted', contacted: 'Contacted', quoted: 'Quoted', confirmed: 'Confirmed', completed: 'Completed', cancelled: 'Cancelled', cold: 'Cold Lead',
 };
 const EXPORT_SERVICE_LABEL: Record<string, string> = {
   'window-washing': 'Window Washing', 'pressure-washing': 'Pressure Washing', both: 'Both Services',
@@ -1022,11 +1022,16 @@ export default function SettingsPage() {
                 onDelete={deleteBusinessProfile}
               />
 
-              <Section title="Invoice address display" icon={MapPin}>
+              <Section title="Invoice & quote address display" icon={MapPin}>
                 <Toggle
                   label="Show business address on new invoices (default)"
                   checked={s.defaultShowAddressOnInvoice}
                   onChange={v => set('defaultShowAddressOnInvoice', v)}
+                />
+                <Toggle
+                  label="Show business address on new quotes (default)"
+                  checked={s.defaultShowAddressOnQuote}
+                  onChange={v => set('defaultShowAddressOnQuote', v)}
                 />
               </Section>
 

@@ -65,7 +65,7 @@ export default function QuotePreview({ quote }: { quote: QuotePreviewData }) {
             <div className="text-slate-900 font-semibold">{quote.fromName}</div>
             {quote.fromTradingAs && <div className="text-slate-600 text-sm">Trading as {quote.fromTradingAs}</div>}
             {quote.fromAbn && <div className="text-slate-600 text-sm">ABN: {quote.fromAbn}</div>}
-            {quote.fromAddress && <div className="text-slate-600 text-sm">{quote.fromAddress}</div>}
+            {quote.showFromAddress && quote.fromAddress && <div className="text-slate-600 text-sm">{quote.fromAddress}</div>}
             {quote.fromEmail && <div className="text-slate-600 text-sm">{quote.fromEmail}</div>}
             {quote.fromPhone && <div className="text-slate-600 text-sm">{quote.fromPhone}</div>}
           </div>

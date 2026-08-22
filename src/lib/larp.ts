@@ -11,10 +11,10 @@
 //   counts, the internal calendar) reads straight from the bookings table, so
 //   seeding realistic rows here is the ONLY code needed to make "the numbers
 //   add up" everywhere else — no other read-path changes required.
-// - No fake booking is ever left in status "pending". That status is what the
-//   14-day stale-lead job watches (see checkStaleLeads in db.ts); leaving fake
-//   pending leads around would make LARP mode trigger the real "moved to Cold
-//   Lead" popup with fake customers in it.
+// - No fake booking is ever left in status "uncontacted" or "contacted". Those
+//   are what the 14-day stale-lead job watches (see checkStaleLeads in
+//   db.ts); leaving fake ones around would make LARP mode trigger the real
+//   "moved to Cold Lead" popup with fake customers in it.
 // - At very high revenue targets, job COUNT scales up rather than individual
 //   job prices — a two-person window cleaning business doing $1M/yr from
 //   $150-2600 jobs means a lot of jobs, not a few enormous ones. That's the
@@ -328,7 +328,7 @@ function makeLarpBooking(
   let createdAtDate: Date;
 
   if (isFuture) {
-    // Never "pending" — see file header. Mostly booked in, a few still just quoted.
+    // Never "uncontacted"/"contacted" — see file header. Mostly booked in, a few still just quoted.
     status = Math.random() < 0.88 ? 'confirmed' : 'quoted';
     if (status === 'confirmed' && fakeCalendar) {
       const start = businessHour(day);
@@ -349,7 +349,7 @@ function makeLarpBooking(
     if (r < coldChance) {
       status = 'cold';
       autoMoved = true;
-      autoMovedFrom = 'pending';
+      autoMovedFrom = 'uncontacted';
       autoMovedAt = new Date(Math.min(addDays(createdAtDate, 14).getTime(), today0.getTime())).toISOString();
     } else if (r < coldChance + 0.80) { status = 'completed'; paid = true; }
     else if (r < coldChance + 0.80 + 0.12) { status = 'completed'; paid = false; }

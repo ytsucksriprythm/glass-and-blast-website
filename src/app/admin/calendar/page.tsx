@@ -15,9 +15,9 @@ import { AddressLink } from '@/components/AddressLink';
 type View = 'day' | 'week' | 'month';
 
 const STATUS_LABEL: Record<BookingStatus, string> = {
-  pending: 'Pending', quoted: 'Quoted', confirmed: 'Confirmed', completed: 'Completed', cancelled: 'Cancelled', cold: 'Cold Lead',
+  uncontacted: 'Uncontacted', contacted: 'Contacted', quoted: 'Quoted', confirmed: 'Confirmed', completed: 'Completed', cancelled: 'Cancelled', cold: 'Cold Lead',
 };
-const STATUS_KEYS: BookingStatus[] = ['pending', 'quoted', 'confirmed', 'completed', 'cancelled'];
+const STATUS_KEYS: BookingStatus[] = ['uncontacted', 'contacted', 'quoted', 'confirmed', 'completed', 'cancelled'];
 
 const SERVICE_LABELS: Record<string, string> = {
   'window-washing': 'Window Washing', 'pressure-washing': 'Pressure Washing',
@@ -407,7 +407,7 @@ function AddModal({ day, booking, onClose, onCreated }: {
             name: f.name, phone: f.phone, address: f.address, suburb: f.suburb,
             service: f.service,
             scheduledAt: fromLocalInput(f.when),
-            status: booking.status === 'pending' || booking.status === 'quoted' ? 'confirmed' : booking.status,
+            status: booking.status === 'uncontacted' || booking.status === 'contacted' || booking.status === 'quoted' ? 'confirmed' : booking.status,
           }),
         });
         if (!res.ok) throw new Error();

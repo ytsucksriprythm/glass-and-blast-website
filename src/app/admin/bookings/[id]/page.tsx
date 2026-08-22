@@ -52,8 +52,8 @@ const SERVICE_OPTIONS = [
   { v: 'solar-panel-cleaning', l: 'Solar Panel Cleaning' },
   { v: 'other', l: 'Other' },
 ];
-const STATUS_KEYS: BookingStatus[] = ['pending', 'quoted', 'confirmed', 'completed', 'cancelled', 'cold'];
-const STATUS_LABEL: Record<string, string> = { pending: 'Pending', quoted: 'Quoted', confirmed: 'Confirmed', completed: 'Completed', cancelled: 'Cancelled', cold: 'Cold Lead' };
+const STATUS_KEYS: BookingStatus[] = ['uncontacted', 'contacted', 'quoted', 'confirmed', 'completed', 'cancelled', 'cold'];
+const STATUS_LABEL: Record<string, string> = { uncontacted: 'Uncontacted', contacted: 'Contacted', quoted: 'Quoted', confirmed: 'Confirmed', completed: 'Completed', cancelled: 'Cancelled', cold: 'Cold Lead' };
 
 const serviceText = (s: string) => (s ?? '').split(',').filter(Boolean).map(x => SERVICE_LABELS[x] ?? x).join(' + ') || '-';
 const money = (n?: number | null) => typeof n === 'number' ? `$${n.toLocaleString('en-AU', { maximumFractionDigits: 0 })}` : '';
@@ -368,14 +368,15 @@ export default function BookingView() {
     return { ...f, service: next.join(',') };
   });
 
-  // Website lead followed up — drops it out of "Leads to call back" on the
-  // dashboard without changing status (still pending until quoted/confirmed).
+  // Website lead followed up — flips status to "Contacted", which drops it
+  // out of "Leads to call back" on the dashboard (contactedAt auto-stamps
+  // server-side — see withContactedAt in db.ts).
   const markContacted = async () => {
     if (!b) return;
     try {
       const res = await fetch(`/api/admin/bookings/${b.id}`, {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contactedAt: new Date().toISOString() }),
+        body: JSON.stringify({ status: 'contacted' }),
       });
       if (!res.ok) throw new Error();
       const updated: Booking = await res.json();
@@ -538,7 +539,7 @@ export default function BookingView() {
               </button>
             )}
 
-            {b.source === 'website' && b.status === 'pending' && !b.contactedAt && (
+            {b.source === 'website' && b.status === 'uncontacted' && (
               <button onClick={markContacted} className="mb-5 w-full inline-flex items-center justify-center gap-2 px-4 py-3.5 rounded-lg border border-emerald-400/30 bg-emerald-400/10 text-emerald-300 hover:bg-emerald-400/15 text-base font-semibold transition-colors cursor-pointer">
                 <Check className="w-5 h-5" /> Mark as Contacted
               </button>

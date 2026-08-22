@@ -30,7 +30,7 @@ export async function POST(req: NextRequest) {
       notes: b.notes ?? '',
       adminNotes: b.adminNotes ?? '',
       quoteAmount: typeof b.quoteAmount === 'number' ? b.quoteAmount : null,
-      status: b.status ?? 'pending',
+      status: b.status ?? 'uncontacted',
       source: 'manual',
       assignedGuestId,
       // Internal calendar slot (from the calendar "Add" or a scheduled create).
@@ -92,8 +92,19 @@ export async function GET(req: NextRequest) {
     );
 
     if (sort === 'sortOrder') {
-      // Manual drag order (Bookings tab, select mode) — numeric, unset sinks to the bottom.
-      filtered = [...filtered].sort((a, b) => (a.sortOrder ?? Infinity) - (b.sortOrder ?? Infinity));
+      // Manual drag order (Bookings tab, select mode) — numeric, unset sinks
+      // to the bottom. Two unset rows must compare as a clean 0, not
+      // `Infinity - Infinity` (= NaN) — a NaN comparator return is exactly
+      // what was making new/unset bookings (including every incoming
+      // Facebook lead) land in whatever order they happened to already be
+      // in rather than staying newest-first like getBookings()' underlying
+      // created_at DESC order already has them.
+      filtered = [...filtered].sort((a, b) => {
+        if (a.sortOrder == null && b.sortOrder == null) return 0;
+        if (a.sortOrder == null) return 1;
+        if (b.sortOrder == null) return -1;
+        return a.sortOrder - b.sortOrder;
+      });
     } else {
       filtered.sort((a, b) => {
         const av = a[sort as keyof typeof a] ?? '';

@@ -26,7 +26,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   const copy = <K extends keyof Quote>(k: K) => { if (k in b) (updates as any)[k] = b[k]; };
   (['status', 'services', 'extras', 'itemAmounts', 'otherLines', 'amount', 'scope', 'assumptions', 'paymentTerms',
     'propertyType', 'billToName', 'billToAddress',
-    'fromName', 'fromTradingAs', 'fromAbn', 'fromAddress', 'fromEmail', 'fromPhone',
+    'fromName', 'fromTradingAs', 'fromAbn', 'fromAddress', 'fromEmail', 'fromPhone', 'showFromAddress',
     'quoteDate', 'validUntil', 'notes', 'termsText'] as (keyof Quote)[]).forEach(copy);
   if ('amount' in updates) updates.amount = Number(updates.amount) || 0;
   if ('itemAmounts' in updates && updates.itemAmounts && typeof updates.itemAmounts === 'object') {

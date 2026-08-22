@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getQuotes, getQuotesForBooking, createQuote, logActivity } from '@/lib/db';
+import { getQuotes, getQuotesForBooking, createQuote, logActivity, getSettings } from '@/lib/db';
 import { isAdminAuthenticated } from '@/lib/auth';
 import { addDays, DEFAULT_QUOTE_TERMS, DEFAULT_QUOTE_ASSUMPTIONS, DEFAULT_PAYMENT_DUE_TERMS, isPaymentDueTerms, QUOTE_VALID_DAYS, type QuoteInput, type QuoteOtherLine } from '@/lib/quote';
 import { BUSINESS_DEFAULTS } from '@/lib/invoice';
@@ -42,6 +42,7 @@ export async function POST(req: NextRequest) {
       for (const [k, v] of Object.entries(b.itemAmounts)) { const n = Number(v); if (!isNaN(n)) itemAmounts[k] = n; }
     }
 
+    const settings = await getSettings();
     const quoteDate = b.quoteDate || new Date().toISOString().slice(0, 10);
     const input: QuoteInput = {
       bookingId,
@@ -60,6 +61,7 @@ export async function POST(req: NextRequest) {
       fromAddress: b.fromAddress ?? BUSINESS_DEFAULTS.fromAddress,
       fromEmail: b.fromEmail ?? BUSINESS_DEFAULTS.fromEmail,
       fromPhone: b.fromPhone ?? BUSINESS_DEFAULTS.fromPhone,
+      showFromAddress: typeof b.showFromAddress === 'boolean' ? b.showFromAddress : settings.defaultShowAddressOnQuote,
       quoteDate,
       validUntil: b.validUntil || addDays(quoteDate, QUOTE_VALID_DAYS),
       notes: b.notes ?? '',

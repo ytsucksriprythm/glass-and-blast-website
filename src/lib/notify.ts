@@ -32,7 +32,8 @@ export async function notify(title: string, message: string, opts?: { tags?: str
 }
 
 const STATUS_TAG: Record<string, string> = {
-  pending: 'hourglass',
+  uncontacted: 'hourglass',
+  contacted: 'telephone_receiver',
   quoted: 'moneybag',
   confirmed: 'white_check_mark',
   completed: 'tada',

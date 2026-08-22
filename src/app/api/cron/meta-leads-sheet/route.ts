@@ -61,7 +61,7 @@ export async function GET(req: NextRequest) {
         if (dismissed.has(mapped.externalLeadId)) { skippedDismissed++; continue; } // deleted from CRM before — stay deleted
         if (await getBookingByExternalLeadId(mapped.externalLeadId)) continue; // already imported
 
-        const booking = await addBooking({ ...mapped, source: 'facebook-lead-ad', status: 'pending' });
+        const booking = await addBooking({ ...mapped, source: 'facebook-lead-ad', status: 'uncontacted' });
         created.push({ id: booking.id, name: booking.name, form: tab });
 
         sendBookingNotifications(booking).catch(console.error);

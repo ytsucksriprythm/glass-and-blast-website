@@ -8,6 +8,7 @@ import {
   type Quote, type QuoteInput, type QuoteStatus, type QuoteOtherLine,
   QUOTE_SERVICE_OPTIONS, QUOTE_EXTRA_OPTIONS, QUOTE_VALID_DAYS,
   DEFAULT_QUOTE_TERMS, DEFAULT_QUOTE_ASSUMPTIONS, DEFAULT_PAYMENT_DUE_TERMS, PAYMENT_DUE_TERMS_OPTIONS, type PaymentDueTerms,
+  SCOPE_PRESETS, ASSUMPTION_PRESETS, DEFAULT_ASSUMPTION_PRESET_KEYS, buildFromPresets,
   addDays, buildQuoteText, quoteTotal, money, emptyOtherLine,
 } from '@/lib/quote';
 import { BUSINESS_DEFAULTS, type BusinessProfile } from '@/lib/invoice';
@@ -40,6 +41,7 @@ function blankDraft(bookingId: string, booking: Pick<Booking, 'name' | 'address'
     billToName: booking?.name ?? '',
     billToAddress: [booking?.address, booking?.suburb].filter(Boolean).join(', '),
     ...BUSINESS_DEFAULTS,
+    showFromAddress: true,
     quoteDate: today,
     validUntil: addDays(today, QUOTE_VALID_DAYS),
     notes: '',
@@ -65,6 +67,16 @@ export default function QuoteModal({ bookingId, booking, initial, onClose, onSav
   const [saved, setSaved] = useState<Quote | null>(initial);
   const [saving, setSaving] = useState(false);
   const [tab, setTab] = useState<'form' | 'preview'>('form');
+
+  // Scope/Assumptions checkbox presets are UI-only — draft.scope/assumptions
+  // stay the single string actually saved (no schema change). Editing an
+  // existing quote can't know which boxes (if any) built its saved text, so
+  // it starts as Custom with that text and no boxes checked; a brand new
+  // quote starts with the default assumption boxes checked and scope blank.
+  const [scopePresets, setScopePresets] = useState<string[]>([]);
+  const [scopeCustom, setScopeCustom] = useState(() => initial?.scope ?? '');
+  const [assumptionPresets, setAssumptionPresets] = useState<string[]>(() => initial ? [] : DEFAULT_ASSUMPTION_PRESET_KEYS);
+  const [assumptionCustom, setAssumptionCustom] = useState(() => initial?.assumptions ?? '');
 
   // Business-info profiles + the autofill setting — same source Settings ->
   // "Invoice & quote autofill" writes to, so quotes and invoices always agree
@@ -99,6 +111,16 @@ export default function QuoteModal({ bookingId, booking, initial, onClose, onSav
       setDraft(d => ({ ...d, fromName: '', fromTradingAs: '', fromAbn: '', fromAddress: '', fromEmail: '', fromPhone: '' }));
     }
   }, [initial, settings, businessProfiles]);
+
+  // New quote only: seed the address-display toggle from Settings once
+  // loaded. Doesn't wait on businessProfiles like the effect above — no
+  // dependency between them.
+  const seededAddress = useRef(false);
+  useEffect(() => {
+    if (initial || seededAddress.current || !settings) return;
+    seededAddress.current = true;
+    setDraft(d => ({ ...d, showFromAddress: settings.defaultShowAddressOnQuote }));
+  }, [initial, settings]);
 
   const applyBusinessProfile = (p: BusinessProfile) =>
     setDraft(d => ({ ...d, fromName: p.fromName, fromTradingAs: p.fromTradingAs, fromAbn: p.fromAbn, fromAddress: p.fromAddress, fromEmail: p.fromEmail, fromPhone: p.fromPhone }));
@@ -147,6 +169,39 @@ export default function QuoteModal({ bookingId, booking, initial, onClose, onSav
     setDraft(d => ({ ...d, otherLines: d.otherLines.map(l => l.id === id ? { ...l, ...patch } : l) }));
   const removeOtherLine = (id: string) => setDraft(d => ({ ...d, otherLines: d.otherLines.filter(l => l.id !== id) }));
   const total = quoteTotal(draft);
+
+  // Custom text (if any) wins outright — checked boxes only matter when
+  // Custom is empty. Keeping both scopePresets/assumptionPresets around even
+  // while Custom has content means clearing Custom later doesn't lose what
+  // was checked.
+  const toggleScopePreset = (key: string) => {
+    const turningOn = !scopePresets.includes(key);
+    let next = turningOn ? [...scopePresets, key] : scopePresets.filter(k => k !== key);
+    // Checking either window-cleaning box pulls in tracks & sills and the
+    // hard-water exclusion too, since both apply whenever windows are being
+    // cleaned. Only fires at the moment of checking — doesn't force them
+    // back on if manually unchecked afterward.
+    if (turningOn && (key === 'inside' || key === 'outside')) {
+      for (const extra of ['tracks', 'excludesStaining']) {
+        if (!next.includes(extra)) next = [...next, extra];
+      }
+    }
+    setScopePresets(next);
+    set('scope', scopeCustom.trim() || buildFromPresets(SCOPE_PRESETS, next));
+  };
+  const onScopeCustomChange = (v: string) => {
+    setScopeCustom(v);
+    set('scope', v.trim() || buildFromPresets(SCOPE_PRESETS, scopePresets));
+  };
+  const toggleAssumptionPreset = (key: string) => {
+    const next = assumptionPresets.includes(key) ? assumptionPresets.filter(k => k !== key) : [...assumptionPresets, key];
+    setAssumptionPresets(next);
+    set('assumptions', assumptionCustom.trim() || buildFromPresets(ASSUMPTION_PRESETS, next));
+  };
+  const onAssumptionCustomChange = (v: string) => {
+    setAssumptionCustom(v);
+    set('assumptions', v.trim() || buildFromPresets(ASSUMPTION_PRESETS, assumptionPresets));
+  };
 
   const save = async () => {
     if (draft.services.length === 0 && draft.extras.length === 0 && !draft.otherLines.some(l => l.description.trim())) {
@@ -307,13 +362,34 @@ export default function QuoteModal({ bookingId, booking, initial, onClose, onSav
 
             <div>
               <L>Scope of work</L>
-              <textarea className="form-input text-sm w-full resize-none" rows={2} value={draft.scope} onChange={e => set('scope', e.target.value)} placeholder="e.g. 12 windows, single storey, interior &amp; exterior, excludes flyscreens" />
-              <p className="text-slate-500 text-xs mt-1">Exactly what's included, so there's no dispute later about how many windows/areas were quoted.</p>
+              <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 mb-2">
+                {SCOPE_PRESETS.map(p => (
+                  <label key={p.key} className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
+                    <input type="checkbox" checked={scopePresets.includes(p.key)} onChange={() => toggleScopePreset(p.key)} className="w-3.5 h-3.5 flex-shrink-0 accent-sky-500 cursor-pointer" />
+                    {p.label}
+                  </label>
+                ))}
+              </div>
+              <L>Custom (overrides the boxes above)</L>
+              <textarea className="form-input text-sm w-full resize-none" rows={2} value={scopeCustom} onChange={e => onScopeCustomChange(e.target.value)} placeholder="e.g. 12 windows, single storey, interior &amp; exterior, excludes flyscreens" />
+              <p className="text-slate-500 text-xs mt-1">
+                {scopeCustom.trim() ? 'Using the custom text above, the checked boxes are ignored while this has anything in it.' : "Exactly what's included, so there's no dispute later about how many windows/areas were quoted."}
+              </p>
             </div>
 
             <div>
               <L>Assumptions this quote is based on</L>
-              <textarea className="form-input text-sm w-full resize-none" rows={2} value={draft.assumptions} onChange={e => set('assumptions', e.target.value)} placeholder="e.g. Assumed ground-level access, no extreme buildup" />
+              <div className="grid grid-cols-1 gap-y-1.5 mb-2">
+                {ASSUMPTION_PRESETS.map(p => (
+                  <label key={p.key} className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
+                    <input type="checkbox" checked={assumptionPresets.includes(p.key)} onChange={() => toggleAssumptionPreset(p.key)} className="w-3.5 h-3.5 flex-shrink-0 accent-sky-500 cursor-pointer" />
+                    {p.label}
+                  </label>
+                ))}
+              </div>
+              <L>Custom (overrides the boxes above)</L>
+              <textarea className="form-input text-sm w-full resize-none" rows={2} value={assumptionCustom} onChange={e => onAssumptionCustomChange(e.target.value)} placeholder="e.g. Assumed ground-level access, no extreme buildup" />
+              {assumptionCustom.trim() && <p className="text-slate-500 text-xs mt-1">Using the custom text above, the checked boxes are ignored while this has anything in it.</p>}
             </div>
 
             <div>
@@ -321,7 +397,7 @@ export default function QuoteModal({ bookingId, booking, initial, onClose, onSav
               <select className="form-input text-sm w-full" value={draft.paymentTerms} onChange={e => set('paymentTerms', e.target.value as PaymentDueTerms)}>
                 {PAYMENT_DUE_TERMS_OPTIONS.map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
               </select>
-              <p className="text-slate-500 text-xs mt-1">Cash on completion, or bank transfer against the invoice — this is just how long they get to pay it. Carries over to autofill the invoice if you make one from this booking.</p>
+              <p className="text-slate-500 text-xs mt-1">Cash on completion, or bank transfer against the invoice, this is just how long they get to pay it. Carries over to autofill the invoice if you make one from this booking.</p>
             </div>
 
             <div className="rounded-lg border border-white/10 bg-white/[0.03] px-4 py-3 flex items-center justify-between">
@@ -330,7 +406,7 @@ export default function QuoteModal({ bookingId, booking, initial, onClose, onSav
             </div>
 
             <div className="grid grid-cols-2 gap-3">
-              <div><L>Bill to</L><input className="form-input text-sm w-full" value={draft.billToName} onChange={e => set('billToName', e.target.value)} /></div>
+              <div><L>Addressed to (name on the quote)</L><input className="form-input text-sm w-full" value={draft.billToName} onChange={e => set('billToName', e.target.value)} /></div>
               <div><L>Property</L>
                 <select className="form-input text-sm w-full" value={draft.propertyType} onChange={e => set('propertyType', e.target.value as 'residential' | 'commercial')}>
                   <option value="residential">Residential</option>
@@ -381,7 +457,21 @@ export default function QuoteModal({ bookingId, booking, initial, onClose, onSav
                   <div><L>ABN</L><input className="form-input text-sm w-full" value={draft.fromAbn} onChange={e => set('fromAbn', e.target.value)} /></div>
                   <div><L>Phone</L><input className="form-input text-sm w-full" value={draft.fromPhone} onChange={e => set('fromPhone', e.target.value)} /></div>
                   <div className="col-span-2"><L>Email</L><input className="form-input text-sm w-full" value={draft.fromEmail} onChange={e => set('fromEmail', e.target.value)} /></div>
-                  <div className="col-span-2"><L>Address</L><input className="form-input text-sm w-full" value={draft.fromAddress} onChange={e => set('fromAddress', e.target.value)} /></div>
+                  <div className="col-span-2">
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="block text-slate-400 text-xs font-medium">Address</span>
+                      <label className="inline-flex items-center gap-1.5 text-xs cursor-pointer" title="Show the business address on this quote">
+                        <input
+                          type="checkbox"
+                          checked={draft.showFromAddress}
+                          onChange={e => set('showFromAddress', e.target.checked)}
+                          className="appearance-none w-3.5 h-3.5 rounded border border-white/25 bg-white/10 checked:bg-sky-500 checked:border-sky-500 cursor-pointer relative before:content-['✓'] before:absolute before:inset-0 before:flex before:items-center before:justify-center before:text-[9px] before:leading-none before:text-white before:opacity-0 checked:before:opacity-100"
+                        />
+                        <span className="text-slate-400">Show on quote</span>
+                      </label>
+                    </div>
+                    <input className="form-input text-sm w-full" value={draft.fromAddress} onChange={e => set('fromAddress', e.target.value)} />
+                  </div>
                 </div>
                 <div><L>Terms &amp; conditions</L><textarea className="form-input text-sm w-full resize-none" rows={4} value={draft.termsText} onChange={e => set('termsText', e.target.value)} /></div>
                 <div><L>Note to customer (optional)</L><textarea className="form-input text-sm w-full resize-none" rows={2} value={draft.notes} onChange={e => set('notes', e.target.value)} /></div>

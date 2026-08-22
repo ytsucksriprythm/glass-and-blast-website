@@ -4,7 +4,7 @@ import { bulkUpdateBookingStatus, bulkDeleteBookings, type BookingStatus } from 
 
 export const dynamic = 'force-dynamic';
 
-const STATUSES: BookingStatus[] = ['pending', 'quoted', 'confirmed', 'completed', 'cancelled', 'cold'];
+const STATUSES: BookingStatus[] = ['uncontacted', 'contacted', 'quoted', 'confirmed', 'completed', 'cancelled', 'cold'];
 
 // Bulk actions over a set of booking ids: delete, or change status.
 export async function POST(req: NextRequest) {
