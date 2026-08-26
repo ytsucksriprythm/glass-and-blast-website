@@ -1,5 +1,5 @@
 import { Check } from 'lucide-react';
-import { type Quote, serviceLabel, money, longDate, quoteTotal, paymentTermsText } from '@/lib/quote';
+import { type Quote, serviceLabel, sortServiceKeys, money, longDate, quoteTotal, paymentTermsText } from '@/lib/quote';
 
 // Display fields QuotePreview needs. The modal's live (unsaved) draft passes
 // a synthesized object (number/token may be placeholders) before the quote
@@ -24,7 +24,7 @@ function Field({ label, value }: { label: string; value: React.ReactNode }) {
  */
 export default function QuotePreview({ quote }: { quote: QuotePreviewData }) {
   const items: { label: string; amount: number }[] = [
-    ...quote.services.map(k => ({ label: serviceLabel(k), amount: Number(quote.itemAmounts?.[k]) || 0 })),
+    ...sortServiceKeys(quote.services).map(k => ({ label: serviceLabel(k), amount: Number(quote.itemAmounts?.[k]) || 0 })),
     ...quote.extras.map(k => ({ label: serviceLabel(k), amount: Number(quote.itemAmounts?.[k]) || 0 })),
     ...(quote.otherLines ?? [])
       .filter(l => l.description.trim() || l.amount)

@@ -6,7 +6,7 @@ import { X, Check, Copy, Share as ShareIcon, ExternalLink, Plus, Trash2 } from '
 import type { Booking } from '@/lib/db';
 import {
   type Quote, type QuoteInput, type QuoteStatus, type QuoteOtherLine,
-  QUOTE_SERVICE_OPTIONS, QUOTE_EXTRA_OPTIONS, QUOTE_VALID_DAYS,
+  QUOTE_SERVICE_OPTIONS, QUOTE_EXTRA_OPTIONS, QUOTE_VALID_DAYS, WINDOW_INSIDE_KEY, WINDOW_OUTSIDE_KEY,
   DEFAULT_QUOTE_TERMS, DEFAULT_QUOTE_ASSUMPTIONS, DEFAULT_PAYMENT_DUE_TERMS, PAYMENT_DUE_TERMS_OPTIONS, type PaymentDueTerms,
   SCOPE_PRESETS, ASSUMPTION_PRESETS, DEFAULT_ASSUMPTION_PRESET_KEYS, buildFromPresets,
   addDays, buildQuoteText, quoteTotal, money, emptyOtherLine,
@@ -163,18 +163,29 @@ export default function QuoteModal({ bookingId, booking, initial, onClose, onSav
     const next = list.includes(value) ? list.filter(x => x !== value) : [...list, value];
     return { ...d, [key]: next };
   });
-  // Checking a Window Cleaning - Inside/Outside price line also checks the
-  // matching Scope of Work box (if it isn't already), so the scope text
-  // describes what's actually being charged for instead of drifting out of
-  // sync — e.g. pricing outside-only shouldn't leave "Inside glass surfaces
-  // cleaned" in the scope. Only fires on check, same as the tracks/staining
-  // auto-select below; unchecking the price line never un-checks the scope.
+  // Inside window cleaning is an add-on to Outside, never sold on its own —
+  // checking Inside pulls Outside in with it (so it's never possible to save
+  // a quote with Inside priced but Outside missing), and unchecking Outside
+  // drops Inside along with it. Also checks the matching Scope of Work box
+  // for whichever of Inside/Outside just got turned on (if it isn't already),
+  // so the scope text describes what's actually being charged for instead of
+  // drifting out of sync. Only fires on check, same as the tracks/staining
+  // auto-select below; unchecking a price line never un-checks its scope box.
   const toggleService = (key: string) => {
     const turningOn = !draft.services.includes(key);
-    toggleList('services', key);
+    setDraft(d => {
+      let services = d.services.includes(key) ? d.services.filter(x => x !== key) : [...d.services, key];
+      if (key === WINDOW_INSIDE_KEY && turningOn && !services.includes(WINDOW_OUTSIDE_KEY)) {
+        services = [...services, WINDOW_OUTSIDE_KEY];
+      }
+      if (key === WINDOW_OUTSIDE_KEY && !turningOn) {
+        services = services.filter(x => x !== WINDOW_INSIDE_KEY);
+      }
+      return { ...d, services };
+    });
     if (turningOn) {
-      const scopeKey = key === 'window-washing-inside' ? 'inside' : key === 'window-washing-outside' ? 'outside' : null;
-      if (scopeKey && !scopePresets.includes(scopeKey)) toggleScopePreset(scopeKey);
+      if (key === WINDOW_INSIDE_KEY) addScopePresets(['inside', 'outside']);
+      else if (key === WINDOW_OUTSIDE_KEY) addScopePresets(['outside']);
     }
   };
   const setItemAmount = (key: string, value: number) => setDraft(d => ({ ...d, itemAmounts: { ...d.itemAmounts, [key]: value } }));
@@ -188,18 +199,30 @@ export default function QuoteModal({ bookingId, booking, initial, onClose, onSav
   // Custom is empty. Keeping both scopePresets/assumptionPresets around even
   // while Custom has content means clearing Custom later doesn't lose what
   // was checked.
-  const toggleScopePreset = (key: string) => {
-    const turningOn = !scopePresets.includes(key);
-    let next = turningOn ? [...scopePresets, key] : scopePresets.filter(k => k !== key);
+  // Adds one or more scope keys in a single state update — needed because
+  // toggleService can turn on both 'inside' and 'outside' at once (checking
+  // Inside pulls Outside in with it), and two separate toggleScopePreset
+  // calls in the same tick would each read the same pre-update scopePresets
+  // and stomp each other's setScopePresets call instead of composing.
+  const addScopePresets = (keysToAdd: string[]) => {
+    const newKeys = keysToAdd.filter(k => !scopePresets.includes(k));
+    if (newKeys.length === 0) return;
+    let next = [...scopePresets, ...newKeys];
     // Checking either window-cleaning box pulls in tracks & sills and the
     // hard-water exclusion too, since both apply whenever windows are being
     // cleaned. Only fires at the moment of checking — doesn't force them
     // back on if manually unchecked afterward.
-    if (turningOn && (key === 'inside' || key === 'outside')) {
+    if (newKeys.some(k => k === 'inside' || k === 'outside')) {
       for (const extra of ['tracks', 'excludesStaining']) {
         if (!next.includes(extra)) next = [...next, extra];
       }
     }
+    setScopePresets(next);
+    set('scope', scopeCustom.trim() || buildFromPresets(SCOPE_PRESETS, next));
+  };
+  const toggleScopePreset = (key: string) => {
+    if (!scopePresets.includes(key)) { addScopePresets([key]); return; }
+    const next = scopePresets.filter(k => k !== key);
     setScopePresets(next);
     set('scope', scopeCustom.trim() || buildFromPresets(SCOPE_PRESETS, next));
   };

@@ -13,16 +13,21 @@ import {
 
 export type QuoteStatus = 'draft' | 'sent';
 
-// Window cleaning prices inside and outside separately (different amount of
-// work, and plenty of customers only want one side done) — two line items
-// instead of one, each with its own checkbox and price. Checking one, the
-// other, or both is exactly "what they want done".
+// Window cleaning prices inside and outside separately. Outside is the base
+// service; inside is a bolt-on add-on, never sold alone — see the
+// WINDOW_INSIDE_KEY/WINDOW_OUTSIDE_KEY enforcement in QuoteModal (checking
+// Inside pulls Outside in with it, unchecking Outside drops Inside too).
+// Listed in this order (outside, then inside) so it reads base-then-addon
+// everywhere this array drives display order — see sortServiceKeys() below.
 export const QUOTE_SERVICE_OPTIONS = [
-  { key: 'window-washing-inside', label: 'Window Cleaning - Inside' },
   { key: 'window-washing-outside', label: 'Window Cleaning - Outside' },
+  { key: 'window-washing-inside', label: 'Window Cleaning - Inside (add-on, requires Outside)' },
   { key: 'pressure-washing', label: 'Pressure Washing' },
   { key: 'solar-panel-cleaning', label: 'Solar Panel Cleaning' },
 ] as const;
+
+export const WINDOW_OUTSIDE_KEY = 'window-washing-outside';
+export const WINDOW_INSIDE_KEY = 'window-washing-inside';
 
 // Old quotes saved before the inside/outside split still carry the single
 // 'window-washing' key in their `services` array — no longer in the options
@@ -31,6 +36,20 @@ export const QUOTE_SERVICE_OPTIONS = [
 const LEGACY_SERVICE_LABELS: Record<string, string> = {
   'window-washing': 'Window Cleaning',
 };
+
+// Services/extras render in QUOTE_SERVICE_OPTIONS/QUOTE_EXTRA_OPTIONS order
+// wherever they're listed on the document, regardless of the order they were
+// checked in — matters most for Outside always appearing above Inside, so
+// the add-on relationship reads correctly on the actual quote.
+export function sortServiceKeys(keys: string[]): string[] {
+  const index = (k: string) => {
+    const i = QUOTE_SERVICE_OPTIONS.findIndex(o => o.key === k);
+    if (i !== -1) return i;
+    const j = QUOTE_EXTRA_OPTIONS.findIndex(o => o.key === k);
+    return j !== -1 ? QUOTE_SERVICE_OPTIONS.length + j : 999;
+  };
+  return [...keys].sort((a, b) => index(a) - index(b));
+}
 
 export const QUOTE_EXTRA_OPTIONS = [
   { key: 'flyscreen-repair', label: 'Flyscreen Repair' },
@@ -215,7 +234,7 @@ export function buildQuoteText(quote: Pick<Quote,
     if (quote.billToAddress) lines.push(quote.billToAddress);
   }
   const items: [string, number][] = [
-    ...quote.services.map((k): [string, number] => [serviceLabel(k), Number(quote.itemAmounts?.[k]) || 0]),
+    ...sortServiceKeys(quote.services).map((k): [string, number] => [serviceLabel(k), Number(quote.itemAmounts?.[k]) || 0]),
     ...quote.extras.map((k): [string, number] => [serviceLabel(k), Number(quote.itemAmounts?.[k]) || 0]),
     ...(quote.otherLines ?? [])
       .filter(l => l.description.trim() || l.amount)
