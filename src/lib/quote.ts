@@ -13,11 +13,24 @@ import {
 
 export type QuoteStatus = 'draft' | 'sent';
 
+// Window cleaning prices inside and outside separately (different amount of
+// work, and plenty of customers only want one side done) — two line items
+// instead of one, each with its own checkbox and price. Checking one, the
+// other, or both is exactly "what they want done".
 export const QUOTE_SERVICE_OPTIONS = [
-  { key: 'window-washing', label: 'Window Cleaning' },
+  { key: 'window-washing-inside', label: 'Window Cleaning - Inside' },
+  { key: 'window-washing-outside', label: 'Window Cleaning - Outside' },
   { key: 'pressure-washing', label: 'Pressure Washing' },
   { key: 'solar-panel-cleaning', label: 'Solar Panel Cleaning' },
 ] as const;
+
+// Old quotes saved before the inside/outside split still carry the single
+// 'window-washing' key in their `services` array — no longer in the options
+// list above, so serviceLabel() needs to keep recognising it by hand or a
+// years-old quote would render with the raw key instead of a real label.
+const LEGACY_SERVICE_LABELS: Record<string, string> = {
+  'window-washing': 'Window Cleaning',
+};
 
 export const QUOTE_EXTRA_OPTIONS = [
   { key: 'flyscreen-repair', label: 'Flyscreen Repair' },
@@ -44,6 +57,7 @@ export function emptyOtherLine(): QuoteOtherLine {
 export function serviceLabel(key: string): string {
   return QUOTE_SERVICE_OPTIONS.find(o => o.key === key)?.label
     ?? QUOTE_EXTRA_OPTIONS.find(o => o.key === key)?.label
+    ?? LEGACY_SERVICE_LABELS[key]
     ?? key;
 }
 

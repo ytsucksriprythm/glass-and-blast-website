@@ -163,6 +163,20 @@ export default function QuoteModal({ bookingId, booking, initial, onClose, onSav
     const next = list.includes(value) ? list.filter(x => x !== value) : [...list, value];
     return { ...d, [key]: next };
   });
+  // Checking a Window Cleaning - Inside/Outside price line also checks the
+  // matching Scope of Work box (if it isn't already), so the scope text
+  // describes what's actually being charged for instead of drifting out of
+  // sync — e.g. pricing outside-only shouldn't leave "Inside glass surfaces
+  // cleaned" in the scope. Only fires on check, same as the tracks/staining
+  // auto-select below; unchecking the price line never un-checks the scope.
+  const toggleService = (key: string) => {
+    const turningOn = !draft.services.includes(key);
+    toggleList('services', key);
+    if (turningOn) {
+      const scopeKey = key === 'window-washing-inside' ? 'inside' : key === 'window-washing-outside' ? 'outside' : null;
+      if (scopeKey && !scopePresets.includes(scopeKey)) toggleScopePreset(scopeKey);
+    }
+  };
   const setItemAmount = (key: string, value: number) => setDraft(d => ({ ...d, itemAmounts: { ...d.itemAmounts, [key]: value } }));
   const addOtherLine = () => setDraft(d => ({ ...d, otherLines: [...d.otherLines, emptyOtherLine()] }));
   const updateOtherLine = (id: string, patch: Partial<QuoteOtherLine>) =>
@@ -286,7 +300,7 @@ export default function QuoteModal({ bookingId, booking, initial, onClose, onSav
                   const active = draft.services.includes(o.key);
                   return (
                     <label key={o.key} className={`flex items-center gap-3 px-3 py-2 rounded-lg border cursor-pointer transition-colors ${active ? 'border-sky-400 bg-sky-400/15' : 'border-white/10 bg-white/[0.03] hover:border-white/25'}`}>
-                      <input type="checkbox" checked={active} onChange={() => toggleList('services', o.key)} className="w-4 h-4 flex-shrink-0 accent-sky-500 cursor-pointer" />
+                      <input type="checkbox" checked={active} onChange={() => toggleService(o.key)} className="w-4 h-4 flex-shrink-0 accent-sky-500 cursor-pointer" />
                       <span className={`flex-1 text-sm font-medium ${active ? 'text-white' : 'text-slate-300'}`}>{o.label}</span>
                       {active && (
                         <span className="relative flex-shrink-0 w-24">
