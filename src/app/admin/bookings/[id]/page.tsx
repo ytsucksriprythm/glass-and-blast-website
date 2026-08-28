@@ -52,8 +52,8 @@ const SERVICE_OPTIONS = [
   { v: 'solar-panel-cleaning', l: 'Solar Panel Cleaning' },
   { v: 'other', l: 'Other' },
 ];
-const STATUS_KEYS: BookingStatus[] = ['uncontacted', 'contacted', 'quoted', 'confirmed', 'completed', 'cancelled', 'cold'];
-const STATUS_LABEL: Record<string, string> = { uncontacted: 'Uncontacted', contacted: 'Contacted', quoted: 'Quoted', confirmed: 'Confirmed', completed: 'Completed', cancelled: 'Cancelled', cold: 'Cold Lead' };
+const STATUS_KEYS: BookingStatus[] = ['uncontacted', 'contacted', 'quote-booked', 'quoted', 'confirmed', 'completed', 'cancelled', 'cold'];
+const STATUS_LABEL: Record<string, string> = { uncontacted: 'Uncontacted', contacted: 'Contacted', 'quote-booked': 'Quote Booked', quoted: 'Quoted', confirmed: 'Confirmed', completed: 'Completed', cancelled: 'Cancelled', cold: 'Cold Lead' };
 
 const serviceText = (s: string) => (s ?? '').split(',').filter(Boolean).map(x => SERVICE_LABELS[x] ?? x).join(' + ') || '-';
 const money = (n?: number | null) => typeof n === 'number' ? `$${n.toLocaleString('en-AU', { maximumFractionDigits: 0 })}` : '';

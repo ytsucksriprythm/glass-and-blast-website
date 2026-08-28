@@ -693,7 +693,7 @@ function DeletedBookings() {
 }
 
 const EXPORT_STATUS_LABEL: Record<BookingStatus, string> = {
-  uncontacted: 'Uncontacted', contacted: 'Contacted', quoted: 'Quoted', confirmed: 'Confirmed', completed: 'Completed', cancelled: 'Cancelled', cold: 'Cold Lead',
+  uncontacted: 'Uncontacted', contacted: 'Contacted', 'quote-booked': 'Quote Booked', quoted: 'Quoted', confirmed: 'Confirmed', completed: 'Completed', cancelled: 'Cancelled', cold: 'Cold Lead',
 };
 const EXPORT_SERVICE_LABEL: Record<string, string> = {
   'window-washing': 'Window Washing', 'pressure-washing': 'Pressure Washing', both: 'Both Services',

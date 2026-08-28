@@ -15,9 +15,9 @@ import { AddressLink } from '@/components/AddressLink';
 type View = 'day' | 'week' | 'month';
 
 const STATUS_LABEL: Record<BookingStatus, string> = {
-  uncontacted: 'Uncontacted', contacted: 'Contacted', quoted: 'Quoted', confirmed: 'Confirmed', completed: 'Completed', cancelled: 'Cancelled', cold: 'Cold Lead',
+  uncontacted: 'Uncontacted', contacted: 'Contacted', 'quote-booked': 'Quote Booked', quoted: 'Quoted', confirmed: 'Confirmed', completed: 'Completed', cancelled: 'Cancelled', cold: 'Cold Lead',
 };
-const STATUS_KEYS: BookingStatus[] = ['uncontacted', 'contacted', 'quoted', 'confirmed', 'completed', 'cancelled'];
+const STATUS_KEYS: BookingStatus[] = ['uncontacted', 'contacted', 'quote-booked', 'quoted', 'confirmed', 'completed', 'cancelled'];
 
 const SERVICE_LABELS: Record<string, string> = {
   'window-washing': 'Window Washing', 'pressure-washing': 'Pressure Washing',
@@ -392,6 +392,15 @@ function AddModal({ day, booking, onClose, onCreated }: {
     service: booking?.service || 'window-washing',
     when: defaultWhen,
   });
+  // Two kinds of calendar slot: an on-site quote visit (no price given yet —
+  // status becomes "quote-booked") or the confirmed cleaning job (status
+  // "confirmed"). Existing booking still early (uncontacted/contacted/
+  // quote-booked) defaults to Quote visit; anything past that (already
+  // quoted/confirmed/etc) or a brand-new entry defaults to Job, same as
+  // this modal always behaved before Quote visit existed.
+  const [kind, setKind] = useState<'quote' | 'job'>(() =>
+    booking && (booking.status === 'uncontacted' || booking.status === 'contacted' || booking.status === 'quote-booked') ? 'quote' : 'job'
+  );
   const [busy, setBusy] = useState(false);
   const set = (k: keyof typeof f, v: string) => setF(p => ({ ...p, [k]: v }));
 
@@ -400,14 +409,17 @@ function AddModal({ day, booking, onClose, onCreated }: {
     setBusy(true);
     try {
       if (booking) {
-        // Schedule the existing job: fills its calendar slot, keeps any edits.
+        // Schedule the existing job/quote visit: fills its calendar slot, keeps any edits.
+        const status = kind === 'quote'
+          ? 'quote-booked'
+          : (booking.status === 'uncontacted' || booking.status === 'contacted' || booking.status === 'quote-booked' || booking.status === 'quoted' ? 'confirmed' : booking.status);
         const res = await fetch(`/api/admin/bookings/${booking.id}`, {
           method: 'PATCH', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             name: f.name, phone: f.phone, address: f.address, suburb: f.suburb,
             service: f.service,
             scheduledAt: fromLocalInput(f.when),
-            status: booking.status === 'uncontacted' || booking.status === 'contacted' || booking.status === 'quoted' ? 'confirmed' : booking.status,
+            status,
           }),
         });
         if (!res.ok) throw new Error();
@@ -417,7 +429,7 @@ function AddModal({ day, booking, onClose, onCreated }: {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             name: f.name, phone: f.phone, address: f.address, suburb: f.suburb,
-            service: f.service, propertyType: 'residential', status: 'confirmed',
+            service: f.service, propertyType: 'residential', status: kind === 'quote' ? 'quote-booked' : 'confirmed',
             scheduledAt: fromLocalInput(f.when),
           }),
         });
@@ -432,7 +444,7 @@ function AddModal({ day, booking, onClose, onCreated }: {
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 sm:p-4" onClick={onClose}>
       <div className="bg-navy-800 border border-white/10 rounded-t-2xl sm:rounded-2xl w-full sm:max-w-md max-h-[90svh] overflow-y-auto" onClick={e => e.stopPropagation()}>
         <div className="sticky top-0 bg-navy-800 p-4 border-b border-white/10 flex items-center justify-between">
-          <h3 className="text-white font-semibold">{booking ? `Schedule ${booking.name}` : 'New scheduled job'}</h3>
+          <h3 className="text-white font-semibold">{booking ? `Schedule ${booking.name}` : (kind === 'quote' ? 'New quote visit' : 'New scheduled job')}</h3>
           <button onClick={onClose} className="text-slate-400 hover:text-white cursor-pointer"><X className="w-5 h-5" /></button>
         </div>
         <div className="p-4 space-y-3" style={{ paddingBottom: 'calc(1rem + env(safe-area-inset-bottom))' }}>
@@ -441,6 +453,14 @@ function AddModal({ day, booking, onClose, onCreated }: {
               Filled in from this booking. Saving links it to this calendar slot.
             </p>
           )}
+          <div>
+            <label className="block text-slate-400 text-xs mb-1">What is this?</label>
+            <div className="grid grid-cols-2 gap-1.5 rounded-lg border border-white/10 bg-navy-900/60 p-1">
+              <button type="button" onClick={() => setKind('quote')} className={`py-2 rounded-md text-sm font-semibold cursor-pointer transition-colors ${kind === 'quote' ? 'bg-orange-400/20 text-orange-300' : 'text-slate-400'}`}>Quote visit</button>
+              <button type="button" onClick={() => setKind('job')} className={`py-2 rounded-md text-sm font-semibold cursor-pointer transition-colors ${kind === 'job' ? 'bg-sky-500 text-white' : 'text-slate-400'}`}>Confirmed job</button>
+            </div>
+            {kind === 'quote' && <p className="text-slate-500 text-xs mt-1">On-site visit to give a quote — no price locked in yet. Status becomes Quote Booked.</p>}
+          </div>
           <div><label className="block text-slate-400 text-xs mb-1">Name *</label><input className="form-input text-sm" value={f.name} onChange={e => set('name', e.target.value)} /></div>
           <div><label className="block text-slate-400 text-xs mb-1">Phone</label><input type="tel" className="form-input text-sm" value={f.phone} onChange={e => set('phone', e.target.value)} /></div>
           <div><label className="block text-slate-400 text-xs mb-1">Address</label><input className="form-input text-sm" value={f.address} onChange={e => set('address', e.target.value)} /></div>

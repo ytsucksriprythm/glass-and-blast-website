@@ -31,7 +31,7 @@ const VAULT_PATH = path.join(process.cwd(), 'data', 'vault.json');
 const QUOTES_PATH = path.join(process.cwd(), 'data', 'quotes.json');
 const ACTIVITY_MAX_ROWS = 2000; // local JSON store only — Neon has no cap
 
-export type BookingStatus = 'uncontacted' | 'contacted' | 'quoted' | 'confirmed' | 'completed' | 'cancelled' | 'cold';
+export type BookingStatus = 'uncontacted' | 'contacted' | 'quote-booked' | 'quoted' | 'confirmed' | 'completed' | 'cancelled' | 'cold';
 export type ServiceType = 'window-washing' | 'pressure-washing' | 'both' | 'flyscreen-repair' | 'solar-panel-cleaning' | 'other';
 export type PropertyType = 'residential' | 'commercial';
 export type BookingSource = 'website' | 'manual' | 'facebook-lead-ad';
@@ -1295,6 +1295,7 @@ export async function getStats() {
   const statusBreakdown = {
     uncontacted: bookings.filter(b => b.status === 'uncontacted').length,
     contacted: bookings.filter(b => b.status === 'contacted').length,
+    quoteBooked: bookings.filter(b => b.status === 'quote-booked').length,
     quoted: bookings.filter(b => b.status === 'quoted').length,
     confirmed: bookings.filter(b => b.status === 'confirmed').length,
     completed: bookings.filter(b => b.status === 'completed').length,
@@ -1322,6 +1323,7 @@ export async function getStats() {
     lastMonth: lastMonth.length,
     uncontacted: statusBreakdown.uncontacted,
     contacted: statusBreakdown.contacted,
+    'quote-booked': statusBreakdown.quoteBooked,
     quoted: statusBreakdown.quoted,
     confirmed: statusBreakdown.confirmed,
     completed: statusBreakdown.completed,
@@ -2612,7 +2614,7 @@ export async function getQuoteByToken(token: string): Promise<Quote | null> {
 
 // The "drive the booking's existing quote fields" sync — the single source of
 // truth for booking.quoteAmount/status once a Quote exists. Best-effort, never
-// throws. Never downgrades a booking already past uncontacted/contacted.
+// throws. Never downgrades a booking already past uncontacted/contacted/quote-booked.
 // Deliberately NOT called on delete — booking.quoteAmount is left as-is
 // (one-way sync, same house style as syncInvoicePaidToBookings above).
 async function syncQuoteAmountToBooking(quote: Quote): Promise<void> {
@@ -2620,7 +2622,7 @@ async function syncQuoteAmountToBooking(quote: Quote): Promise<void> {
     const b = await getBookingById(quote.bookingId);
     if (!b) return;
     const updates: Partial<Booking> = { quoteAmount: quote.amount };
-    if (b.status === 'uncontacted' || b.status === 'contacted') updates.status = 'quoted';
+    if (b.status === 'uncontacted' || b.status === 'contacted' || b.status === 'quote-booked') updates.status = 'quoted';
     await updateBooking(quote.bookingId, updates);
   } catch { /* best-effort */ }
 }

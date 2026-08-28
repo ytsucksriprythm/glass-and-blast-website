@@ -136,7 +136,7 @@ export function mapSheetRowToBooking(headers: string[], row: string[], fallbackF
 // one-way (Meta → Sheet). Closing that loop for real needs Meta's separate
 // Conversions API for Lead Ads.
 const BOOKING_STATUS_LABEL: Record<string, string> = {
-  uncontacted: 'Uncontacted', contacted: 'Contacted', quoted: 'Quoted', confirmed: 'Confirmed', completed: 'Completed', cancelled: 'Cancelled', cold: 'Cold Lead',
+  uncontacted: 'Uncontacted', contacted: 'Contacted', 'quote-booked': 'Quote Booked', quoted: 'Quoted', confirmed: 'Confirmed', completed: 'Completed', cancelled: 'Cancelled', cold: 'Cold Lead',
 };
 
 export async function syncBookingStatusToSheet(booking: Booking): Promise<void> {

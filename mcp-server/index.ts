@@ -161,7 +161,7 @@ async function loadRealData() {
 function buildDashboardStats(bookings: Booking[]) {
   const now = new Date();
   const statusBreakdown: Record<BookingStatus, number> = {
-    uncontacted: 0, contacted: 0, quoted: 0, confirmed: 0, completed: 0, cancelled: 0, cold: 0,
+    uncontacted: 0, contacted: 0, 'quote-booked': 0, quoted: 0, confirmed: 0, completed: 0, cancelled: 0, cold: 0,
   };
   bookings.forEach(b => { statusBreakdown[b.status] = (statusBreakdown[b.status] ?? 0) + 1; });
 

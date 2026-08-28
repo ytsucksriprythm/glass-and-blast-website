@@ -30,7 +30,7 @@ import { FlagButton, FlagBadge, FlagModal, flagHighlightClass } from '@/componen
 
 interface Stats {
   total: number; thisMonth: number; lastMonth: number;
-  uncontacted: number; contacted: number; quoted: number; confirmed: number; completed: number; cancelled: number; cold: number;
+  uncontacted: number; contacted: number; 'quote-booked': number; quoted: number; confirmed: number; completed: number; cancelled: number; cold: number;
   quotedCount: number; quotedValue: number;
   paidValue: number; owedValue: number; owedCount: number;
   wonValue: number; estimatedRevenue: number;
@@ -75,8 +75,9 @@ interface SiteStats {
 // ─── Constants ───────────────────────────────────────────────────────────
 
 const STATUS_CONFIG: Record<BookingStatus, { label: string; color: string; icon: React.FC<{ className?: string; style?: React.CSSProperties }> }> = {
-  uncontacted: { label: 'Uncontacted', color: '#F59E0B', icon: Clock },
-  contacted:   { label: 'Contacted',   color: '#2DD4BF', icon: PhoneCall },
+  uncontacted:      { label: 'Uncontacted',    color: '#F59E0B', icon: Clock },
+  contacted:        { label: 'Contacted',      color: '#2DD4BF', icon: PhoneCall },
+  'quote-booked':   { label: 'Quote Booked',   color: '#FB923C', icon: CalendarClock },
   quoted:      { label: 'Quoted',      color: '#A78BFA', icon: DollarSign },
   confirmed:   { label: 'Confirmed',   color: '#38BDF8', icon: CheckCircle },
   completed:   { label: 'Completed',   color: '#34D399', icon: Check },
@@ -87,11 +88,13 @@ const STATUS_KEYS = Object.keys(STATUS_CONFIG) as BookingStatus[];
 // Everything except "cold" — the Bookings tab's main list only ever shows
 // these; cold leads live in their own collapsible section further down.
 const ACTIVE_STATUS_KEYS = STATUS_KEYS.filter(s => s !== 'cold');
-// Leads/Pipeline sub-tabs (Bookings tab): "has this job ever been quoted?"
-// splits the statuses cleanly in two. Cold rides along with Leads — a cold
-// lead is still fundamentally a lead, just a stale one.
+// Leads/Pipeline sub-tabs (Bookings tab): "has this job got a calendar slot
+// or a quote moving yet?" splits the statuses cleanly in two. Cold rides
+// along with Leads — a cold lead is still fundamentally a lead, just a stale
+// one. Quote Booked (an on-site quote visit is on the calendar, no priced
+// quote sent yet) counts as Pipeline — it's no longer a raw, untouched lead.
 const LEADS_STATUSES: BookingStatus[] = ['uncontacted', 'contacted', 'cold'];
-const PIPELINE_STATUSES: BookingStatus[] = ['quoted', 'confirmed', 'completed', 'cancelled'];
+const PIPELINE_STATUSES: BookingStatus[] = ['quote-booked', 'quoted', 'confirmed', 'completed', 'cancelled'];
 
 const SERVICE_LABELS: Record<string, string> = {
   'window-washing':       'Window Washing',
