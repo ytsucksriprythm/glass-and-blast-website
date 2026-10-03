@@ -9,7 +9,7 @@ import {
 import {
   type Invoice, type InvoiceStatus, type InvoiceLineItem, type PaymentProfile, type BusinessProfile, type PaymentMethod,
   BUSINESS_DEFAULTS, PAYMENT_DEFAULTS, PAYMENT_METHOD_LABEL, SQUARE_SURCHARGE_PERCENT_FALLBACK, isInvoiceOverdue, addDays, cardTotal, computeTotals, money, longDate, addressesMatch,
-  DEFAULT_PAYMENT_DUE_TERMS, paymentDueTermsDays, PAYMENT_DUE_TERMS_OPTIONS,
+  DEFAULT_PAYMENT_DUE_TERMS, paymentDueTermsDays, PAYMENT_DUE_TERMS_OPTIONS, cleanAmountInput, DISCOUNT_PRESETS,
 } from '@/lib/invoice';
 import type { AppSettings } from '@/lib/settings';
 import type { Booking } from '@/lib/db';
@@ -243,6 +243,8 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
   const setItem = (i: number, k: keyof ItemForm, v: string) =>
     setF(prev => ({ ...prev, items: prev.items.map((it, idx) => idx === i ? { ...it, [k]: v } : it) }));
   const addItem = () => setF(prev => ({ ...prev, items: [...prev.items, emptyItemForm()] }));
+  const addDiscount = (label: string, amount: number) =>
+    setF(prev => ({ ...prev, items: [...prev.items, { ...emptyItemForm(), description: label, amount: String(amount) }] }));
   const removeItem = (i: number) =>
     setF(prev => ({ ...prev, items: prev.items.length > 1 ? prev.items.filter((_, idx) => idx !== i) : prev.items }));
 
@@ -688,12 +690,19 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
                     <input className="form-input text-sm" placeholder="Service address (optional)" value={it.serviceAddress} onChange={e => setItem(i, 'serviceAddress', e.target.value)} />
                     <div className="grid grid-cols-2 gap-2">
                       <div><L>Date</L><input type="date" className="form-input text-sm" value={it.date} onChange={e => setItem(i, 'date', e.target.value)} /></div>
-                      <div><L>Amount ($)</L><input inputMode="decimal" className="form-input text-sm" placeholder="0.00" value={it.amount} onChange={e => setItem(i, 'amount', e.target.value.replace(/[^0-9.]/g, ''))} /></div>
+                      <div><L>Amount ($)</L><input inputMode="text" className={`form-input text-sm ${it.amount.startsWith('-') ? 'text-emerald-300' : ''}`} placeholder="0.00 (use - for a discount)" value={it.amount} onChange={e => setItem(i, 'amount', cleanAmountInput(e.target.value))} /></div>
                     </div>
                   </div>
                 </div>
               ))}
               <button type="button" onClick={addItem} className="w-full inline-flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg border border-dashed border-white/15 text-slate-300 hover:border-sky-400/40 hover:text-white text-sm font-semibold cursor-pointer"><Plus className="w-4 h-4" /> Add item</button>
+              <div className="flex flex-wrap gap-1.5">
+                {DISCOUNT_PRESETS.map(d => (
+                  <button key={d.label} type="button" onClick={() => addDiscount(d.label, d.amount)} className="px-2.5 py-1 rounded-md border border-emerald-400/30 text-xs text-emerald-300 hover:bg-emerald-400/10 cursor-pointer">
+                    + {d.label} ({money(d.amount)})
+                  </button>
+                ))}
+              </div>
             </div>
           </Section>
 

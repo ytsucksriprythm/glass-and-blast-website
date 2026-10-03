@@ -11,13 +11,32 @@ import {
   SCOPE_PRESETS, ASSUMPTION_PRESETS, DEFAULT_ASSUMPTION_PRESET_KEYS, buildFromPresets,
   addDays, buildQuoteText, quoteTotal, money, emptyOtherLine,
 } from '@/lib/quote';
-import { BUSINESS_DEFAULTS, type BusinessProfile } from '@/lib/invoice';
+import { BUSINESS_DEFAULTS, type BusinessProfile, cleanAmountInput, DISCOUNT_PRESETS } from '@/lib/invoice';
 import type { AppSettings } from '@/lib/settings';
 import QuotePreview from './QuotePreview';
 
 type Draft = QuoteInput;
 
 const todayStr = () => new Date().toISOString().slice(0, 10);
+
+// Dollar box that accepts a leading minus (discount lines). Keeps its own text
+// so in-between states like "-" or "12." survive typing — the parent only
+// stores numbers, which would otherwise snap "-" straight back to empty.
+function AmountInput({ value, onChange, className }: { value: number; onChange: (n: number) => void; className: string }) {
+  const [text, setText] = useState(value ? String(value) : '');
+  useEffect(() => {
+    if ((Number(text) || 0) !== (value || 0)) setText(value ? String(value) : '');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value]);
+  return (
+    <input
+      className={`${className} ${value < 0 ? 'text-emerald-300' : ''}`} inputMode="text" placeholder="0"
+      value={text}
+      onClick={e => e.stopPropagation()}
+      onChange={e => { const t = cleanAmountInput(e.target.value); setText(t); onChange(Number(t) || 0); }}
+    />
+  );
+}
 
 function draftFromQuote(q: Quote): Draft {
   const { id, number, seq, token, createdAt, updatedAt, sentAt, ...rest } = q;
@@ -190,6 +209,8 @@ export default function QuoteModal({ bookingId, booking, initial, onClose, onSav
   };
   const setItemAmount = (key: string, value: number) => setDraft(d => ({ ...d, itemAmounts: { ...d.itemAmounts, [key]: value } }));
   const addOtherLine = () => setDraft(d => ({ ...d, otherLines: [...d.otherLines, emptyOtherLine()] }));
+  const addDiscountLine = (description: string, amount: number) =>
+    setDraft(d => ({ ...d, otherLines: [...d.otherLines, { ...emptyOtherLine(), description, amount }] }));
   const updateOtherLine = (id: string, patch: Partial<QuoteOtherLine>) =>
     setDraft(d => ({ ...d, otherLines: d.otherLines.map(l => l.id === id ? { ...l, ...patch } : l) }));
   const removeOtherLine = (id: string) => setDraft(d => ({ ...d, otherLines: d.otherLines.filter(l => l.id !== id) }));
@@ -328,12 +349,7 @@ export default function QuoteModal({ bookingId, booking, initial, onClose, onSav
                       {active && (
                         <span className="relative flex-shrink-0 w-24">
                           <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500 text-xs">$</span>
-                          <input
-                            className="form-input pl-6 py-1.5 text-sm w-full" inputMode="decimal" placeholder="0"
-                            value={draft.itemAmounts[o.key] || ''}
-                            onClick={e => e.stopPropagation()}
-                            onChange={e => setItemAmount(o.key, Number(e.target.value.replace(/[^0-9.]/g, '')) || 0)}
-                          />
+                          <AmountInput className="form-input pl-6 py-1.5 text-sm w-full" value={draft.itemAmounts[o.key] || 0} onChange={n => setItemAmount(o.key, n)} />
                         </span>
                       )}
                     </label>
@@ -354,12 +370,7 @@ export default function QuoteModal({ bookingId, booking, initial, onClose, onSav
                       {active && (
                         <span className="relative flex-shrink-0 w-24">
                           <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500 text-xs">$</span>
-                          <input
-                            className="form-input pl-6 py-1.5 text-sm w-full" inputMode="decimal" placeholder="0"
-                            value={draft.itemAmounts[o.key] || ''}
-                            onClick={e => e.stopPropagation()}
-                            onChange={e => setItemAmount(o.key, Number(e.target.value.replace(/[^0-9.]/g, '')) || 0)}
-                          />
+                          <AmountInput className="form-input pl-6 py-1.5 text-sm w-full" value={draft.itemAmounts[o.key] || 0} onChange={n => setItemAmount(o.key, n)} />
                         </span>
                       )}
                     </label>
@@ -380,11 +391,7 @@ export default function QuoteModal({ bookingId, booking, initial, onClose, onSav
                     />
                     <span className="relative flex-shrink-0 w-24">
                       <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500 text-xs">$</span>
-                      <input
-                        className="form-input pl-6 py-2 text-sm w-full" inputMode="decimal" placeholder="0"
-                        value={line.amount || ''}
-                        onChange={e => updateOtherLine(line.id, { amount: Number(e.target.value.replace(/[^0-9.]/g, '')) || 0 })}
-                      />
+                      <AmountInput className="form-input pl-6 py-2 text-sm w-full" value={line.amount} onChange={n => updateOtherLine(line.id, { amount: n })} />
                     </span>
                     <button type="button" onClick={() => removeOtherLine(line.id)} className="flex-shrink-0 p-2.5 text-slate-500 hover:text-red-400 cursor-pointer" title="Remove line">
                       <Trash2 className="w-4 h-4" />
@@ -394,6 +401,12 @@ export default function QuoteModal({ bookingId, booking, initial, onClose, onSav
                 <button type="button" onClick={addOtherLine} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-dashed border-white/15 text-slate-300 hover:text-white hover:border-white/30 text-sm font-medium cursor-pointer">
                   <Plus className="w-3.5 h-3.5" /> {draft.otherLines.length ? 'Add another line' : 'Add a line'}
                 </button>
+                {DISCOUNT_PRESETS.map(d => (
+                  <button key={d.label} type="button" onClick={() => addDiscountLine(d.label, d.amount)} className="ml-2 inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-emerald-400/30 text-emerald-300 hover:bg-emerald-400/10 text-sm font-medium cursor-pointer">
+                    <Plus className="w-3.5 h-3.5" /> {d.label} ({money(d.amount)})
+                  </button>
+                ))}
+                <p className="text-slate-500 text-xs">Put a minus in front of an amount (e.g. -50) to take it off the total.</p>
               </div>
             </div>
 

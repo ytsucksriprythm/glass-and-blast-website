@@ -228,8 +228,22 @@ export function cardTotal(total: number, surchargePercent: number = SQUARE_SURCH
 
 export function money(n: number): string {
   const v = Number.isFinite(n) ? n : 0;
-  return `$${v.toLocaleString('en-AU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const s = Math.abs(v).toLocaleString('en-AU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return v < 0 ? `-$${s}` : `$${s}`; // discounts read "-$100.00", not "$-100.00"
 }
+
+// Cleans what's typed into an amount box: digits, one decimal point, and an
+// optional leading minus (negative lines = discounts, e.g. -100 off the total).
+export function cleanAmountInput(raw: string): string {
+  const neg = raw.trim().startsWith('-');
+  const [whole, ...rest] = raw.replace(/[^0-9.]/g, '').split('.');
+  return (neg ? '-' : '') + whole + (rest.length ? '.' + rest.join('') : '');
+}
+
+// One-tap discount lines offered on quotes and invoices.
+export const DISCOUNT_PRESETS: { label: string; amount: number }[] = [
+  { label: 'Meta ads discount', amount: -100 },
+];
 
 export function computeTotals(items: InvoiceLineItem[]): { subtotal: number; total: number } {
   const subtotal = (items || []).reduce((s, i) => s + (Number(i.amount) || 0), 0);
