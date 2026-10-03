@@ -3,6 +3,7 @@ import './globals.css';
 import { Toaster } from 'react-hot-toast';
 import { REVIEWS } from '@/lib/reviews';
 import PageTracker from '@/components/PageTracker';
+import MetaPixel from '@/components/MetaPixel';
 
 const SITE_URL = process.env.NEXT_PUBLIC_URL || 'https://glassandblast.com.au';
 
@@ -91,6 +92,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       </head>
       <body>
         <PageTracker />
+        <MetaPixel />
         {children}
         <Toaster
           position="top-right"
