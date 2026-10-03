@@ -1,0 +1,35 @@
+# Pulls new Facebook/Instagram lead-ad rows from the Google Sheet into
+# bookings around the clock, whether or not anyone has the admin open.
+# Vercel Hobby only allows a once-a-day cron (see vercel.json), so this
+# pings the same route every 5 minutes instead (GitHub's shortest interval;
+# runs can lag a few minutes at busy times).
+#
+# Needs one repo secret: CRON_SECRET (same value as the Vercel env var).
+# GitHub repo → Settings → Secrets and variables → Actions → New repository secret.
+name: Facebook lead sync
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch: {} # "Run workflow" button in the Actions tab, for testing
+
+concurrency:
+  group: meta-leads-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Ping sync route
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$CRON_SECRET" ]; then
+            echo "::error::CRON_SECRET repo secret is not set"
+            exit 1
+          fi
+          curl -sS --fail-with-body --max-time 90 \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            https://glassandblast.com.au/api/cron/meta-leads-sheet
