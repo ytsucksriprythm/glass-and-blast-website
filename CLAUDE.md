@@ -9,13 +9,14 @@ Next.js 16 website + admin PWA for Glass & Blast (North Canberra window + pressu
 
 ---
 
-## Current State (as of commit c4abf5a)
+## Current State (as of commit 49e414e)
 
 ### Public Site (Light Theme)
 - **Hero:** dark video background, light text, logo, nav, CTA buttons
 - **Sections:** hero → services (3 cards: window, pressure, solar) → booking form → areas (ACT coverage) → work gallery (3 shots) → reviews → footer
 - **Services:** named "Spot-Free Finish" (squeegee+mop, NO water-fed pole; solar with pure water)
 - **Booking form:** name/phone/email/suburb/address/preferred date+time/notes; creates records in Neon or JSON
+- **Address field:** OpenStreetMap/Nominatim autocomplete. OSM has no house numbers for most Canberra streets, so picking a suggestion keeps the number the customer typed (`leadingStreetNumber()` in `page.tsx`). On submit, missing number/street/suburb → "address looks incomplete" popup with **Add full address** / **Send anyway**; sending anyway appends `[Address incomplete: …]` to the booking notes
 - **Areas:** "whole of ACT, travel fee case-by-case"
 - **Work gallery:** 3 shots (pole-window O'Connor, squeegee Ainslie, **solar-3.png → work-solar-2.jpg** landscape crop Ainslie)
 - **Reviews:** 5 real testimonials, Lincoln Larson mentioned only in one review (NOT in business copy)
@@ -24,8 +25,10 @@ Next.js 16 website + admin PWA for Glass & Blast (North Canberra window + pressu
 
 ### Admin (Dark Navy Theme, PWA-Installable)
 - **Auth:** 60-day session cookie + iCloud Keychain autofill (no WebAuthn; password = `glass26` in .env.local)
-- **Dashboard:** overview (stats, monthly chart, service pie), bookings table (mobile cards / desktop grid), business stats (conversion, avg quote, revenue by month, top suburbs), site stats (views last 14d, top pages, referrers)
-- **Upcoming jobs:** read-only Google Calendar feed (secret iCal URL in .env.local) — jobs hide once slot ends OR matched booking marked completed
+- **Dashboard:** overview (Total Leads, Quoted, Revenue total + this month (by `paidAt`), Owed; status counts; Upcoming jobs + Upcoming quotes cards; owed list + recurring/invoices shortcuts; Leads by Month chart), bookings table (mobile cards / desktop grid), business stats (conversion, avg quote, revenue by month, top suburbs), site stats (views last 14d, top pages, referrers)
+- **Upcoming jobs / quotes:** bookings with a future `scheduledAt`; status uncontacted/contacted/quote-booked = quote visit, anything else = job (same split as the calendar page)
+- **Bookings tab refresh:** silent background check every 60s (and on returning to the app) — runs the FB lead sync, re-fetches the list, and only swaps it in when a new booking id appears (no skeleton, scroll kept). Skips while the page is hidden
+- **Quotes & invoices:** amounts accept a leading minus for discount lines (`cleanAmountInput()` in `src/lib/invoice.ts`); `DISCOUNT_PRESETS` adds one-tap lines (currently "Meta ads discount" -$100). `money()` formats negatives as `-$100.00`
 - **Bookings:** list + inline status/paid/quote edit; detail page `/admin/bookings/[id]` with edit mode; shows matched Google Calendar slot (date+time) if found; completedAt field (auto-stamped on completed, editable as YYYY-MM-DD)
 - **Add-to-calendar:** pre-filled Google Calendar template (title = "address - name", no dates)
 - **Mobile:** bottom nav tabs, safe-area padding, skeleton loaders, no white bar at top (`:has()` scope keeps admin dark)
@@ -39,7 +42,7 @@ interface Booking {
   propertyType: residential|commercial;
   preferredDate, preferredTime: string;
   notes: string;  // customer-facing
-  status: pending|quoted|confirmed|completed|cancelled;
+  status: uncontacted|contacted|quote-booked|quoted|confirmed|completed|cancelled|cold;
   quoteAmount: number | null;
   adminNotes: string;  // private
   paid: boolean;
@@ -52,7 +55,7 @@ interface Booking {
 
 ### Meta (Facebook/Instagram) Lead Ads → Bookings
 Instant/Quick Form leads never touch the website (no page visit, so UTM attribution can't catch them). Rather than a direct Meta Graph API webhook (needs a Facebook Developer App + App Review), leads flow through Meta's built-in **Lead Ads → Google Sheets** CRM connector (Ads Manager → Instant Forms → Connect CRM → Google Sheets) — no Meta App Review needed at all, at the cost of polling instead of instant delivery.
-- **Flow:** customer submits a Lead Ad form → Meta appends a row to the connected Google Sheet → `/api/cron/meta-leads-sheet` (Vercel Cron, see `vercel.json`) reads every tab in the sheet via a Google service account → any row not already imported becomes a `Booking` (`source: 'facebook-lead-ad'`, `status: 'pending'`)
+- **Flow:** customer submits a Lead Ad form → Meta appends a row to the connected Google Sheet → `/api/cron/meta-leads-sheet` (Vercel Cron, see `vercel.json`) reads every tab in the sheet via a Google service account → any row not already imported becomes a `Booking` (`source: 'facebook-lead-ad'`, `status: 'uncontacted'`)
 - **Multiple forms:** Meta writes one tab per connected lead form (trialing several forms = several tabs). Tabs are discovered live via `listSheetTabs()` — no config needed when a new form/tab is added
 - **Auth to Google:** `src/lib/googleSheets.ts` — hand-rolled service-account JWT → OAuth token exchange → Sheets API v4 read/write, no `googleapis` dependency. **The Sheet must be shared with the service account as Editor** (not just Viewer) — the status write-back below needs write access
 - **Field mapping:** `src/lib/metaLeads.ts` matches each tab's header row by normalized (alphanumeric-only) name (`full_name`/`name`, `email`, `phone_number`/`phone`, `address`/`street_address`/a combined column like `property_address_/_suburb`, `city`/`suburb`, `id`) plus a service keyword match (window/pressure/solar/flyscreen); anything unmatched (custom form questions) is preserved verbatim in `notes` so nothing is lost
@@ -61,7 +64,7 @@ Instant/Quick Form leads never touch the website (no page visit, so UTM attribut
 - **Notifications:** owner email/push fire as normal; the customer "Booking Confirmed" email is skipped for this source (a lead isn't a confirmed date/time yet)
 - **Admin UI:** blue "FB Lead" badge (bookings list, manage modal), "Facebook lead ad" (detail page, Business Stats → Leads by Source), manual "Sync now" button in Settings → Facebook lead sync
 - **Schedule:** 24/7 via GitHub Actions (`.github/workflows/meta-leads-sync.yml`) — pings the route every 5 min with `Authorization: Bearer $CRON_SECRET`; needs `CRON_SECRET` set as a GitHub repo Actions secret (same value as Vercel). Vercel Cron also runs it once/day as a backstop (`vercel.json`, `0 22 * * *`, Hobby plan limit). The admin Bookings tab additionally checks every 60s while open
-- **Required env vars (not yet set anywhere):** `GOOGLE_SERVICE_ACCOUNT_JSON` (full service-account key JSON, one line), `META_LEADS_SHEET_ID`, optionally `META_LEADS_SHEET_RANGE` (default `A:Z`, applied to every tab) — `CRON_SECRET` already exists (shared with `/api/cron/recurring`). See Next Steps for the Meta/Google-side setup this needs before it goes live
+- **Env vars (set in .env.local and Vercel Production):** `GOOGLE_SERVICE_ACCOUNT_JSON` (full service-account key JSON, one line), `META_LEADS_SHEET_ID`, `CRON_SECRET` (shared with `/api/cron/recurring`); optional `META_LEADS_SHEET_RANGE` (default `A:Z`, applied to every tab). Live and importing leads. Local dev reads the same sheet, so running the admin locally can import real leads (and fire owner notifications)
 
 ### Calendar (Google Calendar iCal Feed)
 - **Flow:** Secret iCal URL → fetched server-side via `/api/admin/calendar` → parsed by `src/lib/calendar.ts`
@@ -121,7 +124,7 @@ CRON_SECRET=... (shared by all Vercel Cron routes — recurring jobs + Meta lead
 GOOGLE_SERVICE_ACCOUNT_JSON=... (full service-account key JSON, one line — Meta leads sheet sync)
 META_LEADS_SHEET_ID=... (from the Google Sheet's URL — Meta leads sheet sync)
 ```
-**MISSING on Vercel Production:** `GOOGLE_CALENDAR_ICS_URL` — calendar feed won't load live until added to Vercel env vars. `GOOGLE_SERVICE_ACCOUNT_JSON` / `META_LEADS_SHEET_ID` aren't set up anywhere yet — see Next Steps.
+All of the above are set on Vercel Production (checked 2026-10-03). **Also needed:** `CRON_SECRET` as a GitHub repo Actions secret for `.github/workflows/meta-leads-sync.yml` — not confirmed set yet.
 
 ---
 
@@ -170,19 +173,13 @@ Cropped gray UI bars (phone UI):
 - Vercel: 26 routes, build clean
 - Postgres pooled vs unpooled: prefer unpooled (`DATABASE_URL_UNPOOLED`)
 - No secrets committed; `.env.local`, `TRANSFER.md`, `/data`, `"photo and video recources"` all gitignored
-- Last commit: `c4abf5a` (calendar filtering, booking completion tracking, mobile UX fixes)
+- Last commit: `49e414e` (address fix, dashboard rework, background refresh, quote/invoice discounts, GitHub Actions lead sync)
 
 ---
 
 ## Next Steps
-1. Add `GOOGLE_CALENDAR_ICS_URL` to Vercel Production environment variables
+1. Add `CRON_SECRET` as a GitHub repo Actions secret (Settings → Secrets and variables → Actions), then Actions → **Facebook lead sync** → **Run workflow** to confirm a green run
 2. Monitor calendar feed latency (should update within 60s of Google Calendar change)
 3. Test booking-to-calendar matching on live data (event titles must contain name or address)
 4. Consider: automated SMS/email on booking state changes (optional future)
-5. **Meta Lead Ads → Google Sheets → Bookings — code is done, needs setup on the Meta/Google side:**
-   - In Ads Manager: Instant Forms → your lead form → **Connect CRM** → **Google Sheets**, authorize, let it create the destination sheet. Naming form questions "Street Address"/"City" (not just "Address") gets them auto-mapped into the booking's address/suburb fields
-   - In Google Cloud Console: new project (or reuse one) → enable the **Google Sheets API** → create a **Service Account** → generate a JSON key
-   - Copy the **service account's email** and share the Sheet with it as **Editor** (Sheet → Share) — Viewer isn't enough, the status write-back needs write access
-   - Set `GOOGLE_SERVICE_ACCOUNT_JSON` (the full key JSON, as one line) and `META_LEADS_SHEET_ID` (from the Sheet's URL) in `.env.local` and Vercel Production env vars — `CRON_SECRET` should already be set (shared with the recurring-jobs cron)
-   - Send a test lead (Ads Manager → Lead form library → Preview → test submission), confirm the row lands in the Sheet, then hit Settings → Facebook lead sync → **Sync now** in `/admin/settings` and confirm a booking with the blue "FB Lead" badge appears in `/admin/dashboard`
-   - Once confirmed working, decide on cadence: leave the once/day Vercel Cron (`vercel.json`), or point a free external scheduler (cron-job.org) at `/api/cron/meta-leads-sheet?secret=$CRON_SECRET` every few minutes for faster pickup
+5. Naming Meta lead-form questions "Street Address"/"City" (not just "Address") gets them auto-mapped into the booking's address/suburb fields
