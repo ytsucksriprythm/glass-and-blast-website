@@ -7,7 +7,7 @@ import Link from 'next/link';
 import toast from 'react-hot-toast';
 import {
   Phone, MapPin, Star, Award, Check, CheckCircle, Clock, Shield,
-  Menu, X, Facebook, Lock, Search, Calendar, MoveHorizontal,
+  Menu, X, Facebook, Lock, Search, Calendar, MoveHorizontal, AlertTriangle,
 } from 'lucide-react';
 import Reviews from '@/components/Reviews';
 import { sendBeaconOrFetch } from '@/lib/beacon';
@@ -711,6 +711,12 @@ function Areas() {
 
 // ─── Address autocomplete (free, OpenStreetMap / Nominatim) ──────────────────
 
+// "12", "12A", "3/12", "Unit 3 12", "U3/12" at the start of the street field.
+function leadingStreetNumber(s: string): string {
+  const m = s.trim().match(/^((?:unit|u|apt|flat)\s*\d+[a-z]?\s*[/,]?\s*)?\d+[a-z]?(?:\s*[-/]\s*\d+[a-z]?)?\b/i);
+  return m ? m[0].trim() : '';
+}
+
 /* eslint-disable @typescript-eslint/no-explicit-any */
 function AddressAutocomplete({
   street, onStreet, onSuburb, onFocus,
@@ -741,9 +747,13 @@ function AddressAutocomplete({
 
   const pick = (r: any) => {
     const a = r.address || {};
+    // OSM has no house numbers for most Canberra streets, so a picked result is
+    // usually just the road. Keep whatever number (unit/house) the customer typed
+    // instead of wiping it, otherwise they can never get a number to stick.
+    const typedNumber = leadingStreetNumber(street);
+    const number = a.house_number || typedNumber;
     const streetVal =
-      [a.house_number, a.road].filter(Boolean).join(' ') ||
-      a.road ||
+      [number, a.road].filter(Boolean).join(' ') ||
       String(r.display_name || '').split(',')[0];
     const suburbVal = a.suburb || a.city || a.town || a.village || a.municipality || a.county || '';
     onStreet(streetVal);
@@ -756,8 +766,9 @@ function AddressAutocomplete({
     <div className="relative">
       <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none z-10" />
       <input
+        id="book-address"
         className="form-input pl-11"
-        placeholder="Start typing your address"
+        placeholder="e.g. 12 Limestone Ave"
         value={street}
         autoComplete="off"
         onChange={e => { onStreet(e.target.value); query(e.target.value); }}
@@ -777,7 +788,7 @@ function AddressAutocomplete({
                 className="w-full text-left px-4 py-2.5 text-sm text-slate-700 hover:bg-sky-50 hover:text-slate-900 transition-colors cursor-pointer flex items-start gap-2 border-b border-slate-100 last:border-0"
               >
                 <MapPin className="w-3.5 h-3.5 text-sky-500 mt-0.5 flex-shrink-0" />
-                <span>{r.display_name}</span>
+                <span>{!r.address?.house_number && leadingStreetNumber(street) ? `${leadingStreetNumber(street)} ` : ''}{r.display_name}</span>
               </button>
             </li>
           ))}
@@ -849,12 +860,64 @@ function Book() {
 
   const canSubmit = form.name && form.phone && form.service && form.address;
 
-  const submit = async () => {
+  // Incomplete-address check: what's missing from the address, shown in a popup
+  // before sending. Customer can still send it as-is (some don't want to hand
+  // over the full address up front) — we flag it in the notes so it's obvious
+  // the address needs chasing before quoting.
+  const [addressIssues, setAddressIssues] = useState<string[] | null>(null);
+
+  const findAddressIssues = async (): Promise<string[]> => {
+    const issues: string[] = [];
+    const street = form.address.trim();
+    const number = leadingStreetNumber(street);
+    const streetName = street.slice(number.length).replace(/^[\s,/]+/, '');
+    if (!number) issues.push('No house or unit number');
+    if (!/[a-z]{3,}/i.test(streetName)) issues.push('No street name');
+
+    let suburb = form.suburb.trim();
+    if (!suburb && streetName) {
+      // They typed it without picking a suggestion — look it up to find the suburb.
+      try {
+        const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&limit=1&countrycodes=au&viewbox=148.76,-35.12,149.40,-35.92&bounded=1&q=${encodeURIComponent(street)}`;
+        const res = await fetch(url, { headers: { Accept: 'application/json' } });
+        const data = await res.json();
+        const a = Array.isArray(data) && data[0]?.address;
+        if (a) {
+          suburb = a.suburb || a.city || a.town || a.village || '';
+          if (suburb) set('suburb', suburb);
+        } else {
+          issues.push("We couldn't find that street in the ACT");
+        }
+      } catch { /* lookup failing shouldn't block the booking */ }
+    }
+    if (!suburb && !issues.some(i => i.startsWith("We couldn't"))) issues.push('No suburb');
+    return issues;
+  };
+
+  const trySubmit = async () => {
+    setLoading(true);
+    const issues = await findAddressIssues();
+    setLoading(false);
+    if (issues.length) { setAddressIssues(issues); return; }
+    submit();
+  };
+
+  const fixAddress = () => {
+    setAddressIssues(null);
+    const el = document.getElementById('book-address') as HTMLInputElement | null;
+    el?.focus();
+    el?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  };
+
+  const submit = async (incomplete?: string[]) => {
+    setAddressIssues(null);
     setLoading(true);
     try {
+      const flag = incomplete?.length ? `[Address incomplete: ${incomplete.join(', ').toLowerCase()} — ask customer for full address before quoting]` : '';
+      const notes = [form.notes.trim(), flag].filter(Boolean).join('\n');
       const res = await fetch('/api/bookings', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...form, attribution: readFirstTouchAttribution() }),
+        body: JSON.stringify({ ...form, notes, attribution: readFirstTouchAttribution() }),
       });
       if (!res.ok) throw new Error('Failed');
       window.fbq?.('track', 'Lead');
@@ -985,7 +1048,7 @@ function Book() {
               <div>
                 <label className="block text-slate-600 text-sm font-medium mb-2">Street address *</label>
                 <AddressAutocomplete street={form.address} onStreet={v => set('address', v)} onSuburb={v => set('suburb', v)} onFocus={() => touchFunnel('address')} />
-                <p className="text-slate-500 text-xs mt-1.5">Start typing and pick your address, the suburb fills itself in.</p>
+                <p className="text-slate-500 text-xs mt-1.5">Include your house number, then pick your street from the list and the suburb fills itself in.</p>
               </div>
 
               {/* Optional extras, collapsed by default */}
@@ -1016,7 +1079,7 @@ function Book() {
                 </div>
               )}
 
-              <button disabled={!canSubmit || loading} onClick={submit} className="w-full py-4 bg-sky-500 hover:bg-sky-600 disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold text-base rounded-full transition-colors cursor-pointer flex items-center justify-center gap-2">
+              <button disabled={!canSubmit || loading} onClick={trySubmit} className="w-full py-4 bg-sky-500 hover:bg-sky-600 disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold text-base rounded-full transition-colors cursor-pointer flex items-center justify-center gap-2">
                 {loading ? (<><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Sending</>) : 'Get my free quote'}
               </button>
 
@@ -1027,6 +1090,46 @@ function Book() {
           )}
         </div>
       </div>
+
+      <AnimatePresence>
+        {addressIssues && (
+          <motion.div
+            className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center bg-slate-900/50 p-4"
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            onClick={() => setAddressIssues(null)}
+          >
+            <motion.div
+              role="dialog" aria-modal="true" aria-labelledby="addr-incomplete-title"
+              className="w-full max-w-md rounded-xl bg-white shadow-xl p-6 pb-[max(1.5rem,env(safe-area-inset-bottom))]"
+              initial={{ y: 24, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 24, opacity: 0 }}
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="flex items-start gap-3">
+                <span className="w-10 h-10 rounded-full bg-amber-50 flex items-center justify-center flex-shrink-0">
+                  <AlertTriangle className="w-5 h-5 text-amber-500" />
+                </span>
+                <div>
+                  <h3 id="addr-incomplete-title" className="font-display text-lg font-bold text-slate-900">Your address looks incomplete</h3>
+                  <ul className="mt-2 space-y-1 text-sm text-slate-600 list-disc pl-4">
+                    {addressIssues.map(i => <li key={i}>{i}</li>)}
+                  </ul>
+                  <p className="mt-3 text-sm text-slate-600">
+                    You can still send it as is. We just might need you to send us the full address before we can give you an exact quote.
+                  </p>
+                </div>
+              </div>
+              <div className="mt-6 flex flex-col-reverse sm:flex-row gap-2">
+                <button onClick={() => submit(addressIssues)} className="flex-1 py-3 border border-slate-300 hover:bg-slate-50 text-slate-700 font-semibold text-sm rounded-full transition-colors cursor-pointer">
+                  Send anyway
+                </button>
+                <button onClick={fixAddress} className="flex-1 py-3 bg-sky-500 hover:bg-sky-600 text-white font-semibold text-sm rounded-full transition-colors cursor-pointer">
+                  Add full address
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </section>
   );
 }
