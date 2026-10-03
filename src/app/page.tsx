@@ -857,6 +857,7 @@ function Book() {
         body: JSON.stringify({ ...form, attribution: readFirstTouchAttribution() }),
       });
       if (!res.ok) throw new Error('Failed');
+      window.fbq?.('track', 'Lead');
       setSubmitted(true);
       funnelSentRef.current = true; // submitted beats "left without submitting" — don't also flush that
       sendBeaconOrFetch('/api/track/form', JSON.stringify({ step: 'submitted', submitted: true }));
