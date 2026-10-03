@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
-  PieChart, Pie, Cell, CartesianGrid, LineChart, Line,
+  CartesianGrid, LineChart, Line,
 } from 'recharts';
 import {
   Calendar, LogOut, TrendingUp,
@@ -32,7 +32,7 @@ interface Stats {
   total: number; thisMonth: number; lastMonth: number;
   uncontacted: number; contacted: number; 'quote-booked': number; quoted: number; confirmed: number; completed: number; cancelled: number; cold: number;
   quotedCount: number; quotedValue: number;
-  paidValue: number; owedValue: number; owedCount: number;
+  paidValue: number; paidThisMonthValue?: number; owedValue: number; owedCount: number;
   wonValue: number; estimatedRevenue: number;
   byMonth: { month: string; count: number }[];
   serviceBreakdown: { name: string; value: number }[];
@@ -296,22 +296,38 @@ function SourceRow({ label, value, total, color }: { label: string; value: numbe
 
 // ─── Upcoming jobs (internal calendar — bookings with a scheduled slot) ──────
 
+// Pre-quote statuses: a scheduled slot on these is a quote visit, not the clean
+// itself (same split the calendar page uses for Quote visit vs Job).
+const QUOTE_VISIT_STATUSES: BookingStatus[] = ['uncontacted', 'contacted', 'quote-booked'];
+
 function UpcomingJobs({ bookings }: { bookings: Booking[] }) {
   const now = Date.now();
-  const upcoming = bookings
+  const scheduled = bookings
     .filter(b => b.scheduledAt && new Date(b.scheduledAt).getTime() >= now && b.status !== 'completed' && b.status !== 'cancelled')
-    .sort((a, b) => (a.scheduledAt ?? '').localeCompare(b.scheduledAt ?? ''))
-    .slice(0, 8);
+    .sort((a, b) => (a.scheduledAt ?? '').localeCompare(b.scheduledAt ?? ''));
+  const quotes = scheduled.filter(b => QUOTE_VISIT_STATUSES.includes(b.status)).slice(0, 8);
+  const jobs = scheduled.filter(b => !QUOTE_VISIT_STATUSES.includes(b.status)).slice(0, 8);
+  return (
+    <div className="grid lg:grid-cols-2 gap-4">
+      <UpcomingList title="Upcoming jobs" icon={CalendarDays} accent="text-sky-400" items={jobs} empty="No jobs scheduled. Confirm a booking to add it to the calendar." />
+      <UpcomingList title="Upcoming quotes" icon={CalendarClock} accent="text-orange-400" items={quotes} empty="No quote visits booked." />
+    </div>
+  );
+}
+
+function UpcomingList({ title, icon: Icon, accent, items: upcoming, empty }: {
+  title: string; icon: React.ElementType; accent: string; items: Booking[]; empty: string;
+}) {
   return (
     <div className="glass rounded-2xl border border-white/8 p-5 sm:p-6">
       <div className="flex items-center justify-between mb-4">
         <h3 className="font-display font-semibold text-white flex items-center gap-2">
-          <CalendarDays className="w-4 h-4 text-sky-400" /> Upcoming jobs
+          <Icon className={`w-4 h-4 ${accent}`} /> {title}
         </h3>
         <Link href="/admin/calendar" className="text-sky-400 hover:text-sky-300 text-xs font-semibold inline-flex items-center gap-1">Calendar <ArrowRight className="w-3.5 h-3.5" /></Link>
       </div>
       {upcoming.length === 0 ? (
-        <p className="text-slate-500 text-sm">No jobs scheduled yet. Confirm a booking to add it to the calendar.</p>
+        <p className="text-slate-500 text-sm">{empty}</p>
       ) : (
         <ul className="divide-y divide-white/5">
           {upcoming.map(b => {
@@ -319,7 +335,7 @@ function UpcomingJobs({ bookings }: { bookings: Booking[] }) {
             return (
               <li key={b.id} className="flex items-center gap-3 py-2.5">
                 <div className="flex-shrink-0 w-11 text-center">
-                  <div className="text-sky-400 text-[10px] font-semibold uppercase leading-none">{d.toLocaleDateString('en-AU', { weekday: 'short' })}</div>
+                  <div className={`${accent} text-[10px] font-semibold uppercase leading-none`}>{d.toLocaleDateString('en-AU', { weekday: 'short' })}</div>
                   <div className="text-white font-bold text-lg leading-tight">{d.getDate()}</div>
                   <div className="text-slate-500 text-[10px] leading-none">{d.toLocaleDateString('en-AU', { month: 'short' })}</div>
                 </div>
@@ -941,17 +957,6 @@ export default function Dashboard() {
   // First unpaid invoice linked to a booking — that's the one "mark paid" should settle.
   const unpaidInvoiceFor = (bookingId: string) => invoices.find(i => (i.bookingIds ?? []).includes(bookingId) && i.status !== 'paid') ?? null;
 
-  // Switch into a guest's dashboard. No password — the admin session is kept,
-  // so the "Admin" button over there brings you straight back.
-  const viewAsGuest = async (guestId: string) => {
-    const res = await fetch('/api/admin/switch', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ guestId }),
-    });
-    if (res.ok) router.push('/guest');
-    else toast.error('Could not switch');
-  };
-
   // Filters — multi-select checkboxes now, so these are arrays. Empty = "all".
   // 'facebook-lead-ad' is a synthetic status option that actually filters by
   // source, not status — see fetchData/API below.
@@ -1099,11 +1104,43 @@ export default function Dashboard() {
     await fetchData();
   }, [fetchData]);
 
+  // Background check while the Bookings tab is open: quietly pulls in new
+  // Facebook leads and re-fetches the list, but only swaps it in when a booking
+  // that isn't on screen yet has appeared. No loading skeleton, so scroll
+  // position, open menus and selections stay put; nothing changes otherwise.
+  const bookingsRef = useRef<Booking[]>([]);
+  useEffect(() => { bookingsRef.current = bookings; }, [bookings]);
+  const backgroundCheck = useCallback(async () => {
+    if (document.hidden) return;
+    try {
+      const fb = await fetch('/api/cron/meta-leads-sheet');
+      if (fb.ok) {
+        const data = await fb.json();
+        if (data.imported > 0) toast.success(`${data.imported} new Facebook lead${data.imported !== 1 ? 's' : ''} imported`);
+      }
+    } catch { /* best-effort */ }
+    try {
+      const bRes = await fetch(`/api/admin/bookings?status=${statusFilter.join(',') || 'all'}&service=${serviceFilter.join(',') || 'all'}&sort=${sortField}&order=${sortOrder}&search=${encodeURIComponent(search)}`);
+      if (!bRes.ok) return;
+      const fresh: Booking[] = await bRes.json();
+      const known = new Set(bookingsRef.current.map(b => b.id));
+      const added = fresh.filter(b => !known.has(b.id));
+      if (added.length === 0) return;
+      setBookings(fresh);
+      const sRes = await fetch('/api/admin/bookings?type=stats');
+      if (sRes.ok) setStats(await sRes.json());
+      toast.success(added.length === 1 ? `New booking: ${added[0].name}` : `${added.length} new bookings`);
+    } catch { /* try again next tick */ }
+  }, [statusFilter, serviceFilter, sortField, sortOrder, search]);
+
   useEffect(() => {
     if (activeTab !== 'bookings') return;
-    const id = setInterval(() => { syncFacebookLeadsAndRefresh(); }, 60_000);
-    return () => clearInterval(id);
-  }, [activeTab, syncFacebookLeadsAndRefresh]);
+    const id = setInterval(() => { backgroundCheck(); }, 60_000);
+    // Coming back to the app (phone unlocked, tab switched back) — check straight away.
+    const onVisible = () => { if (!document.hidden) backgroundCheck(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => { clearInterval(id); document.removeEventListener('visibilitychange', onVisible); };
+  }, [activeTab, backgroundCheck]);
 
   const fetchBusiness = useCallback(async () => {
     setBizLoading(true);
@@ -1171,11 +1208,6 @@ export default function Dashboard() {
       await Promise.all([fetchData(), loadInvoices()]);
     } catch { toast.error('Could not mark paid'); }
   };
-
-  // Website lead followed up — flips it from "Uncontacted" to "Contacted",
-  // which drops it out of "Leads to call back" (contactedAt auto-stamps
-  // server-side, same pattern as completedAt — see withContactedAt in db.ts).
-  const markContacted = (b: Booking) => saveBooking(b.id, { status: 'contacted' });
 
   const saveBooking = async (id: string, patch: Partial<Booking>) => {
     try {
@@ -1257,9 +1289,6 @@ export default function Dashboard() {
       : <ChevronDown className="w-3 h-3 opacity-30" />
   );
 
-  const monthTrend = stats && stats.lastMonth > 0
-    ? Math.round(((stats.thisMonth - stats.lastMonth) / stats.lastMonth) * 100)
-    : undefined;
 
   const navItems = adminNavItems({ onTab: setActiveTab, pending: stats?.uncontacted ?? 0 });
 
@@ -1426,10 +1455,10 @@ export default function Dashboard() {
                   </div>
                 ) : stats && (
                   <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
-                    <StatCard label="Total Bookings" value={stats.total} icon={Calendar} color="#38BDF8" sub="All time" />
-                    <StatCard label="This Month" value={stats.thisMonth} icon={TrendingUp} color="#818CF8" trend={monthTrend} sub={`vs ${stats.lastMonth} last month`} />
+                    <StatCard label="Total Leads" value={stats.total} icon={Calendar} color="#38BDF8" sub="All time" />
                     <StatCard label="Quoted" value={money(stats.quotedValue) || '$0'} icon={DollarSign} color="#A78BFA" sub={`${stats.quotedCount} quote${stats.quotedCount !== 1 ? 's' : ''} out`} />
-                    <StatCard label="Revenue (paid)" value={money(stats.paidValue) || '$0'} icon={CheckCircle} color="#34D399" sub="Money collected" />
+                    <StatCard label="Revenue (total)" value={money(stats.paidValue) || '$0'} icon={CheckCircle} color="#34D399" sub="All money collected" />
+                    <StatCard label="Revenue (this month)" value={money(stats.paidThisMonthValue ?? 0) || '$0'} icon={TrendingUp} color="#818CF8" sub={new Date().toLocaleDateString('en-AU', { month: 'long' })} />
                     <StatCard label="Owed" value={money(stats.owedValue) || '$0'} icon={Wallet} color="#F87171" sub={`${stats.owedCount} job${stats.owedCount !== 1 ? 's' : ''} unpaid`} />
                   </div>
                 )}
@@ -1453,50 +1482,12 @@ export default function Dashboard() {
 
                 <UpcomingJobs bookings={bookings} />
 
-                {/* Action needed: fresh leads to call + money owed — the two lists that make you money */}
+                {/* Money owed + shortcuts */}
                 {!loading && (() => {
-                  const leads = bookings.filter(b => b.status === 'uncontacted').sort((a, b) => a.createdAt.localeCompare(b.createdAt)).slice(0, 5);
                   const owed = bookings.filter(b => b.status === 'completed' && !b.paid && typeof b.quoteAmount === 'number' && (b.quoteAmount ?? 0) > 0).slice(0, 5);
                   const dueSoonCount = recurring.filter(j => j.active && j.nextDate <= new Date(Date.now() + 14 * 86400000).toISOString().slice(0, 10)).length;
-                  const ageDays = (iso: string) => Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
-                  if (leads.length === 0 && owed.length === 0 && recurring.length === 0) return null;
                   return (
                     <div className="grid lg:grid-cols-2 gap-4">
-                      {leads.length > 0 && (
-                        <div className="glass rounded-2xl border border-amber-400/20 p-5">
-                          <h3 className="font-display font-semibold text-white text-sm mb-3 flex items-center gap-2">
-                            <PhoneCall className="w-4 h-4 text-amber-400" /> Leads to call back
-                            <span className="ml-auto text-amber-400 text-xs font-bold">{leads.length}</span>
-                          </h3>
-                          <ul className="divide-y divide-white/5">
-                            {leads.map(b => (
-                              <li key={b.id} className="py-2">
-                                <div className="flex items-center gap-3">
-                                  <button onClick={() => openBooking(b.id)} className="min-w-0 flex-1 text-left cursor-pointer">
-                                    <div className="text-white text-sm font-medium truncate">{b.name}</div>
-                                    <div className="text-slate-500 text-xs truncate">{serviceText(b.service)}{b.suburb ? ` · ${b.suburb}` : ''}</div>
-                                  </button>
-                                  <span className={`flex-shrink-0 text-xs ${ageDays(b.createdAt) >= 2 ? 'text-amber-400 font-semibold' : 'text-slate-500'}`}>
-                                    {ageDays(b.createdAt) === 0 ? 'today' : `${ageDays(b.createdAt)}d`}
-                                  </span>
-                                  {b.phone && (
-                                    <a href={`tel:${b.phone}`} aria-label={`Call ${b.name}`} className="flex-shrink-0 w-9 h-9 rounded-lg bg-sky-400/10 text-sky-400 hover:bg-sky-400/20 flex items-center justify-center cursor-pointer">
-                                      <PhoneCall className="w-4 h-4" />
-                                    </a>
-                                  )}
-                                </div>
-                                {/* Only website leads need this — manual adds were already "contacted" by definition */}
-                                {b.source === 'website' && (
-                                  <button onClick={() => markContacted(b)} className="mt-2 w-full inline-flex items-center justify-center gap-1.5 py-2 rounded-lg border border-emerald-400/30 bg-emerald-400/10 text-emerald-300 hover:bg-emerald-400/15 text-xs font-semibold cursor-pointer">
-                                    <PhoneCall className="w-3.5 h-3.5" /> Mark as Contacted
-                                  </button>
-                                )}
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
-                      <div className="space-y-4">
                         {owed.length > 0 && (
                           <div className="glass rounded-2xl border border-red-400/20 p-5">
                             <h3 className="font-display font-semibold text-white text-sm mb-3 flex items-center gap-2">
@@ -1529,6 +1520,7 @@ export default function Dashboard() {
                             </ul>
                           </div>
                         )}
+                      <div className={owed.length > 0 ? "space-y-4" : "lg:col-span-2 grid sm:grid-cols-2 gap-4"}>
                         <Link href="/admin/recurring" className="glass rounded-2xl border border-white/8 p-5 flex items-center gap-3 hover:border-sky-400/30 transition-colors cursor-pointer">
                           <span className="w-10 h-10 rounded-xl bg-sky-400/10 flex items-center justify-center flex-shrink-0">
                             <Repeat className="w-5 h-5 text-sky-400" />
@@ -1551,81 +1543,24 @@ export default function Dashboard() {
                           </span>
                           <ArrowRight className="w-4 h-4 text-slate-500 flex-shrink-0" />
                         </Link>
-
-                        {/* Guest logins + view-as selector */}
-                        <div className="glass rounded-2xl border border-white/8 p-5">
-                          <div className="flex items-center gap-3">
-                            <span className="w-10 h-10 rounded-xl bg-sky-400/10 flex items-center justify-center flex-shrink-0">
-                              <Users className="w-5 h-5 text-sky-400" />
-                            </span>
-                            <span className="min-w-0 flex-1">
-                              <span className="block text-white text-sm font-semibold">Guest logins</span>
-                              <span className="block text-slate-500 text-xs mt-0.5">
-                                {guests.filter(g => g.active).length} active
-                              </span>
-                            </span>
-                            <Link href="/admin/settings" className="flex-shrink-0 text-xs text-sky-400 hover:text-sky-300 cursor-pointer">Manage</Link>
-                          </div>
-                          {guests.filter(g => g.active).length > 0 && (
-                            <div className="mt-3 pt-3 border-t border-white/5">
-                              <div className="text-slate-500 text-[11px] mb-2">View dashboard as</div>
-                              <div className="flex flex-wrap gap-2">
-                                {guests.filter(g => g.active).map(g => (
-                                  <button key={g.id} onClick={() => viewAsGuest(g.id)} className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-white/10 text-slate-300 hover:text-white hover:border-sky-400/40 text-xs font-semibold cursor-pointer">
-                                    <Eye className="w-3.5 h-3.5" /> {g.name}
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-                          )}
-                        </div>
                       </div>
                     </div>
                   );
                 })()}
 
                 {stats && (
-                  <div className="grid lg:grid-cols-3 gap-6">
-                    <div className="lg:col-span-2 glass rounded-2xl border border-white/8 p-6">
-                      <h3 className="font-display font-semibold text-white mb-6">Bookings by Month</h3>
+                  <div className="glass rounded-2xl border border-white/8 p-6">
+                    <div>
+                      <h3 className="font-display font-semibold text-white mb-6">Leads by Month</h3>
                       <ResponsiveContainer width="100%" height={220}>
                         <BarChart data={stats.byMonth} margin={{ top: 0, right: 0, left: -20, bottom: 0 }}>
                           <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
                           <XAxis dataKey="month" tick={{ fill: '#64748b', fontSize: 12 }} axisLine={false} tickLine={false} />
                           <YAxis tick={{ fill: '#64748b', fontSize: 12 }} axisLine={false} tickLine={false} allowDecimals={false} />
                           <Tooltip contentStyle={{ background: '#0F2035', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 12, color: '#fff' }} cursor={{ fill: 'rgba(56,189,248,0.05)' }} />
-                          <Bar dataKey="count" name="Bookings" fill="#38BDF8" radius={[6, 6, 0, 0]} maxBarSize={40} />
+                          <Bar dataKey="count" name="Leads" fill="#38BDF8" radius={[6, 6, 0, 0]} maxBarSize={40} />
                         </BarChart>
                       </ResponsiveContainer>
-                    </div>
-
-                    <div className="glass rounded-2xl border border-white/8 p-6">
-                      <h3 className="font-display font-semibold text-white mb-6">Services</h3>
-                      {stats.serviceBreakdown.every(s => s.value === 0) ? (
-                        <div className="h-[220px] flex items-center justify-center text-slate-600 text-sm">No data yet</div>
-                      ) : (
-                        <>
-                          <ResponsiveContainer width="100%" height={180}>
-                            <PieChart>
-                              <Pie data={stats.serviceBreakdown} cx="50%" cy="50%" innerRadius={50} outerRadius={80} paddingAngle={4} dataKey="value">
-                                {stats.serviceBreakdown.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
-                              </Pie>
-                              <Tooltip contentStyle={{ background: '#0F2035', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 12, color: '#fff' }} />
-                            </PieChart>
-                          </ResponsiveContainer>
-                          <div className="space-y-2 mt-2">
-                            {stats.serviceBreakdown.map((s, i) => (
-                              <div key={s.name} className="flex items-center justify-between text-xs">
-                                <div className="flex items-center gap-2">
-                                  <div className="w-2.5 h-2.5 rounded-full" style={{ background: PIE_COLORS[i % PIE_COLORS.length] }} />
-                                  <span className="text-slate-400">{s.name}</span>
-                                </div>
-                                <span className="text-white font-semibold">{s.value}</span>
-                              </div>
-                            ))}
-                          </div>
-                        </>
-                      )}
                     </div>
                   </div>
                 )}

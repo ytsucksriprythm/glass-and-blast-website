@@ -1311,6 +1311,17 @@ export async function getStats() {
   const paidValue = bookings
     .filter(b => b.paid && typeof b.quoteAmount === 'number')
     .reduce((sum, b) => sum + (b.quoteAmount ?? 0), 0);
+  // Paid this calendar month — by paidAt, falling back to completedAt for
+  // older records marked paid before paidAt existed.
+  const paidThisMonthValue = bookings
+    .filter(b => {
+      if (!b.paid || typeof b.quoteAmount !== 'number') return false;
+      const when = b.paidAt || b.completedAt;
+      if (!when) return false;
+      const d = new Date(when);
+      return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+    })
+    .reduce((sum, b) => sum + (b.quoteAmount ?? 0), 0);
   // Owed = work that's done but not yet paid (accounts receivable).
   const owedValue = bookings
     .filter(b => !b.paid && b.status === 'completed' && typeof b.quoteAmount === 'number')
@@ -1332,6 +1343,7 @@ export async function getStats() {
     quotedCount: quotedBookings.length,
     quotedValue,
     paidValue,
+    paidThisMonthValue,
     owedValue,
     owedCount,
     wonValue: paidValue,            // revenue won = money collected
