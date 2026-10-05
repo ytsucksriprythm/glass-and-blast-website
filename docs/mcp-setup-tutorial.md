@@ -15,6 +15,14 @@ You'll need:
 
 ---
 
+## Step 0: Unblock deployments (1 min, one-off)
+
+As of 5 Oct 2026, every Vercel build fails with *"The `CRON_SECRET` environment variable contains leading or trailing whitespace"*. Fix it before anything else:
+
+1. In Vercel, go to **Settings → Environment Variables → `CRON_SECRET` → Edit**.
+2. Re-paste the value with **no spaces or line breaks** at either end, and save.
+3. Make sure the GitHub repo secret `CRON_SECRET` (Settings → Secrets and variables → Actions) is the exact same trimmed value.
+
 ## Step 1: Make your secrets (2 min)
 
 1. Open a terminal in the project folder (`C:\claude\window clean`) and run:
