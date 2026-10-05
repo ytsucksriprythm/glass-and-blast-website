@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "mcp": "tsx mcp-server/index.ts"
+    "mcp": "tsx mcp-server/index.ts",
+    "test:mcp": "node --import tsx --test --test-concurrency=1 tests/mcp/*.test.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
@@ -30,6 +31,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
     "@types/node": "^20",
     "@types/nodemailer": "^6.4",
     "@types/react": "^18",
