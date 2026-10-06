@@ -12,6 +12,7 @@ import {
 import type { Booking, BookingStatus, BookingPhoto, PhotoType } from '@/lib/db';
 import type { Invoice } from '@/lib/invoice';
 import { type Quote, money as quoteMoney, buildQuoteText } from '@/lib/quote';
+import { quoteShareMessage, quoteShareClipboardText } from '@/lib/quoteShare';
 import { AddressLink } from '@/components/AddressLink';
 import { FlagButton, FlagModal } from '@/components/admin/JobFlag';
 import QuoteModal from '@/components/QuoteModal';
@@ -304,8 +305,8 @@ export default function BookingView() {
     const url = `${window.location.origin}/quote/${q.token}`;
     const title = `Quote ${q.number} · ${q.fromTradingAs}`;
     const nav = navigator as Navigator & { share?: (d: ShareData) => Promise<void> };
-    if (nav.share) { try { await nav.share({ title, text: title, url }); } catch { /* dismissed */ } }
-    else { try { await navigator.clipboard.writeText(url); toast.success('Link copied'); } catch { toast.error('Copy failed'); } }
+    if (nav.share) { try { await nav.share({ title, text: quoteShareMessage(q), url }); } catch { /* dismissed */ } }
+    else { try { await navigator.clipboard.writeText(quoteShareClipboardText(q, url)); toast.success('Quote link copied'); } catch { toast.error('Copy failed'); } }
   };
   const copyQuote = async (q: Quote) => {
     try { await navigator.clipboard.writeText(buildQuoteText(q)); toast.success('Quote text copied'); }

@@ -11,6 +11,7 @@ import {
   SCOPE_PRESETS, ASSUMPTION_PRESETS, DEFAULT_ASSUMPTION_PRESET_KEYS, buildFromPresets,
   addDays, buildQuoteText, quoteTotal, money, emptyOtherLine,
 } from '@/lib/quote';
+import { quoteShareMessage, quoteShareClipboardText } from '@/lib/quoteShare';
 import { BUSINESS_DEFAULTS, type BusinessProfile, cleanAmountInput, DISCOUNT_PRESETS } from '@/lib/invoice';
 import type { AppSettings } from '@/lib/settings';
 import QuotePreview from './QuotePreview';
@@ -305,10 +306,10 @@ export default function QuoteModal({ bookingId, booking, initial, onClose, onSav
     const title = `Quote ${saved.number} · ${saved.fromTradingAs}`;
     const nav = navigator as Navigator & { share?: (d: ShareData) => Promise<void> };
     if (nav.share) {
-      try { await nav.share({ title, text: title, url }); void markSent(); }
+      try { await nav.share({ title, text: quoteShareMessage(saved), url }); void markSent(); }
       catch { /* user dismissed the share sheet */ }
     } else {
-      try { await navigator.clipboard.writeText(url); toast.success('Link copied'); void markSent(); }
+      try { await navigator.clipboard.writeText(quoteShareClipboardText(saved, url)); toast.success('Quote link copied'); void markSent(); }
       catch { toast.error('Copy failed'); }
     }
   };

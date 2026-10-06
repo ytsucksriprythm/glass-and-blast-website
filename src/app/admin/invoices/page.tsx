@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { type Invoice, type InvoiceStatus, type PaymentMethod, PAYMENT_METHOD_LABEL, isInvoiceOverdue, money, longDate } from '@/lib/invoice';
 import { type Quote, type QuoteStatus, money as quoteMoney, longDate as quoteLongDate, buildQuoteText } from '@/lib/quote';
+import { quoteShareMessage, quoteShareClipboardText } from '@/lib/quoteShare';
 import type { AppSettings } from '@/lib/settings';
 import type { Booking } from '@/lib/db';
 import { ACTIVITY_TYPE_LABEL, type ActivityEntry, type InvoiceViewSession } from '@/lib/activity';
@@ -248,8 +249,8 @@ export default function InvoicesQuotesPage() {
     const url = `${window.location.origin}/quote/${q.token}`;
     const title = `Quote ${q.number} · ${q.fromTradingAs}`;
     const nav = navigator as Navigator & { share?: (d: ShareData) => Promise<void> };
-    if (nav.share) { try { await nav.share({ title, text: title, url }); } catch { /* dismissed */ } }
-    else { try { await navigator.clipboard.writeText(url); toast.success('Link copied'); } catch { toast.error('Copy failed'); } }
+    if (nav.share) { try { await nav.share({ title, text: quoteShareMessage(q), url }); } catch { /* dismissed */ } }
+    else { try { await navigator.clipboard.writeText(quoteShareClipboardText(q, url)); toast.success('Quote link copied'); } catch { toast.error('Copy failed'); } }
   };
   const copyQuote = async (q: Quote) => {
     try { await navigator.clipboard.writeText(buildQuoteText(q)); toast.success('Quote text copied'); }
