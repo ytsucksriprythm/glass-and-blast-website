@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getInvoiceBySquareOrderId, updateInvoice, getSettings, logActivity } from '@/lib/db';
 import { verifySquareSignature, squareWebhookConfigured } from '@/lib/square';
-import { notifySquarePaid } from '@/lib/notify';
 
 export const dynamic = 'force-dynamic';
 
@@ -38,7 +37,6 @@ export async function POST(req: NextRequest) {
         const invoice = await getInvoiceBySquareOrderId(orderId);
         if (invoice && !invoice.squarePaidAt) {
           await updateInvoice(invoice.id, { squarePaidAt: new Date().toISOString(), squarePaymentId: payment.id ?? null });
-          await notifySquarePaid(invoice.number);
           await logActivity('square.paid', `Square confirmed a card payment for ${invoice.number}`, { paymentId: payment.id, orderId }, 'system', invoice.id);
         }
       }

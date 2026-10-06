@@ -13,13 +13,10 @@ export interface AppSettings {
   squareCardPaymentsEnabled: boolean;
   squareSurchargePercent: number;
 
-  // Notifications (ntfy pushes — see src/lib/notify.ts + notifications.ts)
+  // Notifications — new bookings only (website form or Facebook lead), as an
+  // ntfy push + owner email. See src/lib/notifications.ts.
   notificationsEnabled: boolean;       // master switch
-  notifyStatusChange: boolean;         // job status changed
-  notifyJobAssigned: boolean;          // job sent to a subcontractor
-  notifyCustomerMarkedPaid: boolean;   // customer tapped "I've paid"
-  notifySquarePaid: boolean;           // Square webhook confirms a card payment
-  notifyNewBooking: boolean;           // new booking from the public site
+  notifyNewBooking: boolean;           // new booking
 
   // Customer review / feedback flow (src/app/thanks/[token])
   googleReviewUrl: string;
@@ -69,10 +66,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   squareSurchargePercent: Number(process.env.NEXT_PUBLIC_SQUARE_SURCHARGE_PERCENT || '1.9'),
 
   notificationsEnabled: true,
-  notifyStatusChange: true,
-  notifyJobAssigned: true,
-  notifyCustomerMarkedPaid: true,
-  notifySquarePaid: true,
   notifyNewBooking: true,
 
   googleReviewUrl: 'https://g.page/r/CTZqwIjUWFvcEBM/review',

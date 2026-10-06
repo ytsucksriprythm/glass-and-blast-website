@@ -28,8 +28,7 @@ export async function PATCH(req: NextRequest) {
 
   (['googleReviewUrl', 'defaultJobStartTime'] as (keyof AppSettings)[]).forEach(copyStr);
   (['squareSurchargePercent', 'reviewStarThreshold', 'larpRevenueTarget'] as (keyof AppSettings)[]).forEach(copyNum);
-  (['squareCardPaymentsEnabled', 'notificationsEnabled', 'notifyStatusChange', 'notifyJobAssigned',
-    'notifyCustomerMarkedPaid', 'notifySquarePaid', 'notifyNewBooking', 'customerFeedbackEnabled',
+  (['squareCardPaymentsEnabled', 'notificationsEnabled', 'notifyNewBooking', 'customerFeedbackEnabled',
     'recurringAutoBookEnabled', 'acceptingNewBookings', 'siteTrackingEnabled',
     'autofillBusinessInfo', 'autofillPaymentDetails', 'defaultShowAddressOnInvoice',
     'larpFakeNumbers', 'larpFakeBookings', 'larpFakeColdLeads', 'larpFakeInvoices', 'larpFakeCalendar',

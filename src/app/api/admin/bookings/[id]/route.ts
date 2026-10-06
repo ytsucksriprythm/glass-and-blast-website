@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { updateBooking, deleteBooking, getBookingById, getGuestById, logActivity } from '@/lib/db';
+import { updateBooking, deleteBooking, getBookingById, logActivity } from '@/lib/db';
 import { getActiveContext } from '@/lib/auth';
-import { notifyStatusChange, notifyJobAssigned } from '@/lib/notify';
 import { syncBookingStatusToSheet } from '@/lib/metaLeads';
 import type { Booking } from '@/lib/db';
 
@@ -33,7 +32,6 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
 
   const body = await req.json();
   let updates: Partial<Booking> = body;
-  let actor = 'Admin';
 
   if (ctx.role === 'guest') {
     if (before.assignedGuestId !== ctx.guestId) {
@@ -45,26 +43,17 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
       if (k in body) (safe as Record<string, unknown>)[k] = body[k];
     }
     updates = safe;
-    const guest = await getGuestById(ctx.guestId);
-    actor = guest?.name ?? 'Guest';
   }
 
   const booking = await updateBooking(id, updates);
   if (!booking) return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
-  // Push notifications (best-effort, never block the response).
   if (booking.status !== before.status) {
-    void notifyStatusChange(booking, before.status, booking.status, actor);
     void logActivity('booking.status_changed', `${booking.name}: ${before.status} -> ${booking.status}`, { bookingId: id, from: before.status, to: booking.status }, ctx.role === 'admin' ? 'admin' : `guest:${ctx.guestId}`);
     // Mirror into the source Google Sheet's "Site Status" column (facebook-lead-ad
     // only) — reference only, doesn't feed back into Meta itself. See metaLeads.ts.
     syncBookingStatusToSheet(booking).catch(err => console.error('Sheet status sync failed:', err));
   }
-  if (booking.assignedGuestId && booking.assignedGuestId !== before.assignedGuestId) {
-    const guest = await getGuestById(booking.assignedGuestId);
-    if (guest) void notifyJobAssigned(booking, guest.name);
-  }
-
   return NextResponse.json(booking);
 }
 
