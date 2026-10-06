@@ -72,16 +72,49 @@ const toForm = (b: Booking): EditForm => ({
 
 const longDate = (iso: string) => new Date(iso).toLocaleDateString('en-AU', { day: 'numeric', month: 'long', year: 'numeric' });
 
-function Row({ icon: Icon, label, children }: { icon: React.FC<{ className?: string }>; label: string; children: React.ReactNode }) {
+function Row({ icon: Icon, label, children, action }: { icon: React.FC<{ className?: string }>; label: string; children: React.ReactNode; action?: React.ReactNode }) {
   return (
     <div className="flex items-start gap-3 py-3 border-b border-white/5 last:border-0">
       <Icon className="w-4 h-4 text-sky-400 mt-0.5 flex-shrink-0" />
-      <div className="min-w-0">
+      <div className="min-w-0 flex-1">
         <div className="text-slate-500 text-xs">{label}</div>
         <div className="text-white text-sm mt-0.5 break-words">{children}</div>
       </div>
+      {action && <div className="flex-shrink-0 self-center">{action}</div>}
     </div>
   );
+}
+
+// Plain-text booking confirmation for pasting into an SMS / email.
+// Laid out as a document (labelled fields), not a sentence.
+function buildConfirmationText(b: Booking): string {
+  const d = new Date(b.scheduledAt as string);
+  const date = d.toLocaleDateString('en-AU', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+  const time = d.toLocaleTimeString('en-AU', { hour: 'numeric', minute: '2-digit' }).toUpperCase();
+  const address = [b.address, b.suburb].filter(Boolean).join(', ');
+  const rule = '━━━━━━━━━━━━━━━━━━';
+  const lines = [
+    'GLASS & BLAST',
+    'BOOKING CONFIRMATION',
+    rule,
+    `Ref: ${b.id.replace(/^BK-/, '').slice(-6)}`,
+    b.name ? `Client: ${b.name}` : '',
+    `Date: ${date}`,
+    `Time: ${time}`,
+    address ? `Address: ${address}` : '',
+    `Service: ${serviceText(b.service)}${b.propertyType === 'commercial' ? ' (Commercial)' : ''}`,
+    typeof b.quoteAmount === 'number' && b.quoteAmount > 0 ? `Price: ${money(b.quoteAmount)}` : '',
+    b.paid ? 'Payment: Received' : '',
+    rule,
+    'Status: CONFIRMED',
+    '0466 050 834 | glassandblast.com.au',
+  ];
+  return lines.filter(Boolean).join('\n');
+}
+
+async function copyConfirmation(b: Booking) {
+  try { await navigator.clipboard.writeText(buildConfirmationText(b)); toast.success('Booking confirmation copied'); }
+  catch { toast.error('Copy failed'); }
 }
 
 function FieldLabel({ children }: { children: React.ReactNode }) {
@@ -563,7 +596,15 @@ export default function BookingView() {
               <Row icon={User} label="Service">{serviceText(b.service)}{b.propertyType === 'commercial' ? ' · Commercial' : ''}</Row>
               {(b.address || b.suburb) && <Row icon={MapPin} label="Address"><AddressLink address={[b.address, b.suburb].filter(Boolean).join(', ')} /></Row>}
               {(b.preferredDate || b.preferredTime) && <Row icon={CalendarDays} label="Preferred time">{[b.preferredDate, b.preferredTime].filter(Boolean).join(' ')}</Row>}
-              <Row icon={CalendarClock} label="Calendar">
+              <Row
+                icon={CalendarClock}
+                label="Calendar"
+                action={b.scheduledAt ? (
+                  <button onClick={() => copyConfirmation(b)} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-sky-400/30 bg-sky-400/10 text-sky-300 hover:bg-sky-400/15 text-xs font-semibold transition-colors cursor-pointer touch-manipulation" title="Copy booking confirmation">
+                    <Copy className="w-3.5 h-3.5" /> Confirmation
+                  </button>
+                ) : undefined}
+              >
                 {b.scheduledAt
                   ? <span className="text-sky-300">Scheduled: {scheduledLabel(b.scheduledAt)}</span>
                   : b.status === 'confirmed'
