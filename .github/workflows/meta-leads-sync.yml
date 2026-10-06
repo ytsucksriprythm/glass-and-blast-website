@@ -26,6 +26,9 @@ jobs:
         env:
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
+          # Strip stray spaces/newlines from a pasted secret — curl refuses a
+          # header containing a newline (exit 43), which silently broke every run.
+          CRON_SECRET="$(printf '%s' "$CRON_SECRET" | tr -d '[:space:]')"
           if [ -z "$CRON_SECRET" ]; then
             echo "::error::CRON_SECRET repo secret is not set"
             exit 1
