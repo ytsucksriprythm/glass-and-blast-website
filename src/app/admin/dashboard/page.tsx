@@ -307,8 +307,11 @@ function UpcomingJobs({ bookings }: { bookings: Booking[] }) {
     .sort((a, b) => (a.scheduledAt ?? '').localeCompare(b.scheduledAt ?? ''));
   const quotes = scheduled.filter(b => QUOTE_VISIT_STATUSES.includes(b.status)).slice(0, 8);
   const jobs = scheduled.filter(b => !QUOTE_VISIT_STATUSES.includes(b.status)).slice(0, 8);
+  // grid-cols-1 (= minmax(0, 1fr)), not the implicit auto column: an auto track
+  // grows to fit the longest truncated name/address and pushes the cards wider
+  // than a phone screen.
   return (
-    <div className="grid lg:grid-cols-2 gap-4">
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
       <UpcomingList title="Upcoming jobs" icon={CalendarDays} accent="text-sky-400" items={jobs} empty="No jobs scheduled. Confirm a booking to add it to the calendar." />
       <UpcomingList title="Upcoming quotes" icon={CalendarClock} accent="text-orange-400" items={quotes} empty="No quote visits booked." />
     </div>
@@ -319,12 +322,12 @@ function UpcomingList({ title, icon: Icon, accent, items: upcoming, empty }: {
   title: string; icon: React.ElementType; accent: string; items: Booking[]; empty: string;
 }) {
   return (
-    <div className="glass rounded-2xl border border-white/8 p-5 sm:p-6">
-      <div className="flex items-center justify-between mb-4">
-        <h3 className="font-display font-semibold text-white flex items-center gap-2">
-          <Icon className={`w-4 h-4 ${accent}`} /> {title}
+    <div className="glass rounded-2xl border border-white/8 p-4 sm:p-6 min-w-0">
+      <div className="flex items-center justify-between gap-3 mb-3 sm:mb-4">
+        <h3 className="font-display font-semibold text-white flex items-center gap-2 min-w-0">
+          <Icon className={`w-4 h-4 flex-shrink-0 ${accent}`} /> <span className="truncate">{title}</span>
         </h3>
-        <Link href="/admin/calendar" className="text-sky-400 hover:text-sky-300 text-xs font-semibold inline-flex items-center gap-1">Calendar <ArrowRight className="w-3.5 h-3.5" /></Link>
+        <Link href="/admin/calendar" className="flex-shrink-0 text-sky-400 hover:text-sky-300 text-xs font-semibold inline-flex items-center gap-1">Calendar <ArrowRight className="w-3.5 h-3.5" /></Link>
       </div>
       {upcoming.length === 0 ? (
         <p className="text-slate-500 text-sm">{empty}</p>
@@ -332,23 +335,27 @@ function UpcomingList({ title, icon: Icon, accent, items: upcoming, empty }: {
         <ul className="divide-y divide-white/5">
           {upcoming.map(b => {
             const d = new Date(b.scheduledAt as string);
+            const href = `/admin/bookings/${b.id}?from=${encodeURIComponent('/admin/dashboard?tab=overview')}`;
+            const where = [b.address, b.suburb].filter(Boolean).join(', ');
             return (
-              <li key={b.id} className="flex items-center gap-3 py-2.5">
-                <div className="flex-shrink-0 w-11 text-center">
+              <li key={b.id} className="flex items-center gap-3 py-2.5 min-w-0">
+                <div className="flex-shrink-0 w-10 sm:w-11 text-center">
                   <div className={`${accent} text-[10px] font-semibold uppercase leading-none`}>{d.toLocaleDateString('en-AU', { weekday: 'short' })}</div>
                   <div className="text-white font-bold text-lg leading-tight">{d.getDate()}</div>
                   <div className="text-slate-500 text-[10px] leading-none">{d.toLocaleDateString('en-AU', { month: 'short' })}</div>
                 </div>
-                <div className="min-w-0 flex-1">
-                  <div className="text-white text-sm font-medium truncate">{b.name}</div>
+                {/* Name opens the booking — the only way in on phones, where the
+                    Booking button is hidden to keep the row narrow. */}
+                <Link href={href} title={`Open booking: ${b.name}`} className="group min-w-0 flex-1 py-0.5 touch-manipulation">
+                  <div className="text-white text-sm font-medium truncate group-hover:text-sky-300 group-active:text-sky-300 underline-offset-2 group-hover:underline">{b.name}</div>
                   <div className="text-slate-500 text-xs truncate">
-                    {d.toLocaleTimeString('en-AU', { hour: 'numeric', minute: '2-digit' })}{(b.address || b.suburb) ? ` · ${[b.address, b.suburb].filter(Boolean).join(', ')}` : ''}
+                    {d.toLocaleTimeString('en-AU', { hour: 'numeric', minute: '2-digit' })}{where ? ` · ${where}` : ''}
                   </div>
-                </div>
+                </Link>
                 <Link
-                  href={`/admin/bookings/${b.id}?from=${encodeURIComponent('/admin/dashboard?tab=overview')}`}
+                  href={href}
                   title={`Open booking: ${b.name}`}
-                  className="flex-shrink-0 inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-sky-400 bg-sky-400/10 hover:bg-sky-400/20 text-xs font-semibold transition-colors cursor-pointer"
+                  className="hidden lg:inline-flex flex-shrink-0 items-center gap-1 px-2.5 py-1.5 rounded-lg text-sky-400 bg-sky-400/10 hover:bg-sky-400/20 text-xs font-semibold transition-colors cursor-pointer"
                 >
                   Booking <ArrowRight className="w-3.5 h-3.5" />
                 </Link>
@@ -1487,7 +1494,7 @@ export default function Dashboard() {
                   const owed = bookings.filter(b => b.status === 'completed' && !b.paid && typeof b.quoteAmount === 'number' && (b.quoteAmount ?? 0) > 0).slice(0, 5);
                   const dueSoonCount = recurring.filter(j => j.active && j.nextDate <= new Date(Date.now() + 14 * 86400000).toISOString().slice(0, 10)).length;
                   return (
-                    <div className="grid lg:grid-cols-2 gap-4">
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                         {owed.length > 0 && (
                           <div className="glass rounded-2xl border border-red-400/20 p-5">
                             <h3 className="font-display font-semibold text-white text-sm mb-3 flex items-center gap-2">
