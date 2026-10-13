@@ -1238,7 +1238,6 @@ function Footer() {
             <h3 className="text-white text-sm font-semibold">Get in touch</h3>
             <ul className="mt-3 space-y-2 text-sm text-slate-400">
               <li><a href={PHONE_HREF} className="hover:text-sky-400 transition-colors">{PHONE_DISPLAY}</a></li>
-              <li>info@glassandblast.com.au</li>
               <li>Open 7 days, quotes back the same day</li>
             </ul>
           </div>

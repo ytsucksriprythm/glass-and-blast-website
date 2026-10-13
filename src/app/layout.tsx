@@ -40,7 +40,6 @@ const businessJsonLd = {
   image: `${SITE_URL}/logo.png`,
   url: SITE_URL,
   telephone: '+61466050834',
-  email: 'info@glassandblast.com.au',
   priceRange: '$$',
   areaServed: [
     { '@type': 'City', name: 'Canberra' },
