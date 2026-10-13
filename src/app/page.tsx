@@ -687,7 +687,7 @@ function Areas() {
             will sort it out with your quote before you book.
           </p>
           <p className="text-slate-400 mt-3 text-xs">
-            A $20 call-out fee applies to quotes outside the ACT.
+            A $20 call-out fee applies to quotes outside the ACT, taken off your price if you confirm the booking.
           </p>
         </div>
         <div className="flex flex-wrap gap-2 content-start">
