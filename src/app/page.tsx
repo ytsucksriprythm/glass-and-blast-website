@@ -686,6 +686,9 @@ function Areas() {
             you are further out again we may add a small travel fee, but it is case by case, so just ask and we
             will sort it out with your quote before you book.
           </p>
+          <p className="text-slate-400 mt-3 text-xs">
+            A $20 call-out fee applies to quotes outside the ACT.
+          </p>
         </div>
         <div className="flex flex-wrap gap-2 content-start">
           {suburbs.map(s => {
