@@ -759,7 +759,7 @@ export async function getFacebookLeadStatus(ctx: Ctx) {
       googleServiceAccountSet: Boolean(process.env.GOOGLE_SERVICE_ACCOUNT_JSON),
       cronSecretSetOnServer: Boolean(process.env.CRON_SECRET),
     },
-    schedule: 'Vercel Cron every minute, plus a check every 60s while the admin Bookings tab is open.',
+    schedule: 'GitHub Actions every 5 minutes (.github/workflows/meta-leads-sync.yml, needs the CRON_SECRET repo secret), Vercel Cron daily 22:00 UTC as a backstop, plus a check every 60s while the admin Bookings tab is open.',
     importedLeads: { totalNotDeleted: total, byStatus: Object.fromEntries(counts.map(r => [r.status, Number(r.n)])), mostRecentImportAt: lastImport, mostRecentImportSydney: toSydney(lastImport) },
     recentImports: latest.map(r => toRecord(r)),
     dismissedLeads: { count: Number(dismissed[0]?.n ?? 0), lastDismissedAt: normalizeTimestamp(dismissed[0]?.latest), note: 'Leads deleted from the CRM are remembered here so the sheet poll never re-imports them.' },

@@ -60,11 +60,11 @@ Instant/Quick Form leads never touch the website (no page visit, so UTM attribut
 - **Auth to Google:** `src/lib/googleSheets.ts` — hand-rolled service-account JWT → OAuth token exchange → Sheets API v4 read/write, no `googleapis` dependency. **The Sheet must be shared with the service account as Editor** (not just Viewer) — the status write-back below needs write access
 - **Field mapping:** `src/lib/metaLeads.ts` matches each tab's header row by normalized (alphanumeric-only) name (`full_name`/`name`, `email`, `phone_number`/`phone`, `address`/`street_address`/a combined column like `property_address_/_suburb`, `city`/`suburb`, `id`) plus a service keyword match (window/pressure/solar/flyscreen); anything unmatched (custom form questions) is preserved verbatim in `notes` so nothing is lost
 - **Dedup:** `externalLeadId` has a partial unique index — re-running the poll over rows already imported is a no-op. Falls back to a hash of the row if the sheet has no `id` column (and status write-back is skipped for those, since there's no reliable way to relocate the row)
-- **Idle polls skip the DB:** each handled row gets marked in the sheet's "Site Status" column (status label, or "Deleted" for a dismissed lead); rows with a non-empty Site Status are skipped without a DB query. Without this, the 5-min ping queried Neon every time (now every minute, so this matters more), kept the compute from ever auto-suspending, and blew the Neon free-plan compute quota (402 errors, admin down, 2026-10-20). Don't add DB calls to the idle path of this route
+- **Idle polls skip the DB:** each handled row gets marked in the sheet's "Site Status" column (status label, or "Deleted" for a dismissed lead); rows with a non-empty Site Status are skipped without a DB query. Without this, the 5-min ping queried Neon every time, kept the compute from ever auto-suspending, and blew the Neon free-plan compute quota (402 errors, admin down, 2026-10-20). Don't add DB calls to the idle path of this route
 - **Status write-back (site → Sheet, one-way only):** changing a booking's status in admin writes it into a "Site Status" column in the sheet (`syncBookingStatusToSheet()` in `metaLeads.ts`, triggered from the booking PATCH route) — reference only. This does **not** reach Meta's own `lead_status` column or its ad-delivery optimization; Meta's Connect-CRM → Sheets export is one-way (Meta → Sheet). Real bidirectional sync would need Meta's separate Conversions API for Lead Ads
 - **Notifications:** owner email/push fire as normal; the customer "Booking Confirmed" email is skipped for this source (a lead isn't a confirmed date/time yet)
 - **Admin UI:** blue "FB Lead" badge (bookings list, manage modal), "Facebook lead ad" (detail page, Business Stats → Leads by Source), manual "Sync now" button in Settings → Facebook lead sync
-- **Schedule:** every minute, 24/7, via Vercel Cron (`vercel.json`, `* * * * *`; needs Vercel Pro, which the account is on since 2026-10-21; Hobby only allows once/day). The old 5-min GitHub Actions workflow was removed (GitHub's schedule ran late or skipped at busy times). The admin Bookings tab additionally checks every 60s while open
+- **Schedule:** 24/7 via GitHub Actions (`.github/workflows/meta-leads-sync.yml`) — pings the route every 5 min with `Authorization: Bearer $CRON_SECRET`; needs `CRON_SECRET` set as a GitHub repo Actions secret (same value as Vercel). Vercel Cron also runs it once/day as a backstop (`vercel.json`, `0 22 * * *`, Hobby plan limit). The admin Bookings tab additionally checks every 60s while open
 - **Env vars (set in .env.local and Vercel Production):** `GOOGLE_SERVICE_ACCOUNT_JSON` (full service-account key JSON, one line), `META_LEADS_SHEET_ID`, `CRON_SECRET` (shared with `/api/cron/recurring`); optional `META_LEADS_SHEET_RANGE` (default `A:Z`, applied to every tab). Live and importing leads. Local dev reads the same sheet, so running the admin locally can import real leads (and fire owner notifications)
 
 ### Calendar (Google Calendar iCal Feed)
@@ -125,7 +125,7 @@ CRON_SECRET=... (shared by all Vercel Cron routes — recurring jobs + Meta lead
 GOOGLE_SERVICE_ACCOUNT_JSON=... (full service-account key JSON, one line — Meta leads sheet sync)
 META_LEADS_SHEET_ID=... (from the Google Sheet's URL — Meta leads sheet sync)
 ```
-All of the above are set on Vercel Production (checked 2026-10-03).
+All of the above are set on Vercel Production (checked 2026-10-03). **Also needed:** `CRON_SECRET` as a GitHub repo Actions secret for `.github/workflows/meta-leads-sync.yml` — not confirmed set yet.
 
 ---
 
@@ -179,7 +179,7 @@ Cropped gray UI bars (phone UI):
 ---
 
 ## Next Steps
-1. Neon is on the paid Launch plan (billed via Vercel) since 2026-10-21; keep the idle path of the lead-sync route DB-free so compute can auto-suspend
+1. Add `CRON_SECRET` as a GitHub repo Actions secret (Settings → Secrets and variables → Actions), then Actions → **Facebook lead sync** → **Run workflow** to confirm a green run
 2. Monitor calendar feed latency (should update within 60s of Google Calendar change)
 3. Test booking-to-calendar matching on live data (event titles must contain name or address)
 4. Consider: automated SMS/email on booking state changes (optional future)
