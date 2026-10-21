@@ -12,17 +12,17 @@ export const dynamic = 'force-dynamic';
 // Connect CRM) — one tab per lead form you're running — turning any row
 // not already imported into a booking (source: 'facebook-lead-ad'). Tabs
 // are discovered live, so trialing a new form (a new tab) needs no config
-// change here. See vercel.json for the schedule.
+// change here. Vercel Cron runs it every minute (vercel.json, needs the Pro
+// plan; Hobby only allows once a day).
 // Auth: Vercel's cron sends `Authorization: Bearer ${CRON_SECRET}` (same
 // secret as /api/cron/recurring); a `?secret=` query param works too, for
-// pinging from an external scheduler if once/day (Vercel Hobby's cron limit)
-// isn't fast enough; an admin session also works so Settings can offer a
-// manual "Sync now" button.
+// pinging from an external scheduler; an admin session also works so
+// Settings can offer a manual "Sync now" button.
 //
 // Rows already handled are marked in the sheet's "Site Status" column (the
 // booking's status, or "Deleted" for a lead dismissed from the CRM) and
 // skipped on later polls without touching the database. This matters: the
-// route is pinged every 5 minutes, and a DB query on every ping kept the
+// route is polled around the clock, and a DB query on every ping kept the
 // Neon compute from ever auto-suspending, which burned through the free
 // plan's monthly compute quota and took the admin down. A poll with no new
 // rows now only reads the sheet. Rows with no `id` column (hashed ids) can't
