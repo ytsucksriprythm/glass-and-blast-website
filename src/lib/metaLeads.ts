@@ -51,6 +51,8 @@ function findColumn(headers: string[], candidates: string[], substringFallback?:
   return -1;
 }
 
+export const ID_COLUMN_CANDIDATES = ID_CANDIDATES;
+
 export function findColumnIndex(headers: string[], candidates: string[]): number {
   return findColumn(headers, candidates);
 }
@@ -139,6 +141,10 @@ const BOOKING_STATUS_LABEL: Record<string, string> = {
   uncontacted: 'Uncontacted', contacted: 'Contacted', 'quote-booked': 'Quote Booked', quoted: 'Quoted', confirmed: 'Confirmed', completed: 'Completed', cancelled: 'Cancelled', cold: 'Cold Lead',
 };
 
+export function siteStatusLabel(status: string): string {
+  return BOOKING_STATUS_LABEL[status] ?? status;
+}
+
 export async function syncBookingStatusToSheet(booking: Booking): Promise<void> {
   if (booking.source !== 'facebook-lead-ad' || !booking.externalLeadId) return;
   if (booking.externalLeadId.startsWith('sheet:')) return; // synthetic id — no id column to relocate this row by
@@ -162,7 +168,7 @@ export async function syncBookingStatusToSheet(booking: Booking): Promise<void> 
       await writeSheetCell(spreadsheetId, tab, 1, statusCol, SITE_STATUS_HEADER);
     }
     const sheetRow = rowIdx + 2; // header row + 1-indexing
-    await writeSheetCell(spreadsheetId, tab, sheetRow, statusCol, BOOKING_STATUS_LABEL[booking.status] ?? booking.status);
+    await writeSheetCell(spreadsheetId, tab, sheetRow, statusCol, siteStatusLabel(booking.status));
     return;
   }
 }
