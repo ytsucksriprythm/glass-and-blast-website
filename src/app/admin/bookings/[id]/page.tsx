@@ -16,6 +16,9 @@ import { quoteShareMessage, quoteShareClipboardText } from '@/lib/quoteShare';
 import { AddressLink } from '@/components/AddressLink';
 import { FlagButton, FlagModal } from '@/components/admin/JobFlag';
 import QuoteModal from '@/components/QuoteModal';
+import CustomerName from '@/components/admin/CustomerName';
+import PlanPicker, { DEFAULT_PLAN, planPayload, type PlanValue } from '@/components/admin/PlanPicker';
+import { profileHref } from '@/lib/recurring';
 
 type GuestProfile = { id: string; name: string; active: boolean; createdAt: string };
 
@@ -260,6 +263,33 @@ export default function BookingView() {
 
   // Flag — mark something's gone wrong on this job, with a note
   const [showFlag, setShowFlag] = useState(false);
+
+  // Make recurring customer — builds a profile from this job and links it
+  const [showRecurring, setShowRecurring] = useState(false);
+  const [plan, setPlan] = useState<PlanValue>(DEFAULT_PLAN);
+  const [planPrice, setPlanPrice] = useState('');
+  const [makingRecurring, setMakingRecurring] = useState(false);
+  useEffect(() => { if (showRecurring && b?.quoteAmount) setPlanPrice(String(b.quoteAmount)); }, [showRecurring, b?.quoteAmount]);
+  const makeRecurring = async () => {
+    if (!b) return;
+    const payload = planPayload(plan);
+    if (!payload) { toast.error('Type how many for the custom timeframe'); return; }
+    const price = Number(planPrice.replace(/[^0-9.]/g, ''));
+    setMakingRecurring(true);
+    try {
+      const res = await fetch('/api/admin/recurring', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...payload, fromBookingId: b.id, visitPrice: planPrice.trim() && price > 0 ? price : null }),
+      });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Could not create profile');
+      const { job, linked } = await res.json();
+      toast.success(linked > 1 ? `Recurring profile created · ${linked} bookings linked` : 'Recurring profile created');
+      router.push(profileHref(job.id, `/admin/bookings/${b.id}`));
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Could not create profile');
+      setMakingRecurring(false);
+    }
+  };
 
   // Customer thank-you link
   const [custToken, setCustToken] = useState<string>('');
@@ -549,8 +579,11 @@ export default function BookingView() {
           <>
             <div className="flex items-start justify-between gap-3 mb-5">
               <div className="min-w-0">
-                <h1 className="font-display text-2xl font-bold text-white break-words">{b.name}</h1>
+                <h1 className="font-display text-2xl font-bold text-white break-words">
+                  <CustomerName name={b.name} bookingId={b.id} recurringId={b.recurringId} from={`/admin/bookings/${b.id}${from ? `?from=${encodeURIComponent(from)}` : ''}`} iconClassName="w-5 h-5" />
+                </h1>
                 <div className="text-slate-500 text-xs mt-1">
+                  {b.recurringId && <span className="text-amber-300/80 font-semibold">Recurring customer · </span>}
                   {b.source === 'manual' ? 'Added manually' : b.source === 'facebook-lead-ad' ? 'Facebook lead ad' : 'From website'} · {new Date(b.createdAt).toLocaleDateString('en-AU')}
                 </div>
               </div>
@@ -751,12 +784,21 @@ export default function BookingView() {
               <FileText className="w-4 h-4 text-sky-400" /> Create an invoice from this booking
             </Link>
 
-            <Link
-              href={`/admin/recurring?prefill=${b.id}`}
-              className="mt-3 w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-lg border border-white/10 bg-white/[0.03] text-slate-300 hover:text-white hover:border-sky-400/40 text-sm font-semibold transition-colors cursor-pointer"
-            >
-              <Repeat className="w-4 h-4 text-sky-400" /> Put this customer on a recurring plan
-            </Link>
+            {b.recurringId ? (
+              <Link
+                href={profileHref(b.recurringId, `/admin/bookings/${b.id}`)}
+                className="mt-3 w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-lg border border-amber-400/30 bg-amber-400/10 text-amber-200 hover:bg-amber-400/15 text-sm font-semibold transition-colors cursor-pointer"
+              >
+                <Repeat className="w-4 h-4" /> View recurring customer profile
+              </Link>
+            ) : (
+              <button
+                onClick={() => setShowRecurring(true)}
+                className="mt-3 w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-lg border border-amber-400/30 bg-amber-400/10 text-amber-200 hover:bg-amber-400/15 text-sm font-semibold transition-colors cursor-pointer touch-manipulation"
+              >
+                <Repeat className="w-4 h-4" /> Make recurring customer
+              </button>
+            )}
 
             <div className="mt-4 text-slate-600 text-xs flex items-center gap-2">
               <Clock className="w-3 h-3" /> Updated {new Date(b.updatedAt).toLocaleString('en-AU')}
@@ -898,6 +940,38 @@ export default function BookingView() {
                   Unassign this job
                 </button>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Make recurring customer ───────────────────────────────── */}
+      {showRecurring && b && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 sm:p-4" onClick={() => setShowRecurring(false)}>
+          <div className="bg-navy-800 border border-white/10 rounded-t-2xl sm:rounded-2xl w-full sm:max-w-md max-h-[90svh] flex flex-col" onClick={e => e.stopPropagation()}>
+            <div className="p-4 border-b border-white/10 flex items-center justify-between">
+              <h3 className="text-white font-semibold flex items-center gap-2"><Repeat className="w-4 h-4 text-amber-300" /> Make {b.name} a recurring customer</h3>
+              <button onClick={() => setShowRecurring(false)} className="text-slate-400 hover:text-white cursor-pointer"><X className="w-5 h-5" /></button>
+            </div>
+            <div className="overflow-y-auto p-4 space-y-4" style={{ paddingBottom: 'calc(1rem + env(safe-area-inset-bottom))' }}>
+              <div>
+                <FieldLabel>How often?</FieldLabel>
+                <PlanPicker value={plan} onChange={setPlan} />
+              </div>
+              <div>
+                <FieldLabel>Usual price per clean, before discount ($)</FieldLabel>
+                <div className="relative">
+                  <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500">$</span>
+                  <input className="form-input pl-8" inputMode="decimal" placeholder="e.g. 280" value={planPrice} onChange={e => setPlanPrice(e.target.value)} />
+                </div>
+              </div>
+              <p className="text-slate-500 text-xs">
+                Creates a profile from this job&apos;s details and links this job (plus any other bookings with the same phone or email) to it.
+              </p>
+              <button onClick={makeRecurring} disabled={makingRecurring} className="w-full py-3 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-navy-900 font-semibold rounded-lg transition-colors cursor-pointer flex items-center justify-center gap-2">
+                {makingRecurring ? <div className="w-4 h-4 border-2 border-navy-900/30 border-t-navy-900 rounded-full animate-spin" /> : <Check className="w-4 h-4" />}
+                Create recurring profile
+              </button>
             </div>
           </div>
         </div>

@@ -11,6 +11,7 @@ import {
 import type { Booking, BookingStatus } from '@/lib/db';
 import { AdminSidebar, AdminMobileNav, AdminMoreSheet, useMoreSheet, adminNavItems } from '@/components/admin/AdminNav';
 import { AddressLink } from '@/components/AddressLink';
+import CustomerName from '@/components/admin/CustomerName';
 
 type View = 'day' | 'week' | 'month';
 
@@ -202,7 +203,7 @@ export default function CalendarPage() {
 function Chip({ b, onClick }: { b: Booking; onClick: () => void }) {
   return (
     <button onClick={onClick} className={`w-full text-left px-1.5 py-1 rounded text-[11px] leading-tight truncate cursor-pointer badge-${b.status} hover:opacity-90`}>
-      {b.scheduledAt && <span className="font-semibold">{timeLabel(b.scheduledAt)} </span>}{b.name}
+      {b.scheduledAt && <span className="font-semibold">{timeLabel(b.scheduledAt)} </span>}<CustomerName name={b.name} bookingId={b.id} recurringId={b.recurringId} />
     </button>
   );
 }
@@ -296,7 +297,7 @@ function DayView({ day, items, onOpen, onAdd }: {
             <button key={b.id} onClick={() => onOpen(b)} className="w-full flex items-center gap-3 p-3 rounded-lg border border-white/10 hover:border-sky-400/30 hover:bg-white/[0.03] text-left cursor-pointer">
               <div className="text-sky-300 text-sm font-semibold w-20 flex-shrink-0 inline-flex items-center gap-1"><Clock className="w-3.5 h-3.5" /> {b.scheduledAt ? timeLabel(b.scheduledAt) : ''}</div>
               <div className="min-w-0 flex-1">
-                <div className="text-white text-sm font-medium truncate">{b.name}</div>
+                <div className="text-white text-sm font-medium truncate"><CustomerName name={b.name} bookingId={b.id} recurringId={b.recurringId} /></div>
                 <div className="text-slate-500 text-xs truncate">{serviceText(b.service)}{(b.address || b.suburb) ? ` · ${[b.address, b.suburb].filter(Boolean).join(', ')}` : ''}</div>
               </div>
               <span className={`text-[10px] px-2 py-0.5 rounded font-semibold badge-${b.status}`}>{STATUS_LABEL[b.status]}</span>

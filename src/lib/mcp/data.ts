@@ -15,7 +15,7 @@ import { signBlob } from './crypto';
 import { FILE_LINK_TTL_SECONDS } from './config';
 import { serviceLabel, paymentTermsText, quoteTotal, type QuoteOtherLine } from '../quote';
 import { GST_NOTE, PAYMENT_METHOD_LABEL, cardTotal, isInvoiceOverdue, debtorDays, type PaymentMethod } from '../invoice';
-import { LEAD_SOURCES, advanceDate, type RecurringFrequency } from '../db';
+import { LEAD_SOURCES, advanceDate, type RecurringFrequency, type IntervalUnit } from '../db';
 import { DEFAULT_SETTINGS } from '../settings';
 import { ACTIVITY_TYPE_LABEL } from '../activity';
 import { computePageEngagement, computeScrollBuckets, computeSiteWideTimeStats, computeBookingFunnel } from '../analytics';
@@ -393,7 +393,7 @@ export async function listSchedule(ctx: Ctx, a: ScheduleArgs, cursor?: string, p
       let d = String(p.next_date ?? '');
       for (let i = 0; i < 1000 && isIsoDate(d) && d <= a.to; i++) {
         if (d >= a.from) visits.push({ date: d, preferredTime: p.preferred_time ?? null, projected: true, plan: toRecord(p) });
-        const next = advanceDate(d, p.frequency as RecurringFrequency, p.custom_interval_weeks == null ? null : Number(p.custom_interval_weeks));
+        const next = advanceDate(d, p.frequency as RecurringFrequency, p.custom_interval_weeks == null ? null : Number(p.custom_interval_weeks), p.custom_interval_unit as IntervalUnit);
         if (next <= d) break;
         d = next;
       }
@@ -639,7 +639,7 @@ function projectVisits(p: Row, n: number): string[] {
   let d = String(p.next_date ?? '');
   for (let i = 0; i < n && isIsoDate(d); i++) {
     out.push(d);
-    const next = advanceDate(d, p.frequency as RecurringFrequency, p.custom_interval_weeks == null ? null : Number(p.custom_interval_weeks));
+    const next = advanceDate(d, p.frequency as RecurringFrequency, p.custom_interval_weeks == null ? null : Number(p.custom_interval_weeks), p.custom_interval_unit as IntervalUnit);
     if (next <= d) break;
     d = next;
   }

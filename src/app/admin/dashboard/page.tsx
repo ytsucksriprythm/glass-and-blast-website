@@ -25,6 +25,7 @@ import { type Invoice, type PaymentMethod, PAYMENT_METHOD_LABEL } from '@/lib/in
 import { AdminSidebar, AdminMobileNav, AdminMoreSheet, useMoreSheet, adminNavItems } from '@/components/admin/AdminNav';
 import { AddressLink } from '@/components/AddressLink';
 import { FlagButton, FlagBadge, FlagModal, flagHighlightClass } from '@/components/admin/JobFlag';
+import CustomerName from '@/components/admin/CustomerName';
 
 // ─── Types ────────────────────────────────────────────────────────────────
 
@@ -347,7 +348,7 @@ function UpcomingList({ title, icon: Icon, accent, items: upcoming, empty }: {
                 {/* Name opens the booking — the only way in on phones, where the
                     Booking button is hidden to keep the row narrow. */}
                 <Link href={href} title={`Open booking: ${b.name}`} className="group min-w-0 flex-1 py-0.5 touch-manipulation">
-                  <div className="text-white text-sm font-medium truncate group-hover:text-sky-300 group-active:text-sky-300 underline-offset-2 group-hover:underline">{b.name}</div>
+                  <div className="text-white text-sm font-medium truncate group-hover:text-sky-300 group-active:text-sky-300 underline-offset-2 group-hover:underline"><CustomerName name={b.name} bookingId={b.id} recurringId={b.recurringId} /></div>
                   <div className="text-slate-500 text-xs truncate">
                     {d.toLocaleTimeString('en-AU', { hour: 'numeric', minute: '2-digit' })}{where ? ` · ${where}` : ''}
                   </div>
@@ -426,7 +427,7 @@ function BookingCard({ b, actions }: { b: Booking; actions: BookingRowActions })
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="text-white font-semibold flex items-center gap-2 flex-wrap">
-            {b.name}
+            <CustomerName name={b.name} bookingId={b.id} recurringId={b.recurringId} />
             {b.source === 'manual' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-400/15 text-violet-300 border border-violet-400/20">Added</span>}
             {b.source === 'facebook-lead-ad' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-sky-400/15 text-sky-300 border border-sky-400/20 inline-flex items-center gap-1"><Facebook className="w-2.5 h-2.5" />FB Lead</span>}
             <AssignBadge guestId={b.assignedGuestId} name={guestName(b.assignedGuestId)} />
@@ -494,7 +495,7 @@ function BookingRow({ b, actions }: { b: Booking; actions: BookingRowActions }) 
       {/* Customer — whole row opens the booking */}
       <div className="min-w-0">
         <div className="text-white group-hover:text-sky-400 transition-colors text-sm font-medium flex items-center gap-2 flex-wrap">
-          {b.name}
+          <CustomerName name={b.name} bookingId={b.id} recurringId={b.recurringId} />
           {b.source === 'manual' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-400/15 text-violet-300 border border-violet-400/20">Added</span>}
           {b.source === 'facebook-lead-ad' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-sky-400/15 text-sky-300 border border-sky-400/20 inline-flex items-center gap-1"><Facebook className="w-2.5 h-2.5" />FB Lead</span>}
           <AssignBadge guestId={b.assignedGuestId} name={guestName(b.assignedGuestId)} />
@@ -617,7 +618,7 @@ function ColdLeadsSection({ bookings, open, onToggle, onOpen, onRevive }: {
             <div key={b.id} className="glass rounded-xl border border-white/8 p-3 flex items-center gap-3">
               <button onClick={() => onOpen(b.id)} className="min-w-0 flex-1 text-left cursor-pointer">
                 <div className="text-white text-sm font-medium truncate flex items-center gap-2 flex-wrap">
-                  {b.name}
+                  <CustomerName name={b.name} bookingId={b.id} recurringId={b.recurringId} />
                   {b.autoMoved && (
                     <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-400/15 text-slate-300 border border-slate-400/20" title="Moved here automatically, not by a person">Auto</span>
                   )}
@@ -1506,7 +1507,7 @@ export default function Dashboard() {
                                 <li key={b.id}>
                                   <button onClick={() => openBooking(b.id)} className="w-full flex items-center gap-3 py-2 text-left cursor-pointer">
                                     <div className="min-w-0 flex-1">
-                                      <div className="text-white text-sm font-medium truncate">{b.name}</div>
+                                      <div className="text-white text-sm font-medium truncate"><CustomerName name={b.name} bookingId={b.id} recurringId={b.recurringId} /></div>
                                       <div className="text-slate-500 text-xs flex items-center gap-1.5 flex-wrap">
                                         <span>{b.completedAt ? `Done ${new Date(b.completedAt).toLocaleDateString('en-AU', { day: 'numeric', month: 'short' })}` : 'Completed'}</span>
                                         {invoicedBookingIds.has(b.id) ? (
@@ -2158,7 +2159,7 @@ function StaleMovedModal({ bookings, onOk, onUndo }: {
       <div className="space-y-2">
         {items.map(b => (
           <div key={b.id} className="glass rounded-xl border border-white/8 p-3">
-            <div className="text-white text-sm font-medium">{b.name}</div>
+            <div className="text-white text-sm font-medium"><CustomerName name={b.name} bookingId={b.id} recurringId={b.recurringId} /></div>
             <div className="text-slate-500 text-xs mb-2">{serviceText(b.service)}{b.suburb ? ` · ${b.suburb}` : ''}</div>
             <div className="flex gap-2">
               <button onClick={() => onOk(b.id)} className="flex-1 px-3 py-1.5 rounded-lg glass border border-white/10 text-slate-300 text-xs font-semibold cursor-pointer">OK</button>

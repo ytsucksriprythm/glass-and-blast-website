@@ -12,6 +12,7 @@ import { type VaultItem } from './vault';
 import { type Quote, type QuoteInput, type QuoteStatus, type QuoteOtherLine, QUOTE_PREFIX, QUOTE_START_SEQ } from './quote';
 import { type PaymentDueTerms, DEFAULT_PAYMENT_DUE_TERMS, isPaymentDueTerms } from './invoice';
 import { type ActivityEntry, type InvoiceViewSession } from './activity';
+import { discountFor } from './recurring';
 import { computePageEngagement, computeScrollBuckets, computeSiteWideTimeStats, computeBookingFunnel } from './analytics';
 
 const DB_PATH = path.join(process.cwd(), 'data', 'bookings.json');
@@ -162,6 +163,11 @@ export type RecurringFrequency = 'weekly' | 'fortnightly' | 'monthly' | 'quarter
 // (how often the crew shows up). A weekly-visit plan might still be billed
 // once a month, for instance.
 export type BillingCycle = 'per_visit' | 'monthly' | 'custom';
+// Unit for a 'custom' cadence: "every N weeks / months / years".
+export type IntervalUnit = 'weeks' | 'months' | 'years';
+// A recurring customer's profile. Every booking made for them (auto-booked by
+// the cron, "New job" on the profile, or linked when the profile was created)
+// carries recurringId = this id, which is what ties their history together.
 export interface RecurringJob {
   id: string;         // RJ-timestamp
   name: string;
@@ -172,11 +178,14 @@ export interface RecurringJob {
   service: string;    // comma-separated, same convention as bookings
   propertyType: PropertyType;
   frequency: RecurringFrequency;
-  // Only meaningful when frequency === 'custom' — every N weeks (e.g. 2 = the
-  // same cadence as 'fortnightly', but the picker also covers arbitrary gaps
-  // like "every 3 weeks" or "every other Saturday" — set nextDate to the
-  // right weekday once and every cycle after keeps landing on it).
-  customIntervalWeeks: number | null;
+  // Only meaningful when frequency === 'custom' — every N customIntervalUnit
+  // (every 5 weeks, every 2 months, every year...). Stored in the old
+  // custom_interval_weeks column, which predates the unit picker.
+  customInterval: number | null;
+  customIntervalUnit: IntervalUnit;
+  // $ off each visit for being on the plan (website tiers: monthly $100,
+  // quarterly $75, twice a year $50), only on jobs over $200 — see lib/recurring.ts.
+  discount: number | null;
   nextDate: string;   // YYYY-MM-DD of the next visit; advanced by the cron after each auto-create
   preferredTime: string;
   notes: string;
@@ -188,7 +197,9 @@ export interface RecurringJob {
   createdAt: string;
   updatedAt: string;
 }
-export type NewRecurringJob = Omit<RecurringJob, 'id' | 'createdAt' | 'updatedAt' | 'lastBookingId' | 'active'> & { active?: boolean };
+export type NewRecurringJob = Omit<RecurringJob, 'id' | 'createdAt' | 'updatedAt' | 'lastBookingId' | 'active' | 'customIntervalUnit' | 'discount'> & {
+  active?: boolean; customIntervalUnit?: IntervalUnit; discount?: number | null;
+};
 
 // ─── Storage mode ────────────────────────────────────────────────────────────
 // DATABASE_URL set  → Neon Postgres (production / Vercel)
@@ -448,6 +459,10 @@ export async function ensureSchema(): Promise<void> {
       // dropped (no destructive migration for a field nothing reads anymore).
       await sql`ALTER TABLE recurring_jobs ADD COLUMN IF NOT EXISTS billing_cycle TEXT NOT NULL DEFAULT 'per_visit'`;
       await sql`ALTER TABLE recurring_jobs ADD COLUMN IF NOT EXISTS custom_billing_cycle TEXT`;
+      // Custom cadence unit (weeks/months/years) + the per-visit plan discount
+      // (the original `discount` column, back in use for the website tiers).
+      await sql`ALTER TABLE recurring_jobs ADD COLUMN IF NOT EXISTS custom_interval_unit TEXT NOT NULL DEFAULT 'weeks'`;
+      await sql`CREATE INDEX IF NOT EXISTS bookings_recurring_idx ON bookings (recurring_id)`;
       // Invoices + an atomic per-prefix number counter
       await sql`
         CREATE TABLE IF NOT EXISTS invoices (
@@ -1750,6 +1765,11 @@ const BILLING_CYCLES: BillingCycle[] = ['per_visit', 'monthly', 'custom'];
 function coerceBillingCycle(v: unknown): BillingCycle {
   return BILLING_CYCLES.includes(v as BillingCycle) ? (v as BillingCycle) : 'per_visit';
 }
+const INTERVAL_UNITS: IntervalUnit[] = ['weeks', 'months', 'years'];
+function coerceUnit(v: unknown): IntervalUnit {
+  return INTERVAL_UNITS.includes(v as IntervalUnit) ? (v as IntervalUnit) : 'weeks';
+}
+const numOrNull = (v: unknown) => (v === null || v === undefined || v === '' ? null : Number(v));
 
 function readRecurring(): RecurringJob[] {
   try {
@@ -1758,7 +1778,18 @@ function readRecurring(): RecurringJob[] {
     // Backfill billingCycle for plans saved before it existed — an old row's
     // value here is `undefined`, not a valid BillingCycle, and every consumer
     // (the picker, the badge label lookup) assumes it's always one of the three.
-    return Array.isArray(rows) ? rows.map((r: any) => ({ ...r, billingCycle: coerceBillingCycle(r.billingCycle), customBillingCycle: r.customBillingCycle ?? null })) : [];
+    // Same for the unit/discount fields; customIntervalWeeks is customInterval's old name.
+    return Array.isArray(rows) ? rows.map((r: any) => {
+      const { customIntervalWeeks, ...rest } = r;
+      return {
+        ...rest,
+        customInterval: numOrNull(r.customInterval ?? customIntervalWeeks),
+        customIntervalUnit: coerceUnit(r.customIntervalUnit),
+        discount: numOrNull(r.discount),
+        billingCycle: coerceBillingCycle(r.billingCycle),
+        customBillingCycle: r.customBillingCycle ?? null,
+      };
+    }) : [];
   } catch { return []; }
 }
 function writeRecurring(rows: RecurringJob[]): void {
@@ -1778,7 +1809,9 @@ function rowToRecurring(r: any): RecurringJob {
     service: r.service,
     propertyType: r.property_type ?? 'residential',
     frequency: r.frequency,
-    customIntervalWeeks: r.custom_interval_weeks === null || r.custom_interval_weeks === undefined ? null : Number(r.custom_interval_weeks),
+    customInterval: numOrNull(r.custom_interval_weeks),
+    customIntervalUnit: coerceUnit(r.custom_interval_unit),
+    discount: numOrNull(r.discount),
     nextDate: r.next_date,
     preferredTime: r.preferred_time ?? '',
     notes: r.notes ?? '',
@@ -1815,7 +1848,9 @@ export async function addRecurringJob(data: NewRecurringJob): Promise<RecurringJ
     service: data.service,
     propertyType: data.propertyType ?? 'residential',
     frequency: data.frequency,
-    customIntervalWeeks: data.customIntervalWeeks ?? null,
+    customInterval: data.frequency === 'custom' ? (data.customInterval ?? 1) : null,
+    customIntervalUnit: coerceUnit(data.customIntervalUnit),
+    discount: data.discount ?? null,
     nextDate: data.nextDate,
     preferredTime: data.preferredTime ?? '',
     notes: data.notes ?? '',
@@ -1830,8 +1865,8 @@ export async function addRecurringJob(data: NewRecurringJob): Promise<RecurringJ
   if (sql) {
     await ensureSchema();
     await sql`
-      INSERT INTO recurring_jobs (id, name, phone, email, address, suburb, service, property_type, frequency, custom_interval_weeks, next_date, preferred_time, notes, visit_price, billing_cycle, custom_billing_cycle, active)
-      VALUES (${job.id}, ${job.name}, ${job.phone}, ${job.email}, ${job.address}, ${job.suburb}, ${job.service}, ${job.propertyType}, ${job.frequency}, ${job.customIntervalWeeks}, ${job.nextDate}, ${job.preferredTime}, ${job.notes}, ${job.visitPrice}, ${job.billingCycle}, ${job.customBillingCycle}, ${job.active})
+      INSERT INTO recurring_jobs (id, name, phone, email, address, suburb, service, property_type, frequency, custom_interval_weeks, custom_interval_unit, discount, next_date, preferred_time, notes, visit_price, billing_cycle, custom_billing_cycle, active)
+      VALUES (${job.id}, ${job.name}, ${job.phone}, ${job.email}, ${job.address}, ${job.suburb}, ${job.service}, ${job.propertyType}, ${job.frequency}, ${job.customInterval}, ${job.customIntervalUnit}, ${job.discount}, ${job.nextDate}, ${job.preferredTime}, ${job.notes}, ${job.visitPrice}, ${job.billingCycle}, ${job.customBillingCycle}, ${job.active})
     `;
     return job;
   }
@@ -1846,8 +1881,8 @@ export async function insertRawRecurringJob(job: RecurringJob): Promise<void> {
   if (sql) {
     await ensureSchema();
     await sql`
-      INSERT INTO recurring_jobs (id, name, phone, email, address, suburb, service, property_type, frequency, custom_interval_weeks, next_date, preferred_time, notes, visit_price, billing_cycle, custom_billing_cycle, active, created_at, updated_at)
-      VALUES (${job.id}, ${job.name}, ${job.phone}, ${job.email}, ${job.address}, ${job.suburb}, ${job.service}, ${job.propertyType}, ${job.frequency}, ${job.customIntervalWeeks}, ${job.nextDate}, ${job.preferredTime}, ${job.notes}, ${job.visitPrice}, ${job.billingCycle}, ${job.customBillingCycle}, ${job.active}, ${job.createdAt}, ${job.updatedAt})
+      INSERT INTO recurring_jobs (id, name, phone, email, address, suburb, service, property_type, frequency, custom_interval_weeks, custom_interval_unit, discount, next_date, preferred_time, notes, visit_price, billing_cycle, custom_billing_cycle, active, created_at, updated_at)
+      VALUES (${job.id}, ${job.name}, ${job.phone}, ${job.email}, ${job.address}, ${job.suburb}, ${job.service}, ${job.propertyType}, ${job.frequency}, ${job.customInterval}, ${job.customIntervalUnit}, ${job.discount}, ${job.nextDate}, ${job.preferredTime}, ${job.notes}, ${job.visitPrice}, ${job.billingCycle}, ${job.customBillingCycle}, ${job.active}, ${job.createdAt}, ${job.updatedAt})
     `;
     return;
   }
@@ -1880,7 +1915,8 @@ export async function updateRecurringJob(id: string, updates: Partial<RecurringJ
       UPDATE recurring_jobs SET
         name = ${m.name}, phone = ${m.phone}, email = ${m.email},
         address = ${m.address}, suburb = ${m.suburb}, service = ${m.service},
-        property_type = ${m.propertyType}, frequency = ${m.frequency}, custom_interval_weeks = ${m.customIntervalWeeks ?? null},
+        property_type = ${m.propertyType}, frequency = ${m.frequency}, custom_interval_weeks = ${m.frequency === 'custom' ? (m.customInterval ?? 1) : null},
+        custom_interval_unit = ${coerceUnit(m.customIntervalUnit)}, discount = ${m.discount ?? null},
         next_date = ${m.nextDate}, preferred_time = ${m.preferredTime},
         notes = ${m.notes}, visit_price = ${m.visitPrice ?? null},
         billing_cycle = ${coerceBillingCycle(m.billingCycle)}, custom_billing_cycle = ${m.billingCycle === 'custom' ? (m.customBillingCycle ?? null) : null},
@@ -1904,50 +1940,82 @@ export async function deleteRecurringJob(id: string): Promise<boolean> {
   if (sql) {
     await ensureSchema();
     const rows = await sql`DELETE FROM recurring_jobs WHERE id = ${id} RETURNING id`;
-    return (rows as any[]).length > 0;
+    if (!(rows as any[]).length) return false;
+    // The customer's bookings stay; they just stop pointing at a profile that's gone.
+    await sql`UPDATE bookings SET recurring_id = NULL WHERE recurring_id = ${id}`;
+    return true;
   }
   const rows = readRecurring();
   const filtered = rows.filter(j => j.id !== id);
   if (filtered.length === rows.length) return false;
   writeRecurring(filtered);
+  const bookings = readFile();
+  if (bookings.some(b => b.recurringId === id)) writeFile(bookings.map(b => b.recurringId === id ? { ...b, recurringId: null } : b));
   return true;
 }
 
-// Advance a YYYY-MM-DD date by the plan's cadence. Month-based frequencies
-// clamp to end of month (e.g. 31 Jan + 1 month = 28/29 Feb, not 3 Mar).
-// Week-based frequencies (weekly/fortnightly/custom) just add days, which
-// keeps landing on the same weekday every cycle — e.g. nextDate on a
-// Saturday + fortnightly always lands on a Saturday, giving you "every
-// other Saturday" for free without any day-of-week field to manage.
-export function advanceDate(dateStr: string, frequency: RecurringFrequency, customIntervalWeeks?: number | null): string {
+// Advance a YYYY-MM-DD date by the plan's cadence. Month-based steps clamp to
+// end of month (e.g. 31 Jan + 1 month = 28/29 Feb, not 3 Mar). Week-based
+// steps just add days, which keeps landing on the same weekday every cycle —
+// e.g. nextDate on a Saturday + fortnightly always lands on a Saturday.
+// Custom plans step by customInterval × customIntervalUnit (weeks/months/years).
+export function advanceDate(dateStr: string, frequency: RecurringFrequency, customInterval?: number | null, customUnit?: IntervalUnit | null): string {
   const pad = (n: number) => String(n).padStart(2, '0');
   const [y, m, d] = dateStr.split('-').map(Number);
 
-  if (frequency === 'weekly' || frequency === 'fortnightly' || frequency === 'custom') {
-    const weeks = frequency === 'weekly' ? 1 : frequency === 'fortnightly' ? 2 : Math.max(1, customIntervalWeeks || 1);
+  let weeks = 0;
+  let months = 0;
+  if (frequency === 'weekly') weeks = 1;
+  else if (frequency === 'fortnightly') weeks = 2;
+  else if (frequency === 'monthly') months = 1;
+  else if (frequency === 'quarterly') months = 3;
+  else if (frequency === 'biannual') months = 6;
+  else {
+    const n = Math.max(1, customInterval || 1);
+    const unit = customUnit ?? 'weeks';
+    if (unit === 'weeks') weeks = n;
+    else months = unit === 'years' ? n * 12 : n;
+  }
+
+  if (weeks) {
     const target = new Date(y, m - 1, d + weeks * 7);
     return `${target.getFullYear()}-${pad(target.getMonth() + 1)}-${pad(target.getDate())}`;
   }
-
-  const months = frequency === 'monthly' ? 1 : frequency === 'quarterly' ? 3 : 6;
   const target = new Date(y, m - 1 + months, 1);
   const lastDay = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate();
   target.setDate(Math.min(d, lastDay));
   return `${target.getFullYear()}-${pad(target.getMonth() + 1)}-${pad(target.getDate())}`;
 }
+const advancePlan = (j: Pick<RecurringJob, 'frequency' | 'customInterval' | 'customIntervalUnit'>, from: string) =>
+  advanceDate(from, j.frequency, j.customInterval, j.customIntervalUnit);
 
-// Create bookings for every active recurring job that has come due, then push
-// its nextDate forward one cycle. Called by the daily cron. Returns what it made.
+// YYYY-MM-DD of an instant on the Canberra calendar.
+function sydneyDate(iso: string): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Australia/Sydney', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(iso));
+}
+
+// Price a job made under a profile: the plan discount comes off when the job
+// is over $200 (same rule as the website). Returns the booking's quoteAmount
+// plus an admin-notes line explaining it.
+function planPricing(job: RecurringJob, price: number | null): { quoteAmount: number | null; note: string } {
+  if (price == null) return { quoteAmount: null, note: '' };
+  const off = discountFor(price, job.discount);
+  return off
+    ? { quoteAmount: price - off, note: `$${price} less $${off} plan discount` }
+    : { quoteAmount: price, note: '' };
+}
+
 // Create one confirmed, calendar-scheduled booking from a plan's current
 // nextDate, then advance the plan a cycle. Shared by the daily cron and the
-// manual "generate next visit" action. The booking carries recurringId so the
-// customer's visit history stays linked to the plan.
+// manual "book next visit" action. The booking carries recurringId so the
+// customer's visit history stays linked to their profile.
 async function createBookingFromPlan(job: RecurringJob): Promise<{ job: RecurringJob; booking: Booking }> {
   // Default recurring visits to the configured start time (Settings ->
   // Scheduling) on the due date; editable on the calendar afterwards. This is
   // what "generates the future calendar entry".
   const settings = await getSettings();
   const scheduledAt = new Date(`${job.nextDate}T${settings.defaultJobStartTime}:00`).toISOString();
+  const pricing = planPricing(job, job.visitPrice);
   const booking = await addBooking({
     name: job.name,
     phone: job.phone,
@@ -1960,15 +2028,15 @@ async function createBookingFromPlan(job: RecurringJob): Promise<{ job: Recurrin
     preferredDate: job.nextDate,
     preferredTime: job.preferredTime,
     notes: job.notes,
-    quoteAmount: null,
-    adminNotes: `Auto-created from ${job.frequency} plan ${job.id}${job.visitPrice ? ` (worth $${job.visitPrice}/visit)` : ''}`,
+    quoteAmount: pricing.quoteAmount,
+    adminNotes: [`Recurring visit for ${job.name} (${job.id})`, pricing.note].filter(Boolean).join(' · '),
     status: 'confirmed',
     source: 'manual',
     scheduledAt,
     recurringId: job.id,
   });
   const advanced = await updateRecurringJob(job.id, {
-    nextDate: advanceDate(job.nextDate, job.frequency, job.customIntervalWeeks),
+    nextDate: advancePlan(job, job.nextDate),
     lastBookingId: booking.id,
   });
   return { job: advanced ?? job, booking };
@@ -1976,7 +2044,7 @@ async function createBookingFromPlan(job: RecurringJob): Promise<{ job: Recurrin
 
 export async function runRecurringDue(): Promise<{ job: RecurringJob; booking: Booking }[]> {
   // Settings -> Scheduling -> "Recurring auto-book enabled" pauses just the
-  // unattended daily cron; the manual "generate next visit" button still works.
+  // unattended daily cron; the manual "book next visit" button still works.
   if (!(await getSettings()).recurringAutoBookEnabled) return [];
   const today = new Date().toISOString().slice(0, 10);
   const jobs = await getRecurringJobs();
@@ -1997,10 +2065,152 @@ export async function generateNextVisit(planId: string): Promise<{ job: Recurrin
   return createBookingFromPlan(job);
 }
 
-// A customer's recurring visit history: every booking generated by a plan.
+// "New job" on a customer's profile: a booking on a date the admin picks,
+// prefilled from the profile and linked to it. If the job lands on or after
+// the next due visit, the plan's nextDate moves to one cycle after it, so the
+// daily cron doesn't book that same visit a second time.
+export async function createJobForProfile(planId: string, input: {
+  date: string;               // YYYY-MM-DD (Canberra)
+  scheduledAt: string | null; // ISO instant, or null for no calendar slot yet
+  price: number | null;       // before the plan discount
+  service?: string;
+  notes?: string;
+}): Promise<{ job: RecurringJob; booking: Booking } | null> {
+  const job = (await getRecurringJobs()).find(j => j.id === planId);
+  if (!job) return null;
+  const pricing = planPricing(job, input.price);
+  const booking = await addBooking({
+    name: job.name,
+    phone: job.phone,
+    email: job.email,
+    address: job.address,
+    suburb: job.suburb,
+    service: (input.service || job.service) as ServiceType,
+    propertyType: job.propertyType,
+    preferredDate: input.date,
+    preferredTime: job.preferredTime,
+    notes: input.notes ?? job.notes,
+    quoteAmount: pricing.quoteAmount,
+    adminNotes: [`Recurring visit for ${job.name} (${job.id})`, pricing.note].filter(Boolean).join(' · '),
+    status: 'confirmed',
+    source: 'manual',
+    scheduledAt: input.scheduledAt,
+    recurringId: job.id,
+  });
+  const next = advancePlan(job, input.date);
+  const advanced = await updateRecurringJob(job.id, {
+    lastBookingId: booking.id,
+    ...(next > job.nextDate ? { nextDate: next } : {}),
+  });
+  return { job: advanced ?? job, booking };
+}
+
+// Same person, judged by phone (last 9 digits, so 04xx and +614xx match), email,
+// or — for bookings with neither — the same name at the same address.
+type CustomerKey = { name: string; phone: string; email: string; address: string };
+function sameCustomer(a: CustomerKey, b: CustomerKey): boolean {
+  const ph = (p: string) => (p ?? '').replace(/\D/g, '').slice(-9);
+  const lo = (e: string) => (e ?? '').trim().toLowerCase();
+  return (ph(a.phone).length === 9 && ph(a.phone) === ph(b.phone))
+    || (!!lo(a.email) && lo(a.email) === lo(b.email))
+    || (!!lo(a.name) && !!lo(a.address) && lo(a.name) === lo(b.name) && lo(a.address) === lo(b.address));
+}
+
+// A customer's page (/admin/customers/[bookingId]) — no stored customer record;
+// it's every booking that matches the one you clicked (same phone/email, same
+// name+address, or the same recurring profile), newest first.
+export async function getCustomerBookings(bookingId: string): Promise<{ anchor: Booking; bookings: Booking[] } | null> {
+  const anchor = await getBookingById(bookingId);
+  if (!anchor) return null;
+  const when = (b: Booking) => b.scheduledAt ?? b.createdAt;
+  const bookings = (await getBookings())
+    .filter(b => b.id === anchor.id || sameCustomer(b, anchor) || (!!anchor.recurringId && b.recurringId === anchor.recurringId))
+    .sort((a, b) => when(b).localeCompare(when(a)));
+  return { anchor, bookings };
+}
+
+// "New job" on a customer's page: a one-off booking with their details copied
+// from their most recent booking. Not a plan — nothing repeats. If they happen
+// to be a recurring customer the job still links to that profile.
+export async function createJobForCustomer(bookingId: string, input: {
+  date: string; scheduledAt: string | null; price: number | null; service?: string; notes?: string;
+}): Promise<Booking | null> {
+  const found = await getCustomerBookings(bookingId);
+  if (!found) return null;
+  const src = found.bookings[0] ?? found.anchor;
+  return addBooking({
+    name: src.name,
+    phone: src.phone,
+    email: src.email,
+    address: src.address,
+    suburb: src.suburb,
+    service: (input.service || src.service) as ServiceType,
+    propertyType: src.propertyType,
+    preferredDate: input.date,
+    preferredTime: '',
+    notes: input.notes ?? '',
+    quoteAmount: input.price,
+    adminNotes: `Repeat job for ${src.name}`,
+    status: 'confirmed',
+    source: 'manual',
+    scheduledAt: input.scheduledAt,
+    recurringId: found.bookings.find(b => b.recurringId)?.recurringId ?? null,
+  });
+}
+
+// "Make recurring customer" on a booking: build the profile from that
+// booking's details, link the booking (and this customer's other unlinked
+// bookings, matched by phone/email) to it, and set the next visit one cycle
+// after the job — rolled forward past today if the job was a while ago.
+export async function createProfileFromBooking(bookingId: string, plan: {
+  frequency: RecurringFrequency;
+  customInterval: number | null;
+  customIntervalUnit: IntervalUnit;
+  discount: number | null;
+  visitPrice: number | null;
+}): Promise<{ job: RecurringJob; linked: number } | null> {
+  const b = await getBookingById(bookingId);
+  if (!b) return null;
+  if (b.recurringId) {
+    const existing = (await getRecurringJobs()).find(j => j.id === b.recurringId);
+    if (existing) return { job: existing, linked: 0 };
+  }
+  const today = sydneyDate(new Date().toISOString());
+  const base = b.scheduledAt ? sydneyDate(b.scheduledAt) : b.completedAt ? sydneyDate(b.completedAt) : today;
+  let nextDate = advancePlan(plan, base);
+  for (let i = 0; i < 500 && nextDate < today; i++) nextDate = advancePlan(plan, nextDate);
+
+  const job = await addRecurringJob({
+    name: b.name,
+    phone: b.phone,
+    email: b.email,
+    address: b.address,
+    suburb: b.suburb,
+    service: b.service || 'window-washing',
+    propertyType: b.propertyType,
+    frequency: plan.frequency,
+    customInterval: plan.frequency === 'custom' ? plan.customInterval : null,
+    customIntervalUnit: plan.customIntervalUnit,
+    discount: plan.discount,
+    nextDate,
+    preferredTime: b.preferredTime,
+    notes: '',
+    visitPrice: plan.visitPrice,
+    billingCycle: 'per_visit',
+    customBillingCycle: null,
+  });
+
+  const toLink = (await getBookings()).filter(x => x.id === b.id || (!x.recurringId && sameCustomer(x, b)));
+  for (const x of toLink) await updateBooking(x.id, { recurringId: job.id });
+  const linked = await updateRecurringJob(job.id, { lastBookingId: b.id });
+  return { job: linked ?? job, linked: toLink.length };
+}
+
+// A customer's history: every booking linked to their profile, newest first.
 export async function getBookingsForRecurring(planId: string): Promise<Booking[]> {
   const all = await getBookings();
-  return all.filter(b => b.recurringId === planId);
+  const when = (b: Booking) => b.scheduledAt ?? b.createdAt;
+  return all.filter(b => b.recurringId === planId).sort((a, b) => when(b).localeCompare(when(a)));
 }
 
 // ─── Invoices ────────────────────────────────────────────────────────────────
