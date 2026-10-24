@@ -1,5 +1,5 @@
 import { Check } from 'lucide-react';
-import { type Quote, serviceLabel, sortServiceKeys, money, longDate, quoteTotal, paymentTermsText } from '@/lib/quote';
+import { type Quote, serviceLabel, sortServiceKeys, money, longDate, quoteDiscountBreakdown, paymentTermsText } from '@/lib/quote';
 
 // Display fields QuotePreview needs. The modal's live (unsaved) draft passes
 // a synthesized object (number/token may be placeholders) before the quote
@@ -30,7 +30,7 @@ export default function QuotePreview({ quote }: { quote: QuotePreviewData }) {
       .filter(l => l.description.trim() || l.amount)
       .map(l => ({ label: l.description.trim() || 'Other', amount: Number(l.amount) || 0 })),
   ];
-  const total = quoteTotal(quote);
+  const { beforeDiscount, discount, total } = quoteDiscountBreakdown(quote);
 
   return (
     <div className="quote-sheet bg-white text-slate-900 mx-auto w-full" style={{ maxWidth: '820px' }}>
@@ -96,7 +96,7 @@ export default function QuotePreview({ quote }: { quote: QuotePreviewData }) {
               <div key={i} className="px-4 py-2.5 flex items-center gap-2.5 text-sm">
                 <Check className="w-4 h-4 text-sky-600 flex-shrink-0" />
                 <span className="text-slate-900 flex-1">{it.label}</span>
-                <span className="text-slate-900 font-medium">{money(it.amount)}</span>
+                <span className={`font-medium ${it.amount < 0 ? 'text-emerald-700' : 'text-slate-900'}`}>{money(it.amount)}</span>
               </div>
             ))}
           </div>
@@ -113,9 +113,23 @@ export default function QuotePreview({ quote }: { quote: QuotePreviewData }) {
         {/* Total */}
         <div className="mt-5 flex justify-end">
           <div className="w-full sm:w-72 text-right">
-            <div className="flex justify-between pt-2 border-t-2 border-slate-900 text-base font-bold text-slate-900">
-              <span>Total</span><span>{money(total)} AUD</span>
-            </div>
+            {discount < 0 ? (
+              <>
+                <div className="flex justify-between pt-2 border-t-2 border-slate-900 text-base font-bold text-slate-900">
+                  <span>Total</span><span className="line-through decoration-2">{money(beforeDiscount)} AUD</span>
+                </div>
+                <div className="flex justify-between mt-1 text-sm font-medium text-emerald-700">
+                  <span>Discount</span><span>{money(discount)}</span>
+                </div>
+                <div className="flex justify-between mt-1.5 text-xl font-extrabold text-slate-900">
+                  <span>You pay</span><span>{money(total)} AUD</span>
+                </div>
+              </>
+            ) : (
+              <div className="flex justify-between pt-2 border-t-2 border-slate-900 text-base font-bold text-slate-900">
+                <span>Total</span><span>{money(total)} AUD</span>
+              </div>
+            )}
           </div>
         </div>
 

@@ -191,6 +191,19 @@ export function quoteTotal(q: Pick<Quote, 'services' | 'extras' | 'itemAmounts' 
   return checkedSum + otherSum;
 }
 
+// Splits the total into the price before discounts and the discounts (all the
+// negative lines, e.g. "Meta ads discount -100"). discount is <= 0; when it's
+// 0 there's nothing to show crossed out.
+export function quoteDiscountBreakdown(q: Pick<Quote, 'services' | 'extras' | 'itemAmounts' | 'otherLines'>): { beforeDiscount: number; discount: number; total: number } {
+  const amounts = [
+    ...[...q.services, ...q.extras].map(k => Number(q.itemAmounts?.[k]) || 0),
+    ...(q.otherLines ?? []).map(l => Number(l.amount) || 0),
+  ];
+  const discount = amounts.filter(a => a < 0).reduce((s, a) => s + a, 0);
+  const total = quoteTotal(q);
+  return { beforeDiscount: total - discount, discount, total };
+}
+
 export function emptyQuoteDraft(fromDefaults: { fromName: string; fromTradingAs: string; fromAbn: string; fromAddress: string; fromEmail: string; fromPhone: string }, todayStr: string): QuoteInput {
   return {
     bookingId: '',
@@ -251,7 +264,12 @@ export function buildQuoteText(quote: Pick<Quote,
     lines.push(quote.scope.trim());
   }
   lines.push('');
-  lines.push(`Total quote: ${money(quoteTotal(quote))}`);
+  const { beforeDiscount, discount, total } = quoteDiscountBreakdown(quote);
+  if (discount < 0) {
+    lines.push(`Was: ${money(beforeDiscount)}`);
+    lines.push(`Discount: ${money(discount)}`);
+  }
+  lines.push(`Total quote: ${money(total)}`);
   if (quote.assumptions?.trim()) {
     lines.push('');
     lines.push('Assumptions this quote is based on:');

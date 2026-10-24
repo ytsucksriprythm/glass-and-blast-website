@@ -9,7 +9,7 @@ import {
   QUOTE_SERVICE_OPTIONS, QUOTE_EXTRA_OPTIONS, QUOTE_VALID_DAYS, WINDOW_INSIDE_KEY, WINDOW_OUTSIDE_KEY,
   DEFAULT_QUOTE_TERMS, DEFAULT_QUOTE_ASSUMPTIONS, DEFAULT_PAYMENT_DUE_TERMS, PAYMENT_DUE_TERMS_OPTIONS, type PaymentDueTerms,
   SCOPE_PRESETS, ASSUMPTION_PRESETS, DEFAULT_ASSUMPTION_PRESET_KEYS, buildFromPresets,
-  addDays, buildQuoteText, quoteTotal, money, emptyOtherLine,
+  addDays, buildQuoteText, quoteTotal, quoteDiscountBreakdown, money, emptyOtherLine,
 } from '@/lib/quote';
 import { quoteShareMessage, quoteShareClipboardText } from '@/lib/quoteShare';
 import { BUSINESS_DEFAULTS, type BusinessProfile, cleanAmountInput, DISCOUNT_PRESETS } from '@/lib/invoice';
@@ -216,6 +216,7 @@ export default function QuoteModal({ bookingId, booking, initial, onClose, onSav
     setDraft(d => ({ ...d, otherLines: d.otherLines.map(l => l.id === id ? { ...l, ...patch } : l) }));
   const removeOtherLine = (id: string) => setDraft(d => ({ ...d, otherLines: d.otherLines.filter(l => l.id !== id) }));
   const total = quoteTotal(draft);
+  const { beforeDiscount, discount } = quoteDiscountBreakdown(draft);
 
   // Custom text (if any) wins outright — checked boxes only matter when
   // Custom is empty. Keeping both scopePresets/assumptionPresets around even
@@ -453,7 +454,10 @@ export default function QuoteModal({ bookingId, booking, initial, onClose, onSav
 
             <div className="rounded-lg border border-white/10 bg-white/[0.03] px-4 py-3 flex items-center justify-between">
               <span className="text-slate-400 text-sm">Total (from items above)</span>
-              <span className="text-white font-bold text-lg">{money(total)}</span>
+              <span className="text-right">
+                {discount < 0 && <span className="block text-slate-500 text-sm line-through">{money(beforeDiscount)}</span>}
+                <span className="text-white font-bold text-lg">{money(total)}</span>
+              </span>
             </div>
 
             <div className="grid grid-cols-2 gap-3">
