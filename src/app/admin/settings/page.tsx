@@ -8,9 +8,10 @@ import {
   ArrowLeft, Settings as SettingsIcon, Save, ShieldAlert, CreditCard, Bell, Star,
   CalendarClock, Globe, ScrollText, RefreshCw, FileEdit, Trash2, Plus, Pencil, X, Check, MapPin, Sparkles,
   FolderOpen, UploadCloud, Copy, ExternalLink, FileVideo, FileImage, File as FileIcon, Lock, Facebook, ChevronDown,
-  Users, Eye, KeyRound, Download, FileSignature,
+  Users, Eye, KeyRound, Download, FileSignature, Layers,
 } from 'lucide-react';
 import type { AppSettings } from '@/lib/settings';
+import { packagePricesFromComplete, packagePercentsFromSettings } from '@/lib/quote';
 import type { PaymentProfile, BusinessProfile } from '@/lib/invoice';
 import type { VaultItem } from '@/lib/vault';
 import type { Booking, BookingStatus } from '@/lib/db';
@@ -1033,6 +1034,24 @@ export default function SettingsPage() {
                   checked={s.defaultShowAddressOnQuote}
                   onChange={v => set('defaultShowAddressOnQuote', v)}
                 />
+              </Section>
+
+              <Section title="Three-package quotes" icon={Layers}>
+                <p className="text-slate-500 text-xs">
+                  You type the Complete price on each quote. Essential and Premium Detail are worked out from it using these percents.
+                  Quotes you&apos;ve already made keep their prices.
+                </p>
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label="Essential (% of Complete)" type="number" value={s.packageEssentialPercent} onChange={v => set('packageEssentialPercent', Number(v) || 0)} />
+                  <Field label="Premium Detail (% of Complete)" type="number" value={s.packagePremiumPercent} onChange={v => set('packagePremiumPercent', Number(v) || 0)} />
+                </div>
+                <p className="text-slate-500 text-xs">
+                  e.g. a $400 Complete gives Essential{' '}
+                  <span className="text-slate-300 font-semibold">{money(packagePricesFromComplete(40000, packagePercentsFromSettings(s)).essential / 100)}</span>{' '}
+                  (nearest $1) and Premium Detail{' '}
+                  <span className="text-slate-300 font-semibold">{money(packagePricesFromComplete(40000, packagePercentsFromSettings(s)).premium / 100)}</span>{' '}
+                  (nearest $50). Essential can be 1-100%, Premium Detail 100-500%.
+                </p>
               </Section>
 
               <ProfileManager<PaymentProfile>

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  packagePricesFromComplete, quoteForPackage, quoteDiscountBreakdown, packageIneligibleReason, resolvePackageFields,
+  packagePricesFromComplete, packagePercentsFromSettings, quoteForPackage, quoteDiscountBreakdown, packageIneligibleReason, resolvePackageFields,
   buildQuoteText, emptyQuoteDraft, PACKAGE_INCLUSIONS, PACKAGE_HARD_WATER_TERMS, WINDOW_INSIDE_KEY, WINDOW_OUTSIDE_KEY,
 } from '../../src/lib/quote';
 
@@ -53,6 +53,22 @@ test('server ignores Essential/Premium sent by the browser and adds the hard-wat
   assert.equal(r.amount, 400);
   assert.ok(r.termsText.includes(PACKAGE_HARD_WATER_TERMS));
   assert.deepEqual(resolvePackageFields({ quoteType: 'single' }, q), { quoteType: 'single', packagePrices: null, amount: null, termsText: q.termsText });
+});
+
+test('custom Settings percents (e.g. 80% / 200%) and keeping stored prices', () => {
+  const pct = packagePercentsFromSettings({ packageEssentialPercent: 80, packagePremiumPercent: 200 });
+  assert.deepEqual(packagePricesFromComplete(40000, pct), { essential: 32000, complete: 40000, premium: 80000 });
+  assert.deepEqual(packagePricesFromComplete(39900, pct), { essential: 31900, complete: 39900, premium: 80000 }); // 798 -> $800
+  assert.deepEqual(packagePercentsFromSettings(null), { essential: 75, premium: 175 });
+
+  const q = { services: WINDOWS, extras: [], otherLines: [], termsText: '' };
+  const old = packagePricesFromComplete(40000); // saved under 75 / 175
+  // Re-saving with the same Complete keeps the old prices even though Settings changed...
+  const same = resolvePackageFields({ quoteType: 'packages', packagePrices: { complete: 40000 } }, q, pct, old);
+  assert.ok(!('error' in same) && same.packagePrices === old);
+  // ...but a new Complete price uses the current Settings.
+  const changed = resolvePackageFields({ quoteType: 'packages', packagePrices: { complete: 50000 } }, q, pct, old);
+  assert.ok(!('error' in changed) && changed.packagePrices?.premium === 100000);
 });
 
 test('single quotes: copied text unchanged by the package code', () => {

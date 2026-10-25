@@ -327,12 +327,25 @@ function roundHalfUpCents(num: number, den: number, step: number): number {
   return Math.floor((num * 2 + den * step) / (den * step * 2)) * step;
 }
 
-export function packagePricesFromComplete(completeCents: number): PackagePricesCents {
+// Whole-number percents of Complete, set in Settings -> Three-package quotes
+// (packageEssentialPercent / packagePremiumPercent). Defaults 75 / 175.
+export interface PackagePercents { essential: number; premium: number; }
+export const DEFAULT_PACKAGE_PERCENTS: PackagePercents = { essential: 75, premium: 175 };
+
+export function packagePercentsFromSettings(s: { packageEssentialPercent?: number; packagePremiumPercent?: number } | null | undefined): PackagePercents {
+  const pick = (v: unknown, d: number) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? Math.round(v) : d);
+  return {
+    essential: pick(s?.packageEssentialPercent, DEFAULT_PACKAGE_PERCENTS.essential),
+    premium: pick(s?.packagePremiumPercent, DEFAULT_PACKAGE_PERCENTS.premium),
+  };
+}
+
+export function packagePricesFromComplete(completeCents: number, pct: PackagePercents = DEFAULT_PACKAGE_PERCENTS): PackagePricesCents {
   const c = Math.max(0, Math.round(completeCents));
   return {
-    essential: roundHalfUpCents(c * 3, 4, 100),   // × 0.75, nearest $1
+    essential: roundHalfUpCents(c * pct.essential, 100, 100),   // × essential%, nearest $1
     complete: c,
-    premium: roundHalfUpCents(c * 7, 4, 5000),    // × 1.75, nearest $50
+    premium: roundHalfUpCents(c * pct.premium, 100, 5000),      // × premium%, nearest $50
   };
 }
 
@@ -404,18 +417,23 @@ export function quoteForPackage<T extends Pick<Quote, 'services' | 'extras' | 'i
 
 // Server-side: turn whatever the admin sent into the stored package fields.
 // Only packagePrices.complete (cents) is read from the request; the other two
-// are derived here.
+// are derived here using the current Settings percents. `keep` is the quote's
+// already-stored prices: if the Complete price hasn't changed they're kept as
+// they are, so changing the percents in Settings never re-prices a quote
+// that's only being re-saved (e.g. to fix a name or date).
 // Returns an error string when the quote can't be a package quote.
 export function resolvePackageFields(
   body: { quoteType?: unknown; packagePrices?: unknown },
   q: Pick<Quote, 'services' | 'extras' | 'otherLines' | 'termsText'>,
+  pct: PackagePercents = DEFAULT_PACKAGE_PERCENTS,
+  keep: PackagePricesCents | null = null,
 ): { error: string } | { quoteType: QuoteType; packagePrices: PackagePricesCents | null; amount: number | null; termsText: string } {
   if (body.quoteType !== 'packages') return { quoteType: 'single', packagePrices: null, amount: null, termsText: q.termsText };
   const reason = packageIneligibleReason(q);
   if (reason) return { error: reason };
   const raw = body.packagePrices && typeof body.packagePrices === 'object' ? Number((body.packagePrices as Record<string, unknown>).complete) : NaN;
   if (!Number.isFinite(raw) || raw <= 0) return { error: 'Enter the Complete price (before discounts)' };
-  const packagePrices = packagePricesFromComplete(raw);
+  const packagePrices = keep && keep.complete === Math.round(raw) ? keep : packagePricesFromComplete(raw, pct);
   const termsText = q.termsText.includes(PACKAGE_HARD_WATER_TERMS) ? q.termsText : `${q.termsText.trim()} ${PACKAGE_HARD_WATER_TERMS}`.trim();
   return { quoteType: 'packages', packagePrices, amount: packageTotal({ otherLines: q.otherLines, packagePrices }, 'complete'), termsText };
 }

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getQuoteById, updateQuote, deleteQuote, logActivity } from '@/lib/db';
+import { getQuoteById, updateQuote, deleteQuote, logActivity, getSettings } from '@/lib/db';
 import { isAdminAuthenticated } from '@/lib/auth';
-import { type Quote, resolvePackageFields } from '@/lib/quote';
+import { type Quote, resolvePackageFields, packagePercentsFromSettings } from '@/lib/quote';
 
 export const dynamic = 'force-dynamic';
 
@@ -56,6 +56,8 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     const pkg = resolvePackageFields(
       { quoteType: 'quoteType' in b ? b.quoteType : existing.quoteType, packagePrices: 'packagePrices' in b ? b.packagePrices : existing.packagePrices },
       merged,
+      packagePercentsFromSettings(await getSettings()),
+      existing.quoteType === 'packages' ? existing.packagePrices ?? null : null,
     );
     if ('error' in pkg) return NextResponse.json({ error: pkg.error }, { status: 400 });
     updates.quoteType = pkg.quoteType;

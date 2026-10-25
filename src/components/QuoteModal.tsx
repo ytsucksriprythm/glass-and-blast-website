@@ -10,7 +10,7 @@ import {
   DEFAULT_QUOTE_TERMS, DEFAULT_QUOTE_ASSUMPTIONS, DEFAULT_PAYMENT_DUE_TERMS, PAYMENT_DUE_TERMS_OPTIONS, type PaymentDueTerms,
   SCOPE_PRESETS, ASSUMPTION_PRESETS, DEFAULT_ASSUMPTION_PRESET_KEYS, buildFromPresets,
   addDays, buildQuoteText, quoteTotal, quoteDiscountBreakdown, money, emptyOtherLine,
-  type QuoteType, type PackageKey, PACKAGE_KEYS, PACKAGE_INFO, packagePricesFromComplete, packageIneligibleReason, packageTotal,
+  type QuoteType, type PackageKey, PACKAGE_KEYS, PACKAGE_INFO, packagePricesFromComplete, packagePercentsFromSettings, packageIneligibleReason, packageTotal,
   toCents, fromCents,
 } from '@/lib/quote';
 import QuotePackageCards from './QuotePackageCards';
@@ -238,8 +238,10 @@ export default function QuoteModal({ bookingId, booking, initial, onClose, onSav
       services: t === 'packages' && d.services.length === 0 ? [WINDOW_OUTSIDE_KEY, WINDOW_INSIDE_KEY] : d.services,
     }));
   };
+  // Same percents the server uses (Settings -> Three-package quotes).
+  const pct = packagePercentsFromSettings(settings);
   const setCompletePrice = (dollars: number) =>
-    set('packagePrices', dollars > 0 ? packagePricesFromComplete(toCents(dollars)) : null);
+    set('packagePrices', dollars > 0 ? packagePricesFromComplete(toCents(dollars), pct) : null);
   const [previewPkg, setPreviewPkg] = useState<PackageKey | null>(null);
 
   const total = isPackages ? packageTotal(draft, 'complete') : quoteTotal(draft);
@@ -310,6 +312,8 @@ export default function QuoteModal({ bookingId, booking, initial, onClose, onSav
       const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       if (!res.ok) { toast.error((await res.json()).error || 'Failed to save'); return; }
       const quote: Quote = await res.json();
+      // The server's package prices are the real ones — show exactly those.
+      if (quote.quoteType === 'packages') setDraft(d => ({ ...d, packagePrices: quote.packagePrices ?? d.packagePrices }));
       setSaved(quote);
       onSaved(quote);
       toast.success(initial || saved ? 'Quote updated' : `Quote ${quote.number} created`);
@@ -411,7 +415,7 @@ export default function QuoteModal({ bookingId, booking, initial, onClose, onSav
                     <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500 text-xs">$</span>
                     <AmountInput className="form-input pl-6 py-2 text-sm w-full" value={fromCents(completeCents)} onChange={n => !locked && setCompletePrice(Math.max(0, n))} />
                   </span>
-                  <p className="text-slate-500 text-xs mt-1">Essential = 75% (to the nearest $1), Premium Detail = 175% (to the nearest $50). Add discounts under Other below.</p>
+                  <p className="text-slate-500 text-xs mt-1">Essential = {pct.essential}% (to the nearest $1), Premium Detail = {pct.premium}% (to the nearest $50), change these in Settings. Add discounts under Other below.</p>
                 </div>
                 <div className="grid grid-cols-3 gap-2">
                   {PACKAGE_KEYS.map(k => {

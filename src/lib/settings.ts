@@ -53,6 +53,12 @@ export interface AppSettings {
   // quote is never a tax invoice.
   defaultShowAddressOnQuote: boolean;
 
+  // Three-package quotes (src/lib/quote.ts): Essential and Premium Detail as a
+  // whole-number % of the Complete price. Each quote stores its own prices
+  // when saved, so changing these never changes quotes already made.
+  packageEssentialPercent: number;  // Essential, rounded to the nearest $1
+  packagePremiumPercent: number;    // Premium Detail, rounded to the nearest $50
+
   // LARP mode (src/lib/larp.ts) — a joke "make us look busy and rich" button.
   // Fills the CRM with fake, clearly-tagged bookings; turning it off deletes
   // exactly those rows and nothing else. larpRevenueTarget is the slider
@@ -98,6 +104,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
 
   defaultShowAddressOnInvoice: true,
   defaultShowAddressOnQuote: false,
+
+  packageEssentialPercent: 75,
+  packagePremiumPercent: 175,
 
   larpModeActive: false,
   larpRevenueTarget: 250000,

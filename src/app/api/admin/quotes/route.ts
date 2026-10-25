@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getQuotes, getQuotesForBooking, createQuote, logActivity, getSettings } from '@/lib/db';
 import { isAdminAuthenticated } from '@/lib/auth';
-import { addDays, DEFAULT_QUOTE_TERMS, DEFAULT_QUOTE_ASSUMPTIONS, DEFAULT_PAYMENT_DUE_TERMS, isPaymentDueTerms, QUOTE_VALID_DAYS, resolvePackageFields, type QuoteInput, type QuoteOtherLine } from '@/lib/quote';
+import { addDays, DEFAULT_QUOTE_TERMS, DEFAULT_QUOTE_ASSUMPTIONS, DEFAULT_PAYMENT_DUE_TERMS, isPaymentDueTerms, QUOTE_VALID_DAYS, resolvePackageFields, packagePercentsFromSettings, type QuoteInput, type QuoteOtherLine } from '@/lib/quote';
 import { BUSINESS_DEFAULTS } from '@/lib/invoice';
 
 export const dynamic = 'force-dynamic';
@@ -68,7 +68,7 @@ export async function POST(req: NextRequest) {
       termsText: b.termsText || DEFAULT_QUOTE_TERMS,
     };
     // Three-package: prices derived + fixed here, never taken from the browser.
-    const pkg = resolvePackageFields(b, input);
+    const pkg = resolvePackageFields(b, input, packagePercentsFromSettings(settings));
     if ('error' in pkg) return NextResponse.json({ error: pkg.error }, { status: 400 });
     input.quoteType = pkg.quoteType;
     input.packagePrices = pkg.packagePrices;
