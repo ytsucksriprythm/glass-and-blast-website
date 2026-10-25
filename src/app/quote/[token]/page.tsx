@@ -2,7 +2,8 @@ import { notFound } from 'next/navigation';
 import type { Metadata } from 'next';
 import { ArrowLeft, CheckCircle2 } from 'lucide-react';
 import { getQuoteByToken } from '@/lib/db';
-import { buildQuoteText, isPackageKey, isPackageQuote, longDate, PACKAGE_INFO, type Quote } from '@/lib/quote';
+import { buildQuoteText, isPackageKey, isPackageQuote, longDate, money, PACKAGE_INFO, type Quote } from '@/lib/quote';
+import QuoteAcceptedPopup from '@/components/QuoteAcceptedPopup';
 import QuotePreview from '@/components/QuotePreview';
 import QuotePackageCards from '@/components/QuotePackageCards';
 import QuoteAcceptButton from '@/components/QuoteAcceptButton';
@@ -23,9 +24,10 @@ export async function generateMetadata({ params }: { params: Promise<{ token: st
 
 export default async function PublicQuotePage({ params, searchParams }: {
   params: Promise<{ token: string }>;
-  searchParams: Promise<{ package?: string }>;
+  searchParams: Promise<{ package?: string; accepted?: string }>;
 }) {
   const { token } = await params;
+  const { package: picked, accepted } = await searchParams;
   const quote = await getQuoteByToken(token);
   if (!quote) notFound();
 
@@ -33,7 +35,6 @@ export default async function PublicQuotePage({ params, searchParams }: {
   // formal quote for whichever one they pick (?package=). Once accepted, the
   // stored selectedPackage wins and ?package= is ignored.
   if (isPackageQuote(quote) && !quote.acceptedAt) {
-    const { package: picked } = await searchParams;
     if (!isPackageKey(picked)) {
       return (
         <main className="quote-page min-h-[100svh] bg-slate-100 py-8 sm:py-14 px-4 sm:px-6">
@@ -65,6 +66,15 @@ export default async function PublicQuotePage({ params, searchParams }: {
 
   return (
     <QuoteShell quote={quote}>
+      {/* Straight after accepting (?accepted=1): thank-you popup over the quote */}
+      {quote.acceptedAt && accepted === '1' && (
+        <QuoteAcceptedPopup
+          firstName={(quote.billToName ?? '').trim().split(/\s+/)[0] ?? ''}
+          what={quote.selectedPackage ? `the ${PACKAGE_INFO[quote.selectedPackage].name} package` : 'your quote'}
+          total={money(quote.amount)}
+          phone={quote.fromPhone}
+        />
+      )}
       {quote.acceptedAt ? (
         <div className="no-print mt-5 flex items-center gap-2 rounded-xl bg-emerald-50 ring-1 ring-emerald-200 px-4 py-3 text-sm text-emerald-800">
           <CheckCircle2 className="w-5 h-5 flex-shrink-0" />

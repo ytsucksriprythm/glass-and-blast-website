@@ -6,8 +6,8 @@ import type { PackageKey } from '@/lib/quote';
 
 // Accepts a quote. For a three-package quote only the package key is sent;
 // for a single quote nothing is. The server works out the price either way.
-// Afterwards the page reloads without any ?package= param, and from then on
-// it only shows the accepted quote.
+// Afterwards the page reloads with ?accepted=1 (thank-you popup) instead of
+// ?package=, and from then on it only shows the accepted quote.
 export default function QuoteAcceptButton({ token, pkg = null, pkgName = '' }: { token: string; pkg?: PackageKey | null; pkgName?: string }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -20,7 +20,8 @@ export default function QuoteAcceptButton({ token, pkg = null, pkgName = '' }: {
       const res = await fetch(`/api/quote/${token}/accept`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(pkg ? { package: pkg } : {}),
       });
-      if (res.ok || res.status === 409) { window.location.href = `/quote/${token}`; return; }
+      if (res.ok) { window.location.href = `/quote/${token}?accepted=1`; return; }  // shows the thank-you popup
+      if (res.status === 409) { window.location.href = `/quote/${token}`; return; }
       setError((await res.json().catch(() => null))?.error || 'Something went wrong, please try again or give us a call.');
     } catch {
       setError('Could not reach us, please check your connection and try again.');
