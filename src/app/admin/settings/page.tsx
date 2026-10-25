@@ -8,7 +8,7 @@ import {
   ArrowLeft, Settings as SettingsIcon, Save, ShieldAlert, CreditCard, Bell, Star,
   CalendarClock, Globe, ScrollText, RefreshCw, FileEdit, Trash2, Plus, Pencil, X, Check, MapPin, Sparkles,
   FolderOpen, UploadCloud, Copy, ExternalLink, FileVideo, FileImage, File as FileIcon, Lock, Facebook, ChevronDown,
-  Users, Eye, KeyRound, Download,
+  Users, Eye, KeyRound, Download, FileSignature,
 } from 'lucide-react';
 import type { AppSettings } from '@/lib/settings';
 import type { PaymentProfile, BusinessProfile } from '@/lib/invoice';
@@ -1080,6 +1080,27 @@ export default function SettingsPage() {
               <Section title="Scheduling" icon={CalendarClock}>
                 <Field label="Default job start time" type="time" value={s.defaultJobStartTime} onChange={v => set('defaultJobStartTime', v)} />
                 <Toggle label="Recurring auto-book enabled" checked={s.recurringAutoBookEnabled} onChange={v => set('recurringAutoBookEnabled', v)} />
+              </Section>
+
+              <Section title="Recurring customer contract" icon={FileSignature}>
+                <p className="text-slate-500 text-xs -mt-1 mb-1">
+                  The contract recurring customers e-sign in their portal. Each signed contract keeps the terms it was signed under, so changes here only apply to new signatures.
+                </p>
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label="Contract length (months)" type="number" value={s.contractTermMonths} onChange={v => set('contractTermMonths', Number(v) || 1)} />
+                  <Field label="Cancel fee (% of remaining visits)" type="number" value={s.contractCancelFeePercent} onChange={v => set('contractCancelFeePercent', Number(v) || 0)} />
+                  <Field label="Cooling-off (business days, 0 = none)" type="number" value={s.contractCoolingOffDays} onChange={v => set('contractCoolingOffDays', Number(v) || 0)} />
+                </div>
+                <Toggle
+                  label="Cancel fee only in the first term"
+                  sub="After the first contract term ends they can cancel any time with no fee."
+                  checked={s.contractFeeFirstTermOnly}
+                  onChange={v => set('contractFeeFirstTermOnly', v)}
+                />
+                <div>
+                  <L>Extra terms (added to every contract)</L>
+                  <textarea className="form-input text-sm w-full resize-y" rows={3} value={s.contractExtraTerms} placeholder="Optional" onChange={e => set('contractExtraTerms', e.target.value)} />
+                </div>
               </Section>
 
               <Section title="Public site" icon={Globe}>

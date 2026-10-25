@@ -192,6 +192,11 @@ export default function RecurringPage() {
                   <div className="flex-shrink-0 text-right">
                     <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-400/15 text-amber-200 border border-amber-400/20">{frequencyLabel(j)}</span>
                     {j.discount ? <div className="text-emerald-300 text-[11px] font-semibold mt-1">${j.discount} off</div> : null}
+                    {j.portal && (
+                      <div className="text-slate-400 text-[11px] mt-1 font-mono" title={j.portal.contract ? 'Agreement signed' : 'Agreement not signed yet'}>
+                        PIN {j.portal.pin} {j.portal.contract ? <span className="text-emerald-300">✓</span> : <span className="text-amber-300">•</span>}
+                      </div>
+                    )}
                   </div>
                   <ChevronRight className="w-4 h-4 text-slate-600 flex-shrink-0" />
                 </Link>

@@ -26,13 +26,18 @@ export async function PATCH(req: NextRequest) {
   const copyNum = (k: keyof AppSettings) => { if (typeof b[k] === 'number' && Number.isFinite(b[k])) (updates as any)[k] = b[k]; };
   const copyBool = (k: keyof AppSettings) => { if (typeof b[k] === 'boolean') (updates as any)[k] = b[k]; };
 
-  (['googleReviewUrl', 'defaultJobStartTime'] as (keyof AppSettings)[]).forEach(copyStr);
-  (['squareSurchargePercent', 'reviewStarThreshold', 'larpRevenueTarget'] as (keyof AppSettings)[]).forEach(copyNum);
+  (['googleReviewUrl', 'defaultJobStartTime', 'contractExtraTerms'] as (keyof AppSettings)[]).forEach(copyStr);
+  (['squareSurchargePercent', 'reviewStarThreshold', 'larpRevenueTarget', 'contractTermMonths', 'contractCancelFeePercent', 'contractCoolingOffDays'] as (keyof AppSettings)[]).forEach(copyNum);
   (['squareCardPaymentsEnabled', 'notificationsEnabled', 'notifyNewBooking', 'customerFeedbackEnabled',
-    'recurringAutoBookEnabled', 'acceptingNewBookings', 'siteTrackingEnabled',
+    'recurringAutoBookEnabled', 'contractFeeFirstTermOnly', 'acceptingNewBookings', 'siteTrackingEnabled',
     'autofillBusinessInfo', 'autofillPaymentDetails', 'defaultShowAddressOnInvoice',
     'larpFakeNumbers', 'larpFakeBookings', 'larpFakeColdLeads', 'larpFakeInvoices', 'larpFakeCalendar',
   ] as (keyof AppSettings)[]).forEach(copyBool);
+
+  // Contract numbers: whole months/days, a sane percentage.
+  if (updates.contractTermMonths !== undefined) updates.contractTermMonths = Math.min(60, Math.max(1, Math.round(updates.contractTermMonths)));
+  if (updates.contractCancelFeePercent !== undefined) updates.contractCancelFeePercent = Math.min(100, Math.max(0, updates.contractCancelFeePercent));
+  if (updates.contractCoolingOffDays !== undefined) updates.contractCoolingOffDays = Math.min(30, Math.max(0, Math.round(updates.contractCoolingOffDays)));
 
   const changedKeys = Object.keys(updates);
   const updated = await updateSettings(updates);

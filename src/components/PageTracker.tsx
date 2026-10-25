@@ -27,7 +27,8 @@ export default function PageTracker() {
   useEffect(() => { captureFirstTouchAttribution(); }, []);
 
   useEffect(() => {
-    if (!pathname || pathname.startsWith('/admin')) return;
+    // Private customer links (portal token in the path) stay out of site stats.
+    if (!pathname || pathname.startsWith('/admin') || pathname.startsWith('/portal')) return;
 
     const viewId = newViewId();
     viewIdRef.current = viewId;

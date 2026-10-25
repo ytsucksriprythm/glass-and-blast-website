@@ -14,6 +14,7 @@ import { frequencyLabel, discountFor, PLAN_DISCOUNT_MIN } from '@/lib/recurring'
 import PlanPicker, { planPayload, type PlanValue } from '@/components/admin/PlanPicker';
 import { AddressLink } from '@/components/AddressLink';
 import { AdminSidebar, AdminMobileNav, AdminMoreSheet, useMoreSheet, adminNavItems } from '@/components/admin/AdminNav';
+import PortalPanel from '@/components/admin/PortalPanel';
 
 const SERVICE_OPTIONS = [
   { v: 'window-washing', l: 'Window Washing' },
@@ -280,6 +281,8 @@ export default function RecurringProfilePage() {
                 )}
                 {job.notes && <Row icon={StickyNote} label="Notes"><span className="whitespace-pre-wrap">{job.notes}</span></Row>}
               </div>
+
+              <PortalPanel job={job} onJob={setJob} />
 
               <h2 className="font-display text-lg font-bold text-white mb-3">Jobs</h2>
               {bookings.length === 0 ? (

@@ -27,6 +27,15 @@ export interface AppSettings {
   defaultJobStartTime: string; // "HH:MM", used when recurring plans auto-book a visit
   recurringAutoBookEnabled: boolean; // pause the daily recurring-plan cron without deleting plans
 
+  // Recurring customer contract (customer portal, src/lib/contract.ts). Each
+  // signed contract snapshots these, so changing them only affects contracts
+  // signed afterwards.
+  contractTermMonths: number;              // length of each term; auto-renews for the same length
+  contractCancelFeePercent: number;        // % of the remaining visits' value owed on early cancellation
+  contractFeeFirstTermOnly: boolean;       // after the first term they can cancel any time, no fee
+  contractCoolingOffDays: number;          // business days after signing to cancel with no fee (0 = none)
+  contractExtraTerms: string;              // extra clause text added to every contract (blank = none)
+
   // Public site
   acceptingNewBookings: boolean; // false shows a "not currently accepting bookings" message instead of the form
   siteTrackingEnabled: boolean;  // page-view tracking (src/components/PageTracker.tsx)
@@ -74,6 +83,12 @@ export const DEFAULT_SETTINGS: AppSettings = {
 
   defaultJobStartTime: '09:00',
   recurringAutoBookEnabled: true,
+
+  contractTermMonths: 12,
+  contractCancelFeePercent: 10,
+  contractFeeFirstTermOnly: true,
+  contractCoolingOffDays: 10,
+  contractExtraTerms: '',
 
   acceptingNewBookings: true,
   siteTrackingEnabled: true,

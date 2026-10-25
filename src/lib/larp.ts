@@ -555,6 +555,7 @@ export function buildLarpRecurringPlans(count = 8): RecurringJob[] {
       customBillingCycle: null,
       active: true,
       lastBookingId: null,
+      portal: null,
       createdAt: now,
       updatedAt: now,
     });

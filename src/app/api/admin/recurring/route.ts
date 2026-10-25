@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getRecurringJobs, addRecurringJob, createProfileFromBooking, type RecurringFrequency, type IntervalUnit } from '@/lib/db';
 import { isAdminAuthenticated } from '@/lib/auth';
+import { ensureAllPortals } from '@/lib/portal';
 
 export const dynamic = 'force-dynamic';
 
@@ -26,7 +27,8 @@ function parsePlan(body: any): { error: string } | {
 
 export async function GET() {
   if (!await isAdminAuthenticated()) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  const jobs = await getRecurringJobs();
+  // Older profiles get their portal link + PIN the first time they're listed.
+  const jobs = await ensureAllPortals(await getRecurringJobs());
   return NextResponse.json(jobs);
 }
 

@@ -13,6 +13,7 @@ import { type Quote, type QuoteInput, type QuoteStatus, type QuoteOtherLine, QUO
 import { type PaymentDueTerms, DEFAULT_PAYMENT_DUE_TERMS, isPaymentDueTerms } from './invoice';
 import { type ActivityEntry, type InvoiceViewSession } from './activity';
 import { discountFor } from './recurring';
+import type { ContractTerms } from './contract';
 import { computePageEngagement, computeScrollBuckets, computeSiteWideTimeStats, computeBookingFunnel } from './analytics';
 
 const DB_PATH = path.join(process.cwd(), 'data', 'bookings.json');
@@ -194,10 +195,43 @@ export interface RecurringJob {
   customBillingCycle: string | null;  // free text, only used when billingCycle === 'custom'
   active: boolean;
   lastBookingId: string | null;
+  portal: CustomerPortal | null;  // customer portal login + signed contract (see src/lib/portal.ts)
   createdAt: string;
   updatedAt: string;
 }
-export type NewRecurringJob = Omit<RecurringJob, 'id' | 'createdAt' | 'updatedAt' | 'lastBookingId' | 'active' | 'customIntervalUnit' | 'discount'> & {
+// A recurring customer's portal (/portal/[token]): they open the link, enter
+// the 4-digit PIN, sign the contract once, then see their jobs/invoices/quotes.
+export interface CustomerPortal {
+  token: string;            // cp_<24 hex>, the unguessable part of the link
+  pin: string;              // 4 digits, shown to admin on the profile
+  sessionVersion: number;   // bumped on a new PIN, which signs everyone out
+  failCount: number;        // wrong PINs in a row; locks for a while at PORTAL_MAX_FAILS
+  lockedUntil: string | null;
+  contract: SignedContract | null;
+  requests: PortalRequest[];
+}
+export interface SignedContract {
+  version: number;          // CONTRACT_VERSION at signing
+  signedAt: string;         // ISO
+  termStart: string;        // YYYY-MM-DD (Canberra), the day it was signed
+  signerName: string;       // typed full name
+  signature: string;        // drawn signature, PNG data URL
+  ip: string;
+  userAgent: string;
+  terms: ContractTerms;     // snapshot of the numbers it was signed under
+  text: string;             // the exact agreement text shown
+}
+export interface PortalRequest {
+  id: string;
+  type: 'book' | 'reschedule';
+  bookingId: string | null; // the new booking (book) or the job to move (reschedule)
+  preferredDate: string;    // YYYY-MM-DD
+  preferredTime: string;
+  note: string;
+  createdAt: string;
+  doneAt: string | null;    // admin ticked it off
+}
+export type NewRecurringJob = Omit<RecurringJob, 'id' | 'createdAt' | 'updatedAt' | 'lastBookingId' | 'active' | 'customIntervalUnit' | 'discount' | 'portal'> & {
   active?: boolean; customIntervalUnit?: IntervalUnit; discount?: number | null;
 };
 
@@ -462,6 +496,8 @@ export async function ensureSchema(): Promise<void> {
       // Custom cadence unit (weeks/months/years) + the per-visit plan discount
       // (the original `discount` column, back in use for the website tiers).
       await sql`ALTER TABLE recurring_jobs ADD COLUMN IF NOT EXISTS custom_interval_unit TEXT NOT NULL DEFAULT 'weeks'`;
+      // Customer portal login + signed contract + requests, one JSON blob (see CustomerPortal)
+      await sql`ALTER TABLE recurring_jobs ADD COLUMN IF NOT EXISTS portal_data TEXT`;
       await sql`CREATE INDEX IF NOT EXISTS bookings_recurring_idx ON bookings (recurring_id)`;
       // Invoices + an atomic per-prefix number counter
       await sql`
@@ -1771,6 +1807,28 @@ function coerceUnit(v: unknown): IntervalUnit {
 }
 const numOrNull = (v: unknown) => (v === null || v === undefined || v === '' ? null : Number(v));
 
+// Customer portal: a fresh link token + 4-digit PIN. crypto.randomInt for the
+// PIN so it isn't guessable from Math.random state.
+export function newPortalPin(): string {
+  return String(crypto.randomInt(0, 10000)).padStart(4, '0');
+}
+export function newPortal(): CustomerPortal {
+  return {
+    token: `cp_${crypto.randomBytes(12).toString('hex')}`,
+    pin: newPortalPin(),
+    sessionVersion: 1,
+    failCount: 0,
+    lockedUntil: null,
+    contract: null,
+    requests: [],
+  };
+}
+function parsePortal(v: unknown): CustomerPortal | null {
+  if (!v || typeof v !== 'string') return null;
+  try { const p = JSON.parse(v); return p && typeof p.token === 'string' ? { requests: [], contract: null, ...p } : null; }
+  catch { return null; }
+}
+
 function readRecurring(): RecurringJob[] {
   try {
     if (!fs.existsSync(RECURRING_PATH)) return [];
@@ -1788,6 +1846,7 @@ function readRecurring(): RecurringJob[] {
         discount: numOrNull(r.discount),
         billingCycle: coerceBillingCycle(r.billingCycle),
         customBillingCycle: r.customBillingCycle ?? null,
+        portal: r.portal ?? null,
       };
     }) : [];
   } catch { return []; }
@@ -1812,6 +1871,7 @@ function rowToRecurring(r: any): RecurringJob {
     customInterval: numOrNull(r.custom_interval_weeks),
     customIntervalUnit: coerceUnit(r.custom_interval_unit),
     discount: numOrNull(r.discount),
+    portal: parsePortal(r.portal_data),
     nextDate: r.next_date,
     preferredTime: r.preferred_time ?? '',
     notes: r.notes ?? '',
@@ -1859,14 +1919,15 @@ export async function addRecurringJob(data: NewRecurringJob): Promise<RecurringJ
     customBillingCycle: data.billingCycle === 'custom' ? (data.customBillingCycle ?? null) : null,
     active: data.active ?? true,
     lastBookingId: null,
+    portal: newPortal(),
     createdAt: now,
     updatedAt: now,
   };
   if (sql) {
     await ensureSchema();
     await sql`
-      INSERT INTO recurring_jobs (id, name, phone, email, address, suburb, service, property_type, frequency, custom_interval_weeks, custom_interval_unit, discount, next_date, preferred_time, notes, visit_price, billing_cycle, custom_billing_cycle, active)
-      VALUES (${job.id}, ${job.name}, ${job.phone}, ${job.email}, ${job.address}, ${job.suburb}, ${job.service}, ${job.propertyType}, ${job.frequency}, ${job.customInterval}, ${job.customIntervalUnit}, ${job.discount}, ${job.nextDate}, ${job.preferredTime}, ${job.notes}, ${job.visitPrice}, ${job.billingCycle}, ${job.customBillingCycle}, ${job.active})
+      INSERT INTO recurring_jobs (id, name, phone, email, address, suburb, service, property_type, frequency, custom_interval_weeks, custom_interval_unit, discount, next_date, preferred_time, notes, visit_price, billing_cycle, custom_billing_cycle, active, portal_data)
+      VALUES (${job.id}, ${job.name}, ${job.phone}, ${job.email}, ${job.address}, ${job.suburb}, ${job.service}, ${job.propertyType}, ${job.frequency}, ${job.customInterval}, ${job.customIntervalUnit}, ${job.discount}, ${job.nextDate}, ${job.preferredTime}, ${job.notes}, ${job.visitPrice}, ${job.billingCycle}, ${job.customBillingCycle}, ${job.active}, ${job.portal ? JSON.stringify(job.portal) : null})
     `;
     return job;
   }
@@ -1881,8 +1942,8 @@ export async function insertRawRecurringJob(job: RecurringJob): Promise<void> {
   if (sql) {
     await ensureSchema();
     await sql`
-      INSERT INTO recurring_jobs (id, name, phone, email, address, suburb, service, property_type, frequency, custom_interval_weeks, custom_interval_unit, discount, next_date, preferred_time, notes, visit_price, billing_cycle, custom_billing_cycle, active, created_at, updated_at)
-      VALUES (${job.id}, ${job.name}, ${job.phone}, ${job.email}, ${job.address}, ${job.suburb}, ${job.service}, ${job.propertyType}, ${job.frequency}, ${job.customInterval}, ${job.customIntervalUnit}, ${job.discount}, ${job.nextDate}, ${job.preferredTime}, ${job.notes}, ${job.visitPrice}, ${job.billingCycle}, ${job.customBillingCycle}, ${job.active}, ${job.createdAt}, ${job.updatedAt})
+      INSERT INTO recurring_jobs (id, name, phone, email, address, suburb, service, property_type, frequency, custom_interval_weeks, custom_interval_unit, discount, next_date, preferred_time, notes, visit_price, billing_cycle, custom_billing_cycle, active, portal_data, created_at, updated_at)
+      VALUES (${job.id}, ${job.name}, ${job.phone}, ${job.email}, ${job.address}, ${job.suburb}, ${job.service}, ${job.propertyType}, ${job.frequency}, ${job.customInterval}, ${job.customIntervalUnit}, ${job.discount}, ${job.nextDate}, ${job.preferredTime}, ${job.notes}, ${job.visitPrice}, ${job.billingCycle}, ${job.customBillingCycle}, ${job.active}, ${job.portal ? JSON.stringify(job.portal) : null}, ${job.createdAt}, ${job.updatedAt})
     `;
     return;
   }
@@ -1921,7 +1982,7 @@ export async function updateRecurringJob(id: string, updates: Partial<RecurringJ
         notes = ${m.notes}, visit_price = ${m.visitPrice ?? null},
         billing_cycle = ${coerceBillingCycle(m.billingCycle)}, custom_billing_cycle = ${m.billingCycle === 'custom' ? (m.customBillingCycle ?? null) : null},
         active = ${m.active},
-        last_booking_id = ${m.lastBookingId}, updated_at = now()
+        last_booking_id = ${m.lastBookingId}, portal_data = ${m.portal ? JSON.stringify(m.portal) : null}, updated_at = now()
       WHERE id = ${id}
       RETURNING *
     `;

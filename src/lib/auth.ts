@@ -165,3 +165,50 @@ export function verifyPasswordHash(pw: string, hash: string): boolean {
     return false;
   }
 }
+
+// ─── Customer portal sessions ────────────────────────────────────────────────
+// A recurring customer who entered their PIN at /portal/[token]. The cookie
+// carries their profile id + the profile's sessionVersion, so issuing a new PIN
+// (which bumps the version) signs every old session out. Scoped to /portal
+// paths only; never grants anything admin-side.
+const PORTAL_COOKIE_NAME = 'gb_portal_session';
+
+export function createPortalToken(profileId: string, version: number): string {
+  const payload = `portal:${profileId}:${version}:${Date.now()}`;
+  return Buffer.from(`${payload}:${sign(payload)}`).toString('base64');
+}
+
+export async function getPortalSession(): Promise<{ profileId: string; version: number } | null> {
+  if (!SECRET) return null;
+  const token = (await cookies()).get(PORTAL_COOKIE_NAME)?.value;
+  if (!token) return null;
+  try {
+    const decoded = Buffer.from(token, 'base64').toString('utf-8');
+    const lastColon = decoded.lastIndexOf(':');
+    const payload = decoded.slice(0, lastColon);
+    const a = Buffer.from(sign(payload));
+    const b = Buffer.from(decoded.slice(lastColon + 1));
+    if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
+    const [kind, profileId, version, ts] = payload.split(':');
+    if (kind !== 'portal' || !profileId || Date.now() - parseInt(ts) >= SESSION_MAX_AGE * 1000) return null;
+    return { profileId, version: parseInt(version) };
+  } catch {
+    return null;
+  }
+}
+
+export function getPortalCookieConfig(token: string) {
+  return {
+    name: PORTAL_COOKIE_NAME,
+    value: token,
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax' as const,
+    maxAge: SESSION_MAX_AGE,
+    path: '/',
+  };
+}
+
+export function getClearPortalCookieConfig() {
+  return { name: PORTAL_COOKIE_NAME, value: '', httpOnly: true, maxAge: 0, path: '/' };
+}

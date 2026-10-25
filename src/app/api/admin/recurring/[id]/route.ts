@@ -3,6 +3,7 @@ import {
   getRecurringJobs, updateRecurringJob, deleteRecurringJob, generateNextVisit, createJobForProfile, getBookingsForRecurring,
 } from '@/lib/db';
 import { isAdminAuthenticated } from '@/lib/auth';
+import { ensurePortal, regeneratePin, markRequestDone } from '@/lib/portal';
 
 export const dynamic = 'force-dynamic';
 
@@ -10,8 +11,9 @@ export const dynamic = 'force-dynamic';
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   if (!await isAdminAuthenticated()) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   const { id } = await params;
-  const job = (await getRecurringJobs()).find(j => j.id === id);
-  if (!job) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+  const found = (await getRecurringJobs()).find(j => j.id === id);
+  if (!found) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+  const job = await ensurePortal(found);
   const bookings = await getBookingsForRecurring(id);
   return NextResponse.json({ job, bookings });
 }
@@ -48,13 +50,25 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ success: true, booking: result.booking, job: result.job }, { status: 201 });
   }
 
+  // Customer portal: issue a new PIN (signs them out), or tick off a request.
+  if (body?.action === 'new-pin' || body?.action === 'request-done') {
+    const job = (await getRecurringJobs()).find(j => j.id === id);
+    if (!job) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+    const saved = body.action === 'new-pin'
+      ? await regeneratePin(job)
+      : await markRequestDone(job, String(body.requestId ?? ''), body.done !== false);
+    if (!saved) return NextResponse.json({ error: 'No portal' }, { status: 400 });
+    return NextResponse.json({ success: true, job: saved });
+  }
+
   return NextResponse.json({ error: 'Unknown action' }, { status: 400 });
 }
 
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   if (!await isAdminAuthenticated()) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   const { id } = await params;
-  const updates = await req.json();
+  // portal (PIN, signed contract) only changes through its own actions above.
+  const { portal: _portal, ...updates } = await req.json();
   if (updates.nextDate && !/^\d{4}-\d{2}-\d{2}$/.test(updates.nextDate)) {
     return NextResponse.json({ error: 'Next date must be YYYY-MM-DD' }, { status: 400 });
   }
