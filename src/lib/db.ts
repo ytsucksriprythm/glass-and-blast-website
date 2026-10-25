@@ -9,7 +9,7 @@ import {
 } from './invoice';
 import { type AppSettings, DEFAULT_SETTINGS } from './settings';
 import { type VaultItem } from './vault';
-import { type Quote, type QuoteInput, type QuoteStatus, type QuoteOtherLine, QUOTE_PREFIX, QUOTE_START_SEQ } from './quote';
+import { type Quote, type QuoteInput, type QuoteStatus, type QuoteOtherLine, type PackagePricesCents, type PackageKey, QUOTE_PREFIX, QUOTE_START_SEQ, isPackageKey, isPackageQuote, packageTotal, PACKAGE_INFO } from './quote';
 import { type PaymentDueTerms, DEFAULT_PAYMENT_DUE_TERMS, isPaymentDueTerms } from './invoice';
 import { type ActivityEntry, type InvoiceViewSession } from './activity';
 import { discountFor } from './recurring';
@@ -614,6 +614,11 @@ export async function ensureSchema(): Promise<void> {
       // this column existed; other_text itself is otherwise unused now).
       await sql`ALTER TABLE quotes ADD COLUMN IF NOT EXISTS other_lines TEXT NOT NULL DEFAULT '[]'`;
       await sql`ALTER TABLE quotes ADD COLUMN IF NOT EXISTS show_from_address BOOLEAN NOT NULL DEFAULT true`;
+      // Three-package quotes (see quote.ts). Additive; old rows read as single.
+      await sql`ALTER TABLE quotes ADD COLUMN IF NOT EXISTS quote_type TEXT NOT NULL DEFAULT 'single'`;
+      await sql`ALTER TABLE quotes ADD COLUMN IF NOT EXISTS package_prices TEXT`;
+      await sql`ALTER TABLE quotes ADD COLUMN IF NOT EXISTS selected_package TEXT`;
+      await sql`ALTER TABLE quotes ADD COLUMN IF NOT EXISTS accepted_at TIMESTAMPTZ`;
       await sql`CREATE UNIQUE INDEX IF NOT EXISTS quotes_token_idx ON quotes (token)`;
       await sql`CREATE UNIQUE INDEX IF NOT EXISTS quotes_number_idx ON quotes (number)`;
       await sql`CREATE INDEX IF NOT EXISTS quotes_booking_idx ON quotes (booking_id)`;
@@ -2740,7 +2745,22 @@ function normalizeQuote(q: any): Quote {
     assumptions: q.assumptions ?? '',
     paymentTerms: coercePaymentDueTerms(q.paymentTerms),
     showFromAddress: q.showFromAddress !== false,
+    quoteType: q.quoteType === 'packages' ? 'packages' : 'single',
+    packagePrices: parsePackagePrices(q.packagePrices),
+    selectedPackage: isPackageKey(q.selectedPackage) ? q.selectedPackage : null,
+    acceptedAt: q.acceptedAt ?? null,
   };
+}
+
+// Stored as integer cents ({essential, complete, premium}); JSON text in SQL.
+function parsePackagePrices(raw: unknown): PackagePricesCents | null {
+  let obj: unknown = raw;
+  if (typeof raw === 'string') { try { obj = JSON.parse(raw); } catch { return null; } }
+  if (!obj || typeof obj !== 'object') return null;
+  const o = obj as Record<string, unknown>;
+  const n = (v: unknown) => Math.round(Number(v));
+  const out = { essential: n(o.essential), complete: n(o.complete), premium: n(o.premium) };
+  return Object.values(out).every(v => Number.isFinite(v) && v >= 0) ? out : null;
 }
 
 function readQuotes(): Quote[] {
@@ -2843,6 +2863,10 @@ function rowToQuote(r: any): Quote {
     createdAt: typeof r.created_at === 'string' ? r.created_at : new Date(r.created_at).toISOString(),
     updatedAt: typeof r.updated_at === 'string' ? r.updated_at : new Date(r.updated_at).toISOString(),
     sentAt: r.sent_at == null ? null : (typeof r.sent_at === 'string' ? r.sent_at : new Date(r.sent_at).toISOString()),
+    quoteType: r.quote_type === 'packages' ? 'packages' : 'single',
+    packagePrices: parsePackagePrices(r.package_prices),
+    selectedPackage: isPackageKey(r.selected_package) ? r.selected_package : null,
+    acceptedAt: r.accepted_at == null ? null : (typeof r.accepted_at === 'string' ? r.accepted_at : new Date(r.accepted_at).toISOString()),
   };
 }
 
@@ -2936,19 +2960,24 @@ export async function createQuote(input: QuoteInput): Promise<Quote> {
       quoteDate: input.quoteDate ?? '', validUntil: input.validUntil ?? '',
       notes: input.notes ?? '', termsText: input.termsText ?? '',
       createdAt: now, updatedAt: now, sentAt: null,
+      quoteType: input.quoteType === 'packages' ? 'packages' : 'single',
+      packagePrices: input.quoteType === 'packages' ? parsePackagePrices(input.packagePrices) : null,
+      selectedPackage: null, acceptedAt: null,
     };
     await sql`
       INSERT INTO quotes (
         id, number, seq, status, booking_id, services, extras, item_amounts, other_lines, amount, property_type,
         bill_to_name, bill_to_address,
         from_name, from_trading_as, from_abn, from_address, from_email, from_phone, show_from_address,
-        quote_date, valid_until, notes, scope, assumptions, payment_terms, terms_text, token
+        quote_date, valid_until, notes, scope, assumptions, payment_terms, terms_text, token,
+        quote_type, package_prices
       ) VALUES (
         ${quote.id}, ${quote.number}, ${quote.seq}, ${quote.status}, ${quote.bookingId},
         ${JSON.stringify(quote.services)}, ${JSON.stringify(quote.extras)}, ${JSON.stringify(quote.itemAmounts)}, ${JSON.stringify(quote.otherLines)}, ${quote.amount}, ${quote.propertyType},
         ${quote.billToName}, ${quote.billToAddress},
         ${quote.fromName}, ${quote.fromTradingAs}, ${quote.fromAbn}, ${quote.fromAddress}, ${quote.fromEmail}, ${quote.fromPhone}, ${quote.showFromAddress},
-        ${quote.quoteDate}, ${quote.validUntil}, ${quote.notes}, ${quote.scope}, ${quote.assumptions}, ${quote.paymentTerms}, ${quote.termsText}, ${quote.token}
+        ${quote.quoteDate}, ${quote.validUntil}, ${quote.notes}, ${quote.scope}, ${quote.assumptions}, ${quote.paymentTerms}, ${quote.termsText}, ${quote.token},
+        ${quote.quoteType}, ${quote.packagePrices ? JSON.stringify(quote.packagePrices) : null}
       )
     `;
     await syncQuoteAmountToBooking(quote);
@@ -2978,6 +3007,9 @@ export async function createQuote(input: QuoteInput): Promise<Quote> {
     quoteDate: input.quoteDate ?? '', validUntil: input.validUntil ?? '',
     notes: input.notes ?? '', termsText: input.termsText ?? '',
     createdAt: now, updatedAt: now, sentAt: null,
+    quoteType: input.quoteType === 'packages' ? 'packages' : 'single',
+    packagePrices: input.quoteType === 'packages' ? parsePackagePrices(input.packagePrices) : null,
+    selectedPackage: null, acceptedAt: null,
   };
   rows.push(quote);
   writeQuotes(rows);
@@ -3017,6 +3049,9 @@ export async function updateQuote(id: string, rawUpdates: Partial<Quote>): Promi
         quote_date = ${m.quoteDate}, valid_until = ${m.validUntil}, notes = ${m.notes},
         scope = ${m.scope}, assumptions = ${m.assumptions}, payment_terms = ${m.paymentTerms}, terms_text = ${m.termsText},
         sent_at = ${m.sentAt ?? null},
+        quote_type = ${m.quoteType === 'packages' ? 'packages' : 'single'},
+        package_prices = ${m.packagePrices ? JSON.stringify(m.packagePrices) : null},
+        selected_package = ${m.selectedPackage ?? null}, accepted_at = ${m.acceptedAt ?? null},
         updated_at = now()
       WHERE id = ${id}
       RETURNING *
@@ -3041,6 +3076,50 @@ export async function updateQuote(id: string, rawUpdates: Partial<Quote>): Promi
   writeQuotes(rows);
   if (m.amount !== cur.amount) await syncQuoteAmountToBooking(m);
   return rows[idx];
+}
+
+// Customer accepts one package of a three-package quote. The total is worked
+// out here from the stored prices (never from the browser) and the package is
+// locked: the WHERE accepted_at IS NULL makes a second accept a no-op. The new
+// amount flows to booking.quoteAmount (and from there to invoices) as usual.
+export async function acceptQuotePackage(token: string, pkg: PackageKey): Promise<{ quote: Quote; already: boolean } | null> {
+  const cur = await getQuoteByToken(token);
+  if (!cur || !isPackageQuote(cur) || !cur.packagePrices) return null;
+  if (cur.acceptedAt) return { quote: cur, already: true };
+  const amount = packageTotal(cur, pkg);
+  const now = new Date().toISOString();
+  if (sql) {
+    const rows = await sql`
+      UPDATE quotes SET selected_package = ${pkg}, accepted_at = ${now}, amount = ${amount}, updated_at = now()
+      WHERE token = ${token} AND accepted_at IS NULL
+      RETURNING *
+    `;
+    const arr = rows as any[];
+    if (!arr.length) { const again = await getQuoteByToken(token); return again ? { quote: again, already: true } : null; }
+    const quote = rowToQuote(arr[0]);
+    await syncAcceptedPackageToBooking(quote);
+    return { quote, already: false };
+  }
+  const rows = readQuotes();
+  const idx = rows.findIndex(q => q.token === token);
+  if (idx === -1) return null;
+  rows[idx] = { ...rows[idx], selectedPackage: pkg, acceptedAt: now, amount, updatedAt: now };
+  writeQuotes(rows);
+  await syncAcceptedPackageToBooking(rows[idx]);
+  return { quote: rows[idx], already: false };
+}
+
+// Accepted total -> booking.quoteAmount (which invoices copy from), plus a
+// line in the private admin notes saying which package they picked.
+async function syncAcceptedPackageToBooking(quote: Quote): Promise<void> {
+  await syncQuoteAmountToBooking(quote);
+  try {
+    const b = await getBookingById(quote.bookingId);
+    if (!b || !quote.selectedPackage) return;
+    const line = `Accepted ${PACKAGE_INFO[quote.selectedPackage].name} package on quote ${quote.number} ($${quote.amount}).`;
+    if ((b.adminNotes ?? '').includes(line)) return;
+    await updateBooking(quote.bookingId, { adminNotes: [b.adminNotes?.trim(), line].filter(Boolean).join('\n') });
+  } catch { /* best-effort */ }
 }
 
 export async function deleteQuote(id: string): Promise<boolean> {

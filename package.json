@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "next lint",
     "mcp": "tsx mcp-server/index.ts",
-    "test:mcp": "node --import tsx --test --test-concurrency=1 tests/mcp/*.test.ts"
+    "test:mcp": "node --import tsx --test --test-concurrency=1 tests/mcp/*.test.ts",
+    "test:quote": "node --import tsx --test tests/quote/*.test.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

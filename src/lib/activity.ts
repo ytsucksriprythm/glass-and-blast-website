@@ -60,6 +60,7 @@ export const ACTIVITY_TYPE_LABEL: Record<string, string> = {
   'quote.created': 'Quote created',
   'quote.status_changed': 'Quote status changed',
   'quote.deleted': 'Quote deleted',
+  'quote.accepted': 'Quote accepted by customer',
 };
 
 // Lightweight User-Agent classification — no dependency needed for this.

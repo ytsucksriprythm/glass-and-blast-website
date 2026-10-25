@@ -10,7 +10,10 @@ import {
   DEFAULT_QUOTE_TERMS, DEFAULT_QUOTE_ASSUMPTIONS, DEFAULT_PAYMENT_DUE_TERMS, PAYMENT_DUE_TERMS_OPTIONS, type PaymentDueTerms,
   SCOPE_PRESETS, ASSUMPTION_PRESETS, DEFAULT_ASSUMPTION_PRESET_KEYS, buildFromPresets,
   addDays, buildQuoteText, quoteTotal, quoteDiscountBreakdown, money, emptyOtherLine,
+  type QuoteType, type PackageKey, PACKAGE_KEYS, PACKAGE_INFO, packagePricesFromComplete, packageIneligibleReason, packageTotal,
+  toCents, fromCents,
 } from '@/lib/quote';
+import QuotePackageCards from './QuotePackageCards';
 import { quoteShareMessage, quoteShareClipboardText } from '@/lib/quoteShare';
 import { BUSINESS_DEFAULTS, type BusinessProfile, cleanAmountInput, DISCOUNT_PRESETS } from '@/lib/invoice';
 import type { AppSettings } from '@/lib/settings';
@@ -40,8 +43,8 @@ function AmountInput({ value, onChange, className }: { value: number; onChange: 
 }
 
 function draftFromQuote(q: Quote): Draft {
-  const { id, number, seq, token, createdAt, updatedAt, sentAt, ...rest } = q;
-  return rest;
+  const { id, number, seq, token, createdAt, updatedAt, sentAt, selectedPackage, acceptedAt, ...rest } = q;
+  return { ...rest, quoteType: rest.quoteType ?? 'single' };
 }
 
 function blankDraft(bookingId: string, booking: Pick<Booking, 'name' | 'address' | 'suburb' | 'propertyType'> | null): Draft {
@@ -66,6 +69,8 @@ function blankDraft(bookingId: string, booking: Pick<Booking, 'name' | 'address'
     validUntil: addDays(today, QUOTE_VALID_DAYS),
     notes: '',
     termsText: DEFAULT_QUOTE_TERMS,
+    quoteType: 'single',
+    packagePrices: null,
   };
 }
 
@@ -203,7 +208,9 @@ export default function QuoteModal({ bookingId, booking, initial, onClose, onSav
       }
       return { ...d, services };
     });
-    if (turningOn) {
+    // Package quotes list their own inclusions, so the tracks / hard-water
+    // scope boxes (which would contradict Premium Detail) aren't auto-added.
+    if (turningOn && !isPackages) {
       if (key === WINDOW_INSIDE_KEY) addScopePresets(['inside', 'outside']);
       else if (key === WINDOW_OUTSIDE_KEY) addScopePresets(['outside']);
     }
@@ -215,8 +222,30 @@ export default function QuoteModal({ bookingId, booking, initial, onClose, onSav
   const updateOtherLine = (id: string, patch: Partial<QuoteOtherLine>) =>
     setDraft(d => ({ ...d, otherLines: d.otherLines.map(l => l.id === id ? { ...l, ...patch } : l) }));
   const removeOtherLine = (id: string) => setDraft(d => ({ ...d, otherLines: d.otherLines.filter(l => l.id !== id) }));
-  const total = quoteTotal(draft);
-  const { beforeDiscount, discount } = quoteDiscountBreakdown(draft);
+  // Three-package mode. Switching type never clears anything: services,
+  // per-item prices and Other lines all stay put, so switching back to Single
+  // finds them as they were. Packages just ignores the per-item prices.
+  const isPackages = draft.quoteType === 'packages';
+  const locked = !!saved?.acceptedAt;
+  const packageReason = isPackages ? packageIneligibleReason(draft) : null;
+  const completeCents = draft.packagePrices?.complete ?? 0;
+  const setQuoteType = (t: QuoteType) => {
+    if (locked) return;
+    setDraft(d => ({
+      ...d,
+      quoteType: t,
+      // Fresh quote with nothing ticked: tick inside + outside for them.
+      services: t === 'packages' && d.services.length === 0 ? [WINDOW_OUTSIDE_KEY, WINDOW_INSIDE_KEY] : d.services,
+    }));
+  };
+  const setCompletePrice = (dollars: number) =>
+    set('packagePrices', dollars > 0 ? packagePricesFromComplete(toCents(dollars)) : null);
+  const [previewPkg, setPreviewPkg] = useState<PackageKey | null>(null);
+
+  const total = isPackages ? packageTotal(draft, 'complete') : quoteTotal(draft);
+  const { beforeDiscount, discount } = isPackages
+    ? { beforeDiscount: fromCents(completeCents), discount: total - fromCents(completeCents) }
+    : quoteDiscountBreakdown(draft);
 
   // Custom text (if any) wins outright — checked boxes only matter when
   // Custom is empty. Keeping both scopePresets/assumptionPresets around even
@@ -268,11 +297,16 @@ export default function QuoteModal({ bookingId, booking, initial, onClose, onSav
       toast.error('Check at least one service, extra, or add an Other line');
       return;
     }
+    if (packageReason) { toast.error(packageReason); return; }
+    if (isPackages && completeCents <= 0) { toast.error('Enter the Complete price (before discounts)'); return; }
     setSaving(true);
     try {
       const url = saved ? `/api/admin/quotes/${saved.id}` : '/api/admin/quotes';
       const method = saved ? 'PATCH' : 'POST';
-      const payload = { ...draft, amount: quoteTotal(draft) };
+      // Accepted quotes: price is locked server-side, so send only the
+      // non-pricing fields (names, dates, notes, terms...).
+      const { services, extras, itemAmounts, otherLines, amount, quoteType, packagePrices, ...nonPricing } = draft;
+      const payload = locked ? nonPricing : { ...draft, amount: total };
       const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       if (!res.ok) { toast.error((await res.json()).error || 'Failed to save'); return; }
       const quote: Quote = await res.json();
@@ -340,6 +374,62 @@ export default function QuoteModal({ bookingId, booking, initial, onClose, onSav
           {/* Form */}
           <div className={`p-4 space-y-4 lg:w-1/2 ${tab === 'preview' ? 'hidden lg:block' : ''}`}>
             <div>
+              <L>Quote type</L>
+              <div className="grid grid-cols-2 gap-2" role="radiogroup" aria-label="Quote type">
+                {([
+                  { t: 'single' as const, title: 'Single Quote', sub: 'One price, any services' },
+                  { t: 'packages' as const, title: 'Three-Package Quote', sub: 'Essential / Complete / Premium Detail, windows in & out only' },
+                ]).map(o => {
+                  const on = (draft.quoteType ?? 'single') === o.t;
+                  return (
+                    <button
+                      key={o.t} type="button" role="radio" aria-checked={on} disabled={locked}
+                      onClick={() => setQuoteType(o.t)}
+                      className={`text-left px-3 py-2.5 rounded-lg border transition-colors cursor-pointer disabled:cursor-not-allowed ${on ? 'border-sky-400 bg-sky-400/15' : 'border-white/10 bg-white/[0.03] hover:border-white/25'} ${locked && !on ? 'opacity-40' : ''}`}
+                    >
+                      <span className={`block text-sm font-semibold ${on ? 'text-white' : 'text-slate-300'}`}>{o.title}</span>
+                      <span className="block text-xs text-slate-500 mt-0.5">{o.sub}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              {locked && saved?.selectedPackage && (
+                <p className="mt-2 text-xs text-emerald-300">
+                  The customer accepted {PACKAGE_INFO[saved.selectedPackage].name} ({money(saved.amount)}), so the price is locked. You can still edit names, dates, notes and terms.
+                </p>
+              )}
+              {packageReason && (
+                <p className="mt-2 rounded-lg border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-xs text-amber-200">{packageReason}</p>
+              )}
+            </div>
+
+            {isPackages && (
+              <div className="rounded-lg border border-white/10 bg-white/[0.03] p-3 space-y-3">
+                <div>
+                  <L>Complete price (before discounts)</L>
+                  <span className="relative block w-36">
+                    <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500 text-xs">$</span>
+                    <AmountInput className="form-input pl-6 py-2 text-sm w-full" value={fromCents(completeCents)} onChange={n => !locked && setCompletePrice(Math.max(0, n))} />
+                  </span>
+                  <p className="text-slate-500 text-xs mt-1">Essential = 75% (to the nearest $1), Premium Detail = 175% (to the nearest $50). Add discounts under Other below.</p>
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  {PACKAGE_KEYS.map(k => {
+                    const price = fromCents(draft.packagePrices?.[k] ?? 0);
+                    const after = packageTotal(draft, k);
+                    return (
+                      <div key={k} className={`rounded-lg px-2.5 py-2 ${k === 'premium' ? 'bg-sky-400/15 ring-1 ring-sky-400/40' : 'bg-white/[0.04]'}`}>
+                        <div className="text-[11px] text-slate-400 font-medium">{PACKAGE_INFO[k].name}</div>
+                        <div className="text-white font-bold">{money(price)}</div>
+                        {discount < 0 && <div className="text-emerald-300 text-xs">{money(after)} after discount</div>}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            <div>
               <L>Services</L>
               <div className="space-y-1.5">
                 {QUOTE_SERVICE_OPTIONS.map(o => {
@@ -348,7 +438,7 @@ export default function QuoteModal({ bookingId, booking, initial, onClose, onSav
                     <label key={o.key} className={`flex items-center gap-3 px-3 py-2 rounded-lg border cursor-pointer transition-colors ${active ? 'border-sky-400 bg-sky-400/15' : 'border-white/10 bg-white/[0.03] hover:border-white/25'}`}>
                       <input type="checkbox" checked={active} onChange={() => toggleService(o.key)} className="w-4 h-4 flex-shrink-0 accent-sky-500 cursor-pointer" />
                       <span className={`flex-1 text-sm font-medium ${active ? 'text-white' : 'text-slate-300'}`}>{o.label}</span>
-                      {active && (
+                      {active && !isPackages && (
                         <span className="relative flex-shrink-0 w-24">
                           <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500 text-xs">$</span>
                           <AmountInput className="form-input pl-6 py-1.5 text-sm w-full" value={draft.itemAmounts[o.key] || 0} onChange={n => setItemAmount(o.key, n)} />
@@ -369,7 +459,7 @@ export default function QuoteModal({ bookingId, booking, initial, onClose, onSav
                     <label key={o.key} className={`flex items-center gap-3 px-3 py-2 rounded-lg border cursor-pointer transition-colors ${active ? 'border-sky-400 bg-sky-400/15' : 'border-white/10 bg-white/[0.03] hover:border-white/25'}`}>
                       <input type="checkbox" checked={active} onChange={() => toggleList('extras', o.key)} className="w-4 h-4 flex-shrink-0 accent-sky-500 cursor-pointer" />
                       <span className={`flex-1 text-sm font-medium ${active ? 'text-white' : 'text-slate-300'}`}>{o.label}</span>
-                      {active && (
+                      {active && !isPackages && (
                         <span className="relative flex-shrink-0 w-24">
                           <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500 text-xs">$</span>
                           <AmountInput className="form-input pl-6 py-1.5 text-sm w-full" value={draft.itemAmounts[o.key] || 0} onChange={n => setItemAmount(o.key, n)} />
@@ -453,7 +543,7 @@ export default function QuoteModal({ bookingId, booking, initial, onClose, onSav
             </div>
 
             <div className="rounded-lg border border-white/10 bg-white/[0.03] px-4 py-3 flex items-center justify-between">
-              <span className="text-slate-400 text-sm">Total (from items above)</span>
+              <span className="text-slate-400 text-sm">{isPackages ? 'Complete package total' : 'Total (from items above)'}</span>
               <span className="text-right">
                 {discount < 0 && <span className="block text-slate-500 text-sm line-through">{money(beforeDiscount)}</span>}
                 <span className="text-white font-bold text-lg">{money(total)}</span>
@@ -536,9 +626,27 @@ export default function QuoteModal({ bookingId, booking, initial, onClose, onSav
 
           {/* Live preview */}
           <div className={`p-4 bg-navy-900/40 lg:w-1/2 ${tab === 'form' ? 'hidden lg:block' : ''}`}>
-            <div className="rounded-lg overflow-hidden ring-1 ring-white/10">
-              <QuotePreview quote={previewData} />
-            </div>
+            {isPackages && (
+              <div className="flex flex-wrap gap-1.5 mb-3">
+                {([null, ...PACKAGE_KEYS] as (PackageKey | null)[]).map(k => (
+                  <button
+                    key={k ?? 'cards'} type="button" onClick={() => setPreviewPkg(k)}
+                    className={`px-2.5 py-1.5 rounded-md text-xs font-semibold cursor-pointer ${previewPkg === k ? 'bg-sky-500 text-white' : 'bg-white/[0.06] text-slate-300 hover:text-white'}`}
+                  >
+                    {k ? `${PACKAGE_INFO[k].name} quote` : 'Customer cards'}
+                  </button>
+                ))}
+              </div>
+            )}
+            {isPackages && !previewPkg ? (
+              <div className="rounded-lg bg-slate-100 p-3">
+                <QuotePackageCards prices={draft.packagePrices} stacked />
+              </div>
+            ) : (
+              <div className="rounded-lg overflow-hidden ring-1 ring-white/10">
+                <QuotePreview quote={isPackages ? { ...previewData, selectedPackage: previewPkg } : previewData} />
+              </div>
+            )}
           </div>
         </div>
 

@@ -1,5 +1,9 @@
 import { Check } from 'lucide-react';
-import { type Quote, serviceLabel, sortServiceKeys, money, longDate, quoteDiscountBreakdown, paymentTermsText } from '@/lib/quote';
+import { X } from 'lucide-react';
+import {
+  type Quote, serviceLabel, sortServiceKeys, money, longDate, quoteDiscountBreakdown, paymentTermsText,
+  isPackageQuote, quoteForPackage, discountLines, fromCents, PACKAGE_KEYS, PACKAGE_INFO, PACKAGE_INCLUSIONS,
+} from '@/lib/quote';
 
 // Display fields QuotePreview needs. The modal's live (unsaved) draft passes
 // a synthesized object (number/token may be placeholders) before the quote
@@ -22,7 +26,12 @@ function Field({ label, value }: { label: string; value: React.ReactNode }) {
  * see quoteTotal() in lib/quote.ts for how the total is derived. Still no
  * payment/bank block (that's paymentTerms, below, not a Square/EFT block).
  */
-export default function QuotePreview({ quote }: { quote: QuotePreviewData }) {
+export default function QuotePreview({ quote: raw }: { quote: QuotePreviewData }) {
+  // Three-package quote with a package picked: show it as that one package
+  // (price line + discount lines). See quoteForPackage in lib/quote.ts.
+  const pkg = isPackageQuote(raw) ? raw.selectedPackage ?? null : null;
+  const quote = pkg ? quoteForPackage(raw, pkg) : raw;
+  const packagesUnpicked = isPackageQuote(raw) && !pkg;
   const items: { label: string; amount: number }[] = [
     ...sortServiceKeys(quote.services).map(k => ({ label: serviceLabel(k), amount: Number(quote.itemAmounts?.[k]) || 0 })),
     ...quote.extras.map(k => ({ label: serviceLabel(k), amount: Number(quote.itemAmounts?.[k]) || 0 })),
@@ -84,8 +93,31 @@ export default function QuotePreview({ quote }: { quote: QuotePreviewData }) {
           </div>
         )}
 
+        {/* Three-package, none picked yet (admin preview / copied text) */}
+        {packagesUnpicked && (
+          <div className="mt-8 rounded-lg border border-slate-200 overflow-hidden">
+            <div className="bg-slate-50 px-4 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+              Packages · window cleaning (inside &amp; outside)
+            </div>
+            <div className="divide-y divide-slate-100">
+              {PACKAGE_KEYS.map(k => (
+                <div key={k} className="px-4 py-2.5 flex items-center gap-2.5 text-sm">
+                  <span className="text-slate-900 flex-1">{PACKAGE_INFO[k].name}</span>
+                  <span className="font-medium text-slate-900">{money(fromCents(raw.packagePrices?.[k] ?? 0))}</span>
+                </div>
+              ))}
+              {discountLines(raw).map(l => (
+                <div key={l.id} className="px-4 py-2.5 flex items-center gap-2.5 text-sm">
+                  <span className="text-slate-600 flex-1">{l.description.trim() || 'Discount'} (off whichever is chosen)</span>
+                  <span className="font-medium text-emerald-700">{money(l.amount)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Itemised services */}
-        <div className="mt-8 rounded-lg border border-slate-200 overflow-hidden">
+        {!packagesUnpicked && <div className="mt-8 rounded-lg border border-slate-200 overflow-hidden">
           <div className="bg-slate-50 px-4 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
             Services
           </div>
@@ -100,7 +132,25 @@ export default function QuotePreview({ quote }: { quote: QuotePreviewData }) {
               </div>
             ))}
           </div>
-        </div>
+        </div>}
+
+        {/* What the chosen package includes — same 8 rows as the cards */}
+        {pkg && (
+          <div className="mt-5">
+            <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 mb-1.5">Included in {PACKAGE_INFO[pkg].name}</div>
+            <ul className="grid sm:grid-cols-2 gap-x-6 gap-y-1">
+              {PACKAGE_INCLUSIONS.map(row => {
+                const on = row.in.includes(pkg);
+                return (
+                  <li key={row.label} className="flex items-center gap-2 text-sm">
+                    {on ? <Check className="w-4 h-4 text-emerald-600 flex-shrink-0" /> : <X className="w-4 h-4 text-slate-300 flex-shrink-0" />}
+                    <span className={on ? 'text-slate-800' : 'text-slate-400'}>{row.label}</span>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        )}
 
         {/* Scope of work */}
         {quote.scope?.trim() && (
@@ -111,7 +161,7 @@ export default function QuotePreview({ quote }: { quote: QuotePreviewData }) {
         )}
 
         {/* Total */}
-        <div className="mt-5 flex justify-end">
+        {!packagesUnpicked && <div className="mt-5 flex justify-end">
           <div className="w-full sm:w-72 text-right">
             {discount < 0 ? (
               <>
@@ -131,7 +181,7 @@ export default function QuotePreview({ quote }: { quote: QuotePreviewData }) {
               </div>
             )}
           </div>
-        </div>
+        </div>}
 
         {/* Assumptions */}
         {quote.assumptions?.trim() && (

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getQuoteById, updateQuote, deleteQuote, logActivity } from '@/lib/db';
 import { isAdminAuthenticated } from '@/lib/auth';
-import type { Quote } from '@/lib/quote';
+import { type Quote, resolvePackageFields } from '@/lib/quote';
 
 export const dynamic = 'force-dynamic';
 
@@ -42,6 +42,26 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
         description: typeof l.description === 'string' ? l.description : '',
         amount: Number(l.amount) || 0,
       }));
+  }
+
+  // Three-package. Once the customer has accepted, the price is locked.
+  // Before that, prices are re-derived from the Complete price on every save.
+  const PRICING_KEYS = ['services', 'extras', 'itemAmounts', 'otherLines', 'amount', 'quoteType', 'packagePrices'];
+  if (existing.acceptedAt) {
+    if (PRICING_KEYS.some(k => k in b)) {
+      return NextResponse.json({ error: 'The customer has already accepted this quote, so its price is locked' }, { status: 409 });
+    }
+  } else {
+    const merged = { ...existing, ...updates };
+    const pkg = resolvePackageFields(
+      { quoteType: 'quoteType' in b ? b.quoteType : existing.quoteType, packagePrices: 'packagePrices' in b ? b.packagePrices : existing.packagePrices },
+      merged,
+    );
+    if ('error' in pkg) return NextResponse.json({ error: pkg.error }, { status: 400 });
+    updates.quoteType = pkg.quoteType;
+    updates.packagePrices = pkg.packagePrices;
+    if (pkg.termsText !== existing.termsText) updates.termsText = pkg.termsText;
+    if (pkg.amount != null) updates.amount = pkg.amount;
   }
 
   const quote = await updateQuote(id, updates);

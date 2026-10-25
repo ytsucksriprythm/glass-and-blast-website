@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getQuotes, getQuotesForBooking, createQuote, logActivity, getSettings } from '@/lib/db';
 import { isAdminAuthenticated } from '@/lib/auth';
-import { addDays, DEFAULT_QUOTE_TERMS, DEFAULT_QUOTE_ASSUMPTIONS, DEFAULT_PAYMENT_DUE_TERMS, isPaymentDueTerms, QUOTE_VALID_DAYS, type QuoteInput, type QuoteOtherLine } from '@/lib/quote';
+import { addDays, DEFAULT_QUOTE_TERMS, DEFAULT_QUOTE_ASSUMPTIONS, DEFAULT_PAYMENT_DUE_TERMS, isPaymentDueTerms, QUOTE_VALID_DAYS, resolvePackageFields, type QuoteInput, type QuoteOtherLine } from '@/lib/quote';
 import { BUSINESS_DEFAULTS } from '@/lib/invoice';
 
 export const dynamic = 'force-dynamic';
@@ -67,6 +67,13 @@ export async function POST(req: NextRequest) {
       notes: b.notes ?? '',
       termsText: b.termsText || DEFAULT_QUOTE_TERMS,
     };
+    // Three-package: prices derived + fixed here, never taken from the browser.
+    const pkg = resolvePackageFields(b, input);
+    if ('error' in pkg) return NextResponse.json({ error: pkg.error }, { status: 400 });
+    input.quoteType = pkg.quoteType;
+    input.packagePrices = pkg.packagePrices;
+    input.termsText = pkg.termsText;
+    if (pkg.amount != null) input.amount = pkg.amount;
     const quote = await createQuote(input);
     await logActivity('quote.created', `Quote ${quote.number} created (${quote.amount ? `$${quote.amount}` : 'no amount'})`, { quoteId: quote.id, bookingId: quote.bookingId }, 'admin');
     return NextResponse.json(quote, { status: 201 });

@@ -127,11 +127,18 @@ export interface Quote {
   createdAt: string;
   updatedAt: string;
   sentAt: string | null;
+
+  // Three-package quotes (see PACKAGE_INFO below). All optional so quotes
+  // saved before this existed read as Single, unchanged.
+  quoteType?: QuoteType;                       // absent = 'single'
+  packagePrices?: PackagePricesCents | null;   // integer cents, fixed when saved
+  selectedPackage?: PackageKey | null;         // set when the customer accepts
+  acceptedAt?: string | null;
 }
 
 // Everything the create endpoint accepts; the store fills in the rest
 // (id, number, seq, token, timestamps).
-export type QuoteInput = Omit<Quote, 'id' | 'number' | 'seq' | 'token' | 'createdAt' | 'updatedAt' | 'sentAt' | 'status'> & {
+export type QuoteInput = Omit<Quote, 'id' | 'number' | 'seq' | 'token' | 'createdAt' | 'updatedAt' | 'sentAt' | 'status' | 'selectedPackage' | 'acceptedAt'> & {
   status?: QuoteStatus;
 };
 
@@ -233,7 +240,11 @@ export function buildQuoteText(quote: Pick<Quote,
   'number' | 'fromTradingAs' | 'fromName' | 'fromAbn' | 'fromPhone' | 'fromEmail' | 'billToName' | 'billToAddress' |
   'quoteDate' | 'validUntil' | 'services' | 'extras' | 'itemAmounts' | 'otherLines' | 'amount' |
   'scope' | 'assumptions' | 'paymentTerms' | 'termsText'
->): string {
+> & Partial<Pick<Quote, 'quoteType' | 'packagePrices' | 'selectedPackage'>>): string {
+  // Package quote with a package picked: price it as that one package. With
+  // none picked yet, list all three instead of a total.
+  const pkg = isPackageQuote(quote) ? quote.selectedPackage ?? null : null;
+  if (pkg) quote = quoteForPackage(quote, pkg);
   const lines: string[] = [];
   lines.push(`QUOTE ${quote.number} · ${quote.fromTradingAs || 'Glass and Blast'}`);
   if (quote.fromAbn) lines.push(`ABN: ${quote.fromAbn}`);
@@ -253,23 +264,35 @@ export function buildQuoteText(quote: Pick<Quote,
       .filter(l => l.description.trim() || l.amount)
       .map((l): [string, number] => [l.description.trim() || 'Other', Number(l.amount) || 0]),
   ];
-  if (items.length) {
+  if (isPackageQuote(quote) && !pkg) {
+    lines.push('');
+    lines.push('Choose a package (window cleaning, inside & outside):');
+    for (const k of PACKAGE_KEYS) lines.push(`- ${PACKAGE_INFO[k].name}: ${money(fromCents(quote.packagePrices?.[k] ?? 0))}`);
+    for (const l of discountLines(quote)) lines.push(`${l.description.trim() || 'Discount'} (off whichever you choose): ${money(l.amount)}`);
+  } else if (items.length) {
     lines.push('');
     lines.push('Services:');
     for (const [label, amt] of items) lines.push(`- ${label}: ${money(amt)}`);
+  }
+  if (pkg) {
+    lines.push('');
+    lines.push(`Included in ${PACKAGE_INFO[pkg].name}:`);
+    for (const row of PACKAGE_INCLUSIONS) if (row.in.includes(pkg)) lines.push(`- ${row.label}`);
   }
   if (quote.scope?.trim()) {
     lines.push('');
     lines.push('Scope of work:');
     lines.push(quote.scope.trim());
   }
-  lines.push('');
-  const { beforeDiscount, discount, total } = quoteDiscountBreakdown(quote);
-  if (discount < 0) {
-    lines.push(`Was: ${money(beforeDiscount)}`);
-    lines.push(`Discount: ${money(discount)}`);
+  if (!isPackageQuote(quote) || pkg) {
+    lines.push('');
+    const { beforeDiscount, discount, total } = quoteDiscountBreakdown(quote);
+    if (discount < 0) {
+      lines.push(`Was: ${money(beforeDiscount)}`);
+      lines.push(`Discount: ${money(discount)}`);
+    }
+    lines.push(`Total quote: ${money(total)}`);
   }
-  lines.push(`Total quote: ${money(total)}`);
   if (quote.assumptions?.trim()) {
     lines.push('');
     lines.push('Assumptions this quote is based on:');
@@ -287,7 +310,120 @@ export function buildQuoteText(quote: Pick<Quote,
   return lines.join('\n');
 }
 
-// Re-exported so callers building quote UI don't also need to import from
+// ─── Three-package quotes ───────────────────────────────────────────────────
+// A package quote is inside+outside window cleaning only: the admin enters one
+// Complete price (before discounts) and the other two are derived from it.
+// Maths is in integer cents, rounding half up, so 0.75/1.75 never drift.
+
+export type QuoteType = 'single' | 'packages';
+export type PackageKey = 'essential' | 'complete' | 'premium';
+export const PACKAGE_KEYS: PackageKey[] = ['essential', 'complete', 'premium'];
+
+export interface PackagePricesCents { essential: number; complete: number; premium: number; }
+
+// (num / den) cents rounded half up to a multiple of `step` cents. Prices are
+// never negative, so floor of the shifted value is a true half-up.
+function roundHalfUpCents(num: number, den: number, step: number): number {
+  return Math.floor((num * 2 + den * step) / (den * step * 2)) * step;
+}
+
+export function packagePricesFromComplete(completeCents: number): PackagePricesCents {
+  const c = Math.max(0, Math.round(completeCents));
+  return {
+    essential: roundHalfUpCents(c * 3, 4, 100),   // × 0.75, nearest $1
+    complete: c,
+    premium: roundHalfUpCents(c * 7, 4, 5000),    // × 1.75, nearest $50
+  };
+}
+
+export const toCents = (dollars: number) => Math.round((Number(dollars) || 0) * 100);
+export const fromCents = (cents: number) => cents / 100;
+
+export const PACKAGE_INFO: Record<PackageKey, { name: string; description: string }> = {
+  essential: { name: 'Essential', description: 'A thorough, streak-free clean of your glass, inside and out.' },
+  complete: { name: 'Complete', description: 'Glass plus frames, seals and a light track clean, for a properly finished look.' },
+  premium: { name: 'Premium Detail', description: 'Everything in Complete, plus deep tracks, flyscreens and light hard-water stain removal.' },
+};
+
+// Same 8 rows, same order, on every package card and on the formal quote.
+export const PACKAGE_INCLUSIONS: { label: string; in: PackageKey[] }[] = [
+  { label: 'Window cleaning (inside & outside)', in: ['essential', 'complete', 'premium'] },
+  { label: 'Microfibre edge detailing', in: ['essential', 'complete', 'premium'] },
+  { label: 'Frame cleaning', in: ['complete', 'premium'] },
+  { label: 'Window seals', in: ['complete', 'premium'] },
+  { label: 'Light track cleaning', in: ['complete', 'premium'] },
+  { label: 'Deep track cleaning', in: ['premium'] },
+  { label: 'Flyscreen cleaning', in: ['premium'] },
+  { label: 'Light hard-water stain removal', in: ['premium'] },
+];
+
+export const PACKAGE_HARD_WATER_TERMS =
+  'Hard-water stain removal only covers agreed deposits that can be safely treated. Heavy deposits or glass restoration are not included unless quoted separately, and full removal is not guaranteed.';
+
+export function isPackageKey(v: unknown): v is PackageKey {
+  return v === 'essential' || v === 'complete' || v === 'premium';
+}
+
+// Three-package only fits a plain inside+outside window clean. Returns why
+// not (for the admin to read) or null when it's fine. Negative Other lines
+// are discounts and are allowed; anything else separately priced isn't.
+export function packageIneligibleReason(q: Pick<Quote, 'services' | 'extras' | 'otherLines'>): string | null {
+  const others = q.services.filter(s => s !== WINDOW_OUTSIDE_KEY && s !== WINDOW_INSIDE_KEY);
+  if (others.length || q.extras.length) {
+    const names = [...others, ...q.extras].map(k => serviceLabel(k).replace(/ \(.*\)$/, '')).join(', ');
+    return `Three-Package only works for inside & outside window cleaning. ${names} ${others.length + q.extras.length > 1 ? 'are' : 'is'} priced separately, so use Single Quote for this one.`;
+  }
+  if (!q.services.includes(WINDOW_OUTSIDE_KEY) || !q.services.includes(WINDOW_INSIDE_KEY)) {
+    return 'Three-Package needs both Window Cleaning - Outside and Inside ticked. For outside-only, use Single Quote.';
+  }
+  if ((q.otherLines ?? []).some(l => (Number(l.amount) || 0) > 0)) {
+    return 'Three-Package only allows discount lines (negative amounts) under Other. Anything extra that costs money needs a Single Quote.';
+  }
+  return null;
+}
+
+export function isPackageQuote(q: Pick<Quote, 'quoteType'>): boolean {
+  return q.quoteType === 'packages';
+}
+
+export const discountLines = (q: Pick<Quote, 'otherLines'>) => (q.otherLines ?? []).filter(l => (Number(l.amount) || 0) < 0);
+
+// A package quote seen as one ordinary quote for `pkg`: the package price is
+// a single line, followed by the discount lines, so quoteTotal(),
+// quoteDiscountBreakdown(), QuotePreview and buildQuoteText all work on it
+// unchanged. Prices come only from the stored packagePrices.
+export function quoteForPackage<T extends Pick<Quote, 'services' | 'extras' | 'itemAmounts' | 'otherLines' | 'amount' | 'packagePrices' | 'selectedPackage'>>(q: T, pkg: PackageKey): T {
+  const priceCents = q.packagePrices?.[pkg] ?? 0;
+  const lines: QuoteOtherLine[] = [
+    { id: `pkg-${pkg}`, description: `${PACKAGE_INFO[pkg].name} package · window cleaning (inside & outside)`, amount: fromCents(priceCents) },
+    ...discountLines(q),
+  ];
+  const view = { ...q, services: [], extras: [], itemAmounts: {}, otherLines: lines, selectedPackage: pkg };
+  return { ...view, amount: quoteTotal(view) };
+}
+
+// Server-side: turn whatever the admin sent into the stored package fields.
+// Only packagePrices.complete (cents) is read from the request; the other two
+// are derived here.
+// Returns an error string when the quote can't be a package quote.
+export function resolvePackageFields(
+  body: { quoteType?: unknown; packagePrices?: unknown },
+  q: Pick<Quote, 'services' | 'extras' | 'otherLines' | 'termsText'>,
+): { error: string } | { quoteType: QuoteType; packagePrices: PackagePricesCents | null; amount: number | null; termsText: string } {
+  if (body.quoteType !== 'packages') return { quoteType: 'single', packagePrices: null, amount: null, termsText: q.termsText };
+  const reason = packageIneligibleReason(q);
+  if (reason) return { error: reason };
+  const raw = body.packagePrices && typeof body.packagePrices === 'object' ? Number((body.packagePrices as Record<string, unknown>).complete) : NaN;
+  if (!Number.isFinite(raw) || raw <= 0) return { error: 'Enter the Complete price (before discounts)' };
+  const packagePrices = packagePricesFromComplete(raw);
+  const termsText = q.termsText.includes(PACKAGE_HARD_WATER_TERMS) ? q.termsText : `${q.termsText.trim()} ${PACKAGE_HARD_WATER_TERMS}`.trim();
+  return { quoteType: 'packages', packagePrices, amount: packageTotal({ otherLines: q.otherLines, packagePrices }, 'complete'), termsText };
+}
+
+// Customer-facing total for one package, in dollars (price + discounts).
+export function packageTotal(q: Pick<Quote, 'otherLines' | 'packagePrices'>, pkg: PackageKey): number {
+  return fromCents(q.packagePrices?.[pkg] ?? 0) + discountLines(q).reduce((s, l) => s + (Number(l.amount) || 0), 0);
+}
 // invoice.ts directly for these — keeps the quote surface self-contained.
 export {
   money, addDays, longDate, GST_NOTE,
