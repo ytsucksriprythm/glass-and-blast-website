@@ -452,7 +452,9 @@ export default function InvoicesQuotesPage() {
                         <div className="min-w-0">
                           <div className="flex items-center gap-2">
                             <span className="text-white font-semibold">{q.number}</span>
-                            {q.status !== 'draft' && (
+                            {q.acceptedAt ? (
+                              <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold border border-emerald-400/30 bg-emerald-400/10 text-emerald-300">Accepted</span>
+                            ) : q.status !== 'draft' && (
                               <span className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold border ${QUOTE_STATUS_STYLE[q.status]}`}>{QUOTE_STATUS_LABEL[q.status]}</span>
                             )}
                           </div>

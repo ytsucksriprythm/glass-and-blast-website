@@ -712,7 +712,9 @@ export default function BookingView() {
                       <div className="flex items-center gap-2">
                         <button onClick={() => { setEditingQuote(q); setShowQuoteModal(true); }} className="min-w-0 flex-1 text-left cursor-pointer">
                           <div className="text-white text-sm font-medium">{q.number} · {quoteMoney(q.amount)}</div>
-                          <div className="text-slate-500 text-xs">{QUOTE_STATUS_LABEL[q.status] ?? q.status} · {new Date(q.quoteDate).toLocaleDateString('en-AU')}</div>
+                          <div className="text-slate-500 text-xs">
+                            {q.acceptedAt ? <span className="text-emerald-400 font-semibold">Accepted</span> : (QUOTE_STATUS_LABEL[q.status] ?? q.status)} · {new Date(q.quoteDate).toLocaleDateString('en-AU')}
+                          </div>
                         </button>
                         <button onClick={() => copyQuote(q)} title="Copy quote text" className="p-2 rounded-lg border border-white/10 text-slate-300 hover:border-sky-400/40 cursor-pointer"><Copy className="w-4 h-4" /></button>
                         <button onClick={() => shareQuote(q)} title="Share quote link" className="p-2 rounded-lg border border-white/10 text-slate-300 hover:border-sky-400/40 cursor-pointer"><ShareIcon className="w-4 h-4" /></button>

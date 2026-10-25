@@ -3078,15 +3078,18 @@ export async function updateQuote(id: string, rawUpdates: Partial<Quote>): Promi
   return rows[idx];
 }
 
-// Customer accepts one package of a three-package quote. The total is worked
-// out here from the stored prices (never from the browser) and the package is
-// locked: the WHERE accepted_at IS NULL makes a second accept a no-op. The new
-// amount flows to booking.quoteAmount (and from there to invoices) as usual.
-export async function acceptQuotePackage(token: string, pkg: PackageKey): Promise<{ quote: Quote; already: boolean } | null> {
+// Customer accepts a quote. Single quotes: pkg is null and the amount stays
+// as saved. Three-package quotes: pkg is required and the total is worked out
+// here from the stored prices (never from the browser). Either way it locks:
+// the WHERE accepted_at IS NULL makes a second accept a no-op. The amount
+// flows to booking.quoteAmount (and from there to invoices) as usual.
+export async function acceptQuote(token: string, pkg: PackageKey | null): Promise<{ quote: Quote; already: boolean } | null> {
   const cur = await getQuoteByToken(token);
-  if (!cur || !isPackageQuote(cur) || !cur.packagePrices) return null;
+  if (!cur) return null;
   if (cur.acceptedAt) return { quote: cur, already: true };
-  const amount = packageTotal(cur, pkg);
+  if (isPackageQuote(cur) && (!pkg || !cur.packagePrices)) return null;
+  if (!isPackageQuote(cur)) pkg = null;
+  const amount = pkg ? packageTotal(cur, pkg) : cur.amount;
   const now = new Date().toISOString();
   if (sql) {
     const rows = await sql`
@@ -3097,7 +3100,7 @@ export async function acceptQuotePackage(token: string, pkg: PackageKey): Promis
     const arr = rows as any[];
     if (!arr.length) { const again = await getQuoteByToken(token); return again ? { quote: again, already: true } : null; }
     const quote = rowToQuote(arr[0]);
-    await syncAcceptedPackageToBooking(quote);
+    await syncAcceptedQuoteToBooking(quote);
     return { quote, already: false };
   }
   const rows = readQuotes();
@@ -3105,18 +3108,19 @@ export async function acceptQuotePackage(token: string, pkg: PackageKey): Promis
   if (idx === -1) return null;
   rows[idx] = { ...rows[idx], selectedPackage: pkg, acceptedAt: now, amount, updatedAt: now };
   writeQuotes(rows);
-  await syncAcceptedPackageToBooking(rows[idx]);
+  await syncAcceptedQuoteToBooking(rows[idx]);
   return { quote: rows[idx], already: false };
 }
 
 // Accepted total -> booking.quoteAmount (which invoices copy from), plus a
-// line in the private admin notes saying which package they picked.
-async function syncAcceptedPackageToBooking(quote: Quote): Promise<void> {
+// line in the private admin notes saying what they accepted.
+async function syncAcceptedQuoteToBooking(quote: Quote): Promise<void> {
   await syncQuoteAmountToBooking(quote);
   try {
     const b = await getBookingById(quote.bookingId);
-    if (!b || !quote.selectedPackage) return;
-    const line = `Accepted ${PACKAGE_INFO[quote.selectedPackage].name} package on quote ${quote.number} ($${quote.amount}).`;
+    if (!b) return;
+    const what = quote.selectedPackage ? `${PACKAGE_INFO[quote.selectedPackage].name} package on quote` : 'quote';
+    const line = `Accepted ${what} ${quote.number} ($${quote.amount}).`;
     if ((b.adminNotes ?? '').includes(line)) return;
     await updateBooking(quote.bookingId, { adminNotes: [b.adminNotes?.trim(), line].filter(Boolean).join('\n') });
   } catch { /* best-effort */ }

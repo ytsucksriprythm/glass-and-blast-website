@@ -57,7 +57,7 @@ export default async function PublicQuotePage({ params, searchParams }: {
           <a href={`/quote/${token}`} className="inline-flex items-center gap-1.5 text-sm font-semibold text-slate-600 hover:text-slate-900">
             <ArrowLeft className="w-4 h-4" /> Change package
           </a>
-          <QuoteAcceptButton token={token} pkg={picked} label={PACKAGE_INFO[picked].name} />
+          <QuoteAcceptButton token={token} pkg={picked} pkgName={PACKAGE_INFO[picked].name} />
         </div>
       </QuoteShell>
     );
@@ -65,10 +65,14 @@ export default async function PublicQuotePage({ params, searchParams }: {
 
   return (
     <QuoteShell quote={quote}>
-      {isPackageQuote(quote) && quote.acceptedAt && quote.selectedPackage && (
+      {quote.acceptedAt ? (
         <div className="no-print mt-5 flex items-center gap-2 rounded-xl bg-emerald-50 ring-1 ring-emerald-200 px-4 py-3 text-sm text-emerald-800">
           <CheckCircle2 className="w-5 h-5 flex-shrink-0" />
-          You accepted the {PACKAGE_INFO[quote.selectedPackage].name} package on {longDate(quote.acceptedAt.slice(0, 10))}. Thanks, we&apos;ll be in touch to lock in a time.
+          You accepted {quote.selectedPackage ? `the ${PACKAGE_INFO[quote.selectedPackage].name} package` : 'this quote'} on {longDate(quote.acceptedAt.slice(0, 10))}. Thanks, we&apos;ll be in touch to lock in a time.
+        </div>
+      ) : (
+        <div className="no-print mt-5 flex justify-end">
+          <QuoteAcceptButton token={quote.token} />
         </div>
       )}
     </QuoteShell>

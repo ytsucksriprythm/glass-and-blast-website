@@ -393,9 +393,9 @@ export default function QuoteModal({ bookingId, booking, initial, onClose, onSav
                   );
                 })}
               </div>
-              {locked && saved?.selectedPackage && (
+              {locked && saved && (
                 <p className="mt-2 text-xs text-emerald-300">
-                  The customer accepted {PACKAGE_INFO[saved.selectedPackage].name} ({money(saved.amount)}), so the price is locked. You can still edit names, dates, notes and terms.
+                  The customer accepted {saved.selectedPackage ? PACKAGE_INFO[saved.selectedPackage].name : 'this quote'} ({money(saved.amount)}), so the price is locked. You can still edit names, dates, notes and terms.
                 </p>
               )}
               {packageReason && (
