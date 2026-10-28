@@ -48,21 +48,35 @@ function trimSlash(s: string): string {
 // Returns null when the connector is disabled or any required setting is
 // missing/weak. Callers turn null into a generic 503 — they never say which
 // setting is missing, so an unauthenticated caller learns nothing.
+// Pasting into the Vercel dashboard easily drags along spaces, quotes or the
+// whole "NAME=value" line; strip those so a slip doesn't silently disable the connector.
+function envValue(name: string): string {
+  return (process.env[name] ?? '').trim().replace(new RegExp(`^${name}=`), '').replace(/^["']|["']$/g, '').trim();
+}
+
+// Which check failed goes to the server logs (names only, never values), once
+// per instance, so a misconfiguration can be found without exposing anything.
+let loggedReason = '';
+function disabled(reason: string): null {
+  if (loggedReason !== reason) { loggedReason = reason; console.warn(`[mcp] connector disabled: ${reason}`); }
+  return null;
+}
+
 export function getMcpConfig(): McpConfig | null {
-  if (process.env.MCP_ENABLED !== 'true') return null;
-  const baseUrl = trimSlash(process.env.MCP_BASE_URL ?? '');
-  const tokenSecret = process.env.MCP_TOKEN_SECRET ?? '';
-  const ownerPasswordHash = process.env.MCP_OWNER_PASSWORD_HASH ?? '';
-  const dedicatedUrl = process.env.MCP_DATABASE_URL ?? '';
+  if (envValue('MCP_ENABLED') !== 'true') return null;
+  const baseUrl = trimSlash(envValue('MCP_BASE_URL'));
+  const tokenSecret = envValue('MCP_TOKEN_SECRET');
+  const ownerPasswordHash = envValue('MCP_OWNER_PASSWORD_HASH');
+  const dedicatedUrl = envValue('MCP_DATABASE_URL');
   const ownerUrl = process.env.DATABASE_URL_UNPOOLED || process.env.POSTGRES_URL_NON_POOLING
     || process.env.DATABASE_URL || process.env.POSTGRES_URL || '';
   const readDatabaseUrl = dedicatedUrl || ownerUrl;
-  if (!/^https?:\/\/[^/]+$/.test(baseUrl)) return null;
+  if (!/^https?:\/\/[^/]+$/.test(baseUrl)) return disabled('MCP_BASE_URL is not a plain origin like https://example.com');
   // Plain http is only acceptable for local testing.
-  if (baseUrl.startsWith('http://') && !/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(baseUrl)) return null;
-  if (tokenSecret.length < 32) return null;
-  if (!ownerPasswordHash.startsWith('scrypt:')) return null;
-  if (!readDatabaseUrl && !testOverrideActive()) return null;
+  if (baseUrl.startsWith('http://') && !/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(baseUrl)) return disabled('MCP_BASE_URL must be https');
+  if (tokenSecret.length < 32) return disabled(`MCP_TOKEN_SECRET is missing or too short (${tokenSecret.length} chars, need 32+)`);
+  if (!ownerPasswordHash.startsWith('scrypt:')) return disabled(`MCP_OWNER_PASSWORD_HASH must start with "scrypt:" (${ownerPasswordHash.length} chars set)`);
+  if (!readDatabaseUrl && !testOverrideActive()) return disabled('no database URL');
   return {
     baseUrl,
     resource: `${baseUrl}/api/mcp`,
