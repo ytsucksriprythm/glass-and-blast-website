@@ -28,6 +28,14 @@ export interface McpConfig {
   tokenSecret: string;
   ownerPasswordHash: string;
   readDatabaseUrl: string;
+  // true when reads go through the dedicated SELECT-only role (MCP_DATABASE_URL);
+  // false when that's not set and reads fall back to the owner connection
+  // (still inside READ ONLY transactions, but the role self-check is skipped
+  // because the owner role can of course write).
+  dedicatedReadRole: boolean;
+  // MCP_WRITES_ENABLED=true registers the write tools (src/lib/mcp/writeTools.ts):
+  // create/update bookings, scheduling, quotes, invoices, recurring customers.
+  writesEnabled: boolean;
   tokenVersion: string;
   extraRedirectUris: string[];
   toolCallsPer10Min: number;
@@ -45,7 +53,10 @@ export function getMcpConfig(): McpConfig | null {
   const baseUrl = trimSlash(process.env.MCP_BASE_URL ?? '');
   const tokenSecret = process.env.MCP_TOKEN_SECRET ?? '';
   const ownerPasswordHash = process.env.MCP_OWNER_PASSWORD_HASH ?? '';
-  const readDatabaseUrl = process.env.MCP_DATABASE_URL ?? '';
+  const dedicatedUrl = process.env.MCP_DATABASE_URL ?? '';
+  const ownerUrl = process.env.DATABASE_URL_UNPOOLED || process.env.POSTGRES_URL_NON_POOLING
+    || process.env.DATABASE_URL || process.env.POSTGRES_URL || '';
+  const readDatabaseUrl = dedicatedUrl || ownerUrl;
   if (!/^https?:\/\/[^/]+$/.test(baseUrl)) return null;
   // Plain http is only acceptable for local testing.
   if (baseUrl.startsWith('http://') && !/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(baseUrl)) return null;
@@ -58,6 +69,9 @@ export function getMcpConfig(): McpConfig | null {
     tokenSecret,
     ownerPasswordHash,
     readDatabaseUrl,
+    // The test harness injects the real read-only role, so it counts as dedicated.
+    dedicatedReadRole: !!dedicatedUrl || testOverrideActive(),
+    writesEnabled: process.env.MCP_WRITES_ENABLED === 'true',
     tokenVersion: process.env.MCP_TOKEN_VERSION || '1',
     extraRedirectUris: (process.env.MCP_EXTRA_REDIRECT_URIS ?? '').split(',').map(s => s.trim()).filter(Boolean),
     toolCallsPer10Min: Math.max(10, Number(process.env.MCP_RATE_LIMIT_PER_10MIN) || 300),

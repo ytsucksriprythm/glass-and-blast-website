@@ -1,7 +1,7 @@
-// The MCP tool surface for ChatGPT. READ-ONLY: every tool here only calls
-// read functions in ./data (which run on the read-only role inside READ ONLY
-// transactions). There are no write tools — proposed ones are documented in
-// docs/mcp-write-tools-proposal.md and deliberately NOT registered.
+// The MCP tool surface for ChatGPT. The tools in this file are READ-ONLY: they
+// only call read functions in ./data (READ ONLY transactions, on the dedicated
+// read-only role when MCP_DATABASE_URL is set). Write tools live separately in
+// ./writeTools and are only registered when MCP_WRITES_ENABLED=true.
 //
 // Every call is input-validated (zod), rate-limited per authorized client,
 // and audited (tool, sanitized arguments, result count, timing — free-text
@@ -17,6 +17,7 @@ import { getReadDb, assertReadOnlyRole, ReadOnlyViolation } from './sql';
 import { CursorError } from './records';
 import { isIsoDate, daysBetween } from './time';
 import * as data from './data';
+import { registerWriteTools } from './writeTools';
 import { TABLE_COVERAGE, EXCLUDED_TABLES, ADMIN_SECTIONS, KNOWN_GAPS, DATA_CONVENTIONS } from './coverage';
 
 export interface CallerInfo { clientId: string; tokenId: string; ip: string }
@@ -75,8 +76,12 @@ export function buildMcpServer(cfg: McpConfig, caller: CallerInfo): McpServer {
     { name: 'glass-and-blast-business', version: '1.0.0' },
     {
       instructions:
-        'Read-only access to ALL Glass & Blast Window Cleaning business records (Canberra, Australia): customers/leads/jobs ' +
-        '(bookings), quotes, invoices, payments, recurring plans, notes, history, photos, settings and reports. Nothing can be changed. ' +
+        `${cfg.writesEnabled ? 'Full' : 'Read-only'} access to ALL Glass & Blast Window Cleaning business records (Canberra, Australia): customers/leads/jobs ` +
+        '(bookings), quotes, invoices, payments, recurring plans, notes, history, photos, settings and reports. ' +
+        (cfg.writesEnabled
+          ? 'Write tools can add/update bookings, put jobs on the calendar, create quotes and invoices, mark invoices paid and manage recurring customers. ' +
+            'Before any write, find the exact record id with a search tool, tell the owner exactly what will change, and only then call the write tool. Nothing can be deleted. '
+          : 'Nothing can be changed. ') +
         `${DATA_CONVENTIONS.pagination} ${DATA_CONVENTIONS.nullVsEmpty} ${DATA_CONVENTIONS.dateFilters} ` +
         'When a name matches more than one person, show the candidates (name, suburb, phone, id) and ask which one before answering about "the" customer. ' +
         'Call describe_data_coverage to see exactly what is and is not available.',
@@ -99,7 +104,7 @@ export function buildMcpServer(cfg: McpConfig, caller: CallerInfo): McpServer {
             await audit({ ...base, event: 'rate_limited', ok: false });
             return fail(`Rate limit reached (${cfg.toolCallsPer10Min} tool calls per 10 minutes). Wait a few minutes and continue.`);
           }
-          await assertReadOnlyRole(ctx.db);
+          if (cfg.dedicatedReadRole) await assertReadOnlyRole(ctx.db);
           const result = await handler(args);
           await audit({ ...base, event: 'tool_call', ok: true, detail: sanitizeForAudit(args), resultCount: countResults(result), durationMs: Date.now() - started });
           return ok(result);
@@ -279,6 +284,8 @@ export function buildMcpServer(cfg: McpConfig, caller: CallerInfo): McpServer {
     'Lists every admin section and database table and which tool exposes it, what is deliberately excluded (and why), known gaps in what the admin records, and data conventions (ids, null vs empty, time zones, pagination).',
     {},
     async () => ({ conventions: DATA_CONVENTIONS, tables: TABLE_COVERAGE, excludedTables: EXCLUDED_TABLES, adminSections: ADMIN_SECTIONS, knownGaps: KNOWN_GAPS }));
+
+  if (cfg.writesEnabled) registerWriteTools(server, cfg, caller);
 
   return server;
 }

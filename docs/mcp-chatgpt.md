@@ -55,6 +55,26 @@ ChatGPT ──HTTPS──▶ /api/mcp  (Next.js route on Vercel, same app as the
 SELECT created_at, event, ok, tool, detail, result_count FROM mcp_audit_log ORDER BY id DESC LIMIT 100;
 ```
 
+## Write tools (optional, `MCP_WRITES_ENABLED=true`)
+
+Off unless `MCP_WRITES_ENABLED=true`. When on, ChatGPT also gets these tools (`src/lib/mcp/writeTools.ts`, tested in `tests/mcp/writes.test.ts`):
+
+| Tool | Does |
+|---|---|
+| `create_booking` | Add a customer/lead/job, optionally straight onto the calendar |
+| `update_booking` | Change contact details, services, status, price, paid, completion date; `addAdminNote` appends a dated private note |
+| `schedule_booking` | Put a booking on the calendar (Sydney time), move it, or take it off. Refuses overlaps unless told to allow them |
+| `create_quote` | Single or three-package quote, discounts as negative lines; returns the customer link |
+| `update_quote` | Mark sent, change scope/notes/assumptions/expiry |
+| `create_invoice` | From a booking (bill-to + line filled in) or with explicit lines; returns the customer link |
+| `update_invoice_status` | Mark sent / paid (with payment method) / cancelled |
+| `make_recurring_customer` | Recurring profile from a booking (website plan discounts), returns portal link + PIN |
+| `create_recurring_job`, `book_next_recurring_visit` | Jobs under a recurring profile |
+
+Writes go through `src/lib/db.ts` on the app's normal connection, the same functions the admin uses, so the activity log (actor `chatgpt`), quote → booking price sync and the Facebook-lead sheet status all stay consistent. Records are addressed by id only; there is no delete tool. Every write is rate-limited and audited (field names only, never values). Writes are not run through the read-only role, so with writes on, the "read-only in four places" list above applies to the read tools only.
+
+**`MCP_DATABASE_URL` is optional.** Without it, read tools use the app's own database connection (still inside READ ONLY transactions) and the read-only role self-check is skipped. Set it (steps 2–3 below) for the stricter setup.
+
 ## Costs
 
 | Item | Cost |
@@ -98,7 +118,8 @@ Use the SQL editor, **not** the Roles page: roles created on the Roles page beco
 | `MCP_BASE_URL` | `https://glassandblast.com.au` |
 | `MCP_TOKEN_SECRET` | from step 1 |
 | `MCP_OWNER_PASSWORD_HASH` | from step 1 (format `scrypt:…`) |
-| `MCP_DATABASE_URL` | from step 3 |
+| `MCP_DATABASE_URL` | optional, from step 3 (without it reads use `DATABASE_URL`) |
+| `MCP_WRITES_ENABLED` | optional, `true` turns on the write tools |
 | `MCP_TOKEN_VERSION` | optional, default `1`. Change it (e.g. to `2`) to instantly revoke every issued token. |
 | `MCP_RATE_LIMIT_PER_10MIN` | optional, default `300` tool calls per client per 10 min |
 | `MCP_EXTRA_REDIRECT_URIS` | optional, comma-separated; only for testing with another MCP client |

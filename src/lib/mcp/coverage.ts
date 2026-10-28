@@ -85,5 +85,5 @@ export const DATA_CONVENTIONS = {
   pagination: 'List tools return total, returned, hasMore and nextCursor. Keep calling with nextCursor (same filters) until hasMore is false to get every record. No list is ever silently truncated.',
   computedFields: 'Anything under `computed` is derived by the connector, not stored in the admin.',
   demoData: 'LARP/demo-mode fake rows are always excluded.',
-  readOnly: 'Every tool is read-only. Nothing can be created, changed or deleted through this connector.',
+  readOnly: 'Search/list/get/report tools are read-only. When the owner has turned writes on (MCP_WRITES_ENABLED), separate write tools can add and update bookings, calendar slots, quotes, invoices and recurring customers. Nothing can ever be deleted through this connector.',
 };
