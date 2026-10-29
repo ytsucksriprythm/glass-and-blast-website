@@ -22,6 +22,13 @@ export const MAX_REQUEST_BYTES = 64 * 1024;
 export const CHATGPT_STABLE_REDIRECT = 'https://chatgpt.com/connector_platform_oauth_redirect';
 const CHATGPT_CONNECTOR_REDIRECT = /^https:\/\/chatgpt\.com\/connector\/oauth\/[A-Za-z0-9_-]{1,200}$/;
 
+// Claude's custom-connector OAuth callbacks (claude.ai web, Desktop, mobile).
+const CLAUDE_REDIRECTS = ['https://claude.ai/api/mcp/auth_callback', 'https://claude.com/api/mcp/auth_callback'];
+
+// Sites whose browsers/backends legitimately talk to the connector: OAuth
+// redirect targets (CSP form-action) and allowed Origin headers on /api/mcp.
+export const CLIENT_ORIGINS = ['https://chatgpt.com', 'https://claude.ai', 'https://claude.com'];
+
 export interface McpConfig {
   baseUrl: string;       // issuer, e.g. https://glassandblast.com.au (no trailing slash)
   resource: string;      // canonical MCP endpoint URL — also the token audience
@@ -105,7 +112,7 @@ function testOverrideActive(): boolean {
 }
 
 export function isAllowedRedirectUri(uri: string, cfg: McpConfig): boolean {
-  if (uri === CHATGPT_STABLE_REDIRECT || CHATGPT_CONNECTOR_REDIRECT.test(uri)) return true;
+  if (uri === CHATGPT_STABLE_REDIRECT || CHATGPT_CONNECTOR_REDIRECT.test(uri) || CLAUDE_REDIRECTS.includes(uri)) return true;
   return cfg.extraRedirectUris.includes(uri);
 }
 

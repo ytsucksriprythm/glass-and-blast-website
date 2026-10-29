@@ -109,6 +109,19 @@ That's your `MCP_DATABASE_URL`.
 - "Show every Facebook lead from the last 14 days that's still uncontacted."
 - "What's owed to me right now?"
 
+## Also connect Claude (optional, 2 min)
+
+The same connector works in Claude (claude.ai, Claude Desktop and the Claude phone app). No extra setup on the server.
+
+1. On claude.ai, go to **Settings → Connectors → Add custom connector**.
+2. **Name:** `Glass & Blast`. **URL:** `https://glassandblast.com.au/api/mcp`. Leave the advanced OAuth fields blank, then click **Add**.
+3. Click **Connect**. The same Glass & Blast sign-in page opens; check it says the request is from `claude.ai`, enter your connector password, and click **Allow read-only access**.
+4. In a chat, turn on **Glass & Blast** from the tools menu.
+
+Claude asks before using tools too, but unlike ChatGPT it lets you pick **Always allow** per tool, either in the prompt or under Settings → Connectors → Glass & Blast.
+
+The connector shows up in Claude Desktop and the phone app automatically. Claude Code isn't supported (it signs in through a random local port the connector doesn't accept).
+
 ---
 
 ## Handy controls

@@ -83,6 +83,21 @@ test('client registration only accepts ChatGPT redirect URIs', async () => {
   assert.ok(await registerClient('https://chatgpt.com/connector/oauth/abc123'));
 });
 
+test('Claude connectors can register and sign in; lookalike Claude URIs cannot', async () => {
+  for (const uri of ['https://claude.ai/api/mcp/auth_callback', 'https://claude.com/api/mcp/auth_callback']) {
+    const clientId = await registerClient(uri);
+    const page = await oauth.authorizeGet(req(authorizeUrl(clientId, 'x'.repeat(43), { redirect_uri: uri })));
+    assert.equal(page.status, 200, uri);
+    assert.match(page.headers.get('content-security-policy')!, /form-action 'self'[^;]* https:\/\/claude\.ai/);
+  }
+  for (const bad of ['https://claude.ai/api/mcp/auth_callback/evil', 'https://claude.ai.evil.example/api/mcp/auth_callback', 'http://claude.ai/api/mcp/auth_callback']) {
+    const res = await oauth.register(req('/api/oauth/register', { method: 'POST', jsonBody: { redirect_uris: [bad] } }));
+    assert.equal(res.status, 400, bad);
+  }
+  const { accessToken } = await fullLogin();
+  assert.equal((await rpc(accessToken, 'tools/list', {}, { origin: 'https://claude.ai' })).status, 200);
+});
+
 test('authorize: unknown client / unregistered redirect show an error page instead of redirecting', async () => {
   const unknown = await oauth.authorizeGet(req(authorizeUrl('nope', 'x'.repeat(43))));
   assert.equal(unknown.status, 400);

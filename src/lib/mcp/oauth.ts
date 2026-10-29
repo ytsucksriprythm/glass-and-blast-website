@@ -13,7 +13,7 @@
 // route handlers and directly from tests.
 
 import {
-  type McpConfig, getMcpConfig, isAllowedRedirectUri, protectedResourceMetadataUrl,
+  type McpConfig, getMcpConfig, isAllowedRedirectUri, protectedResourceMetadataUrl, CLIENT_ORIGINS,
   MCP_SCOPE, ACCESS_TOKEN_TTL_SECONDS, REFRESH_TOKEN_TTL_SECONDS, AUTH_CODE_TTL_SECONDS, AUTHORIZE_FORM_TTL_SECONDS,
 } from './config';
 import {
@@ -102,7 +102,7 @@ export async function register(req: Request): Promise<Response> {
   const bad = redirectUris.filter(u => !isAllowedRedirectUri(u, cfg));
   if (bad.length) {
     await audit({ event: 'client_register_rejected', ok: false, ip, detail: { reason: 'redirect_uri_not_allowed', count: bad.length } });
-    return oauthError('invalid_redirect_uri', 'Only ChatGPT connector redirect URIs are allowed.');
+    return oauthError('invalid_redirect_uri', 'Only ChatGPT and Claude connector redirect URIs are allowed.');
   }
   const grantTypes = Array.isArray(body.grant_types) ? body.grant_types : ['authorization_code', 'refresh_token'];
   if (grantTypes.some(g => g !== 'authorization_code' && g !== 'refresh_token')) {
@@ -179,10 +179,10 @@ function redirectWith(uri: string, params: Record<string, string>, cfg: McpConfi
 }
 
 // form-action must also allow the redirect target: browsers apply it to the
-// redirect that follows the form POST (back to chatgpt.com).
+// redirect that follows the form POST (back to chatgpt.com / claude.ai).
 function pageHeaders(): Record<string, string> {
   const cfg = getMcpConfig();
-  const origins = new Set(['https://chatgpt.com']);
+  const origins = new Set(CLIENT_ORIGINS);
   for (const u of cfg?.extraRedirectUris ?? []) { try { origins.add(new URL(u).origin); } catch { /* skip */ } }
   return {
     'Content-Type': 'text/html; charset=utf-8',

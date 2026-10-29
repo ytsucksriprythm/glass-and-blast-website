@@ -4,7 +4,7 @@
 // what a serverless deployment needs).
 
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
-import { getMcpConfig, MCP_SCOPE, MAX_REQUEST_BYTES, type McpConfig } from './config';
+import { getMcpConfig, MCP_SCOPE, MAX_REQUEST_BYTES, CLIENT_ORIGINS, type McpConfig } from './config';
 import { verifyJwt, type AccessTokenClaims } from './crypto';
 import { unauthorized, notConfigured, json, clientIp } from './oauth';
 import { audit } from './authStore';
@@ -30,10 +30,10 @@ export function authenticate(req: Request, cfg: McpConfig): AuthResult {
 }
 
 // DNS-rebinding / cross-site protection: browsers always send Origin; ChatGPT
-// calls server-to-server (no Origin). Anything else is refused.
+// and Claude call server-to-server (no Origin). Anything else is refused.
 function originAllowed(req: Request, cfg: McpConfig): boolean {
   const origin = req.headers.get('origin');
-  return !origin || origin === cfg.baseUrl || origin === 'https://chatgpt.com';
+  return !origin || origin === cfg.baseUrl || CLIENT_ORIGINS.includes(origin);
 }
 
 export async function handleMcp(req: Request): Promise<Response> {
