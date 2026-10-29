@@ -221,7 +221,7 @@ function consentPage(cfg: McpConfig, tx: string, clientName: string, redirectUri
 <h1>Allow ${esc(clientName || 'this app')} to ${cfg.writesEnabled ? 'read and update' : 'read'} your business data?</h1>
 <p>Request from <code>${esc(host)}</code>. If you didn't just start connecting from ChatGPT, press Deny.</p>
 <ul><li>${cfg.writesEnabled ? 'Access' : 'Read-only access'} to all customers, leads, bookings, quotes, invoices, payments, recurring plans, notes, photos, activity history, settings and reports.</li>
-<li>${cfg.writesEnabled ? 'It can add and update bookings, calendar slots, quotes, invoices and recurring customers. It cannot delete anything.' : 'It cannot create, change or delete anything.'}</li><li>You can disconnect any time from ChatGPT, or revoke everything server-side.</li></ul>
+<li>${cfg.writesEnabled ? 'It can add and update bookings, calendar slots, quotes, invoices and recurring customers. It cannot delete anything.' : 'It cannot create, change or delete anything.'}</li><li>You can disconnect any time from ChatGPT or Claude, or revoke everything server-side.</li></ul>
 ${error ? `<p class="err">${esc(error)}</p>` : ''}
 <form method="post" action="${esc(cfg.baseUrl)}/api/oauth/authorize" autocomplete="off">
 <input type="hidden" name="tx" value="${esc(tx)}">

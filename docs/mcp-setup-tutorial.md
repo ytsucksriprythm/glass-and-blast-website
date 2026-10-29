@@ -115,7 +115,7 @@ The same connector works in Claude (claude.ai, Claude Desktop and the Claude pho
 
 1. On claude.ai, go to **Settings → Connectors → Add custom connector**.
 2. **Name:** `Glass & Blast`. **URL:** `https://glassandblast.com.au/api/mcp`. Leave the advanced OAuth fields blank, then click **Add**.
-3. Click **Connect**. The same Glass & Blast sign-in page opens; check it says the request is from `claude.ai`, enter your connector password, and click **Allow read-only access**.
+3. Click **Connect**. The same Glass & Blast sign-in page opens; check it says the request is from `claude.ai`, enter your connector password, and click **Allow access** (**Allow read-only access** if write tools are off).
 4. In a chat, turn on **Glass & Blast** from the tools menu.
 
 Claude asks before using tools too, but unlike ChatGPT it lets you pick **Always allow** per tool, either in the prompt or under Settings → Connectors → Glass & Blast.
