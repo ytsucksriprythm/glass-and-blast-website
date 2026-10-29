@@ -35,15 +35,28 @@ async function call(name: string, args: Record<string, unknown> = {}) {
   return { isError: !!r?.isError, text: r?.content?.[0]?.text as string, data: r?.structuredContent as any };
 }
 
-test('write tools are registered (and only when enabled), never read-only, no delete tool', async () => {
+const WRITE_TOOLS = ['create_booking', 'update_booking', 'schedule_booking', 'create_quote', 'update_quote', 'create_invoice', 'update_invoice_status', 'make_recurring_customer', 'create_recurring_job', 'book_next_recurring_visit'];
+
+test('write tools are registered (and only when enabled), no delete tool', async () => {
   const tools = (await (await h.rpc(token, 'tools/list')).json()).result.tools as any[];
   const names = tools.map(t => t.name);
-  for (const n of ['create_booking', 'update_booking', 'schedule_booking', 'create_quote', 'update_quote', 'create_invoice', 'update_invoice_status', 'make_recurring_customer', 'create_recurring_job', 'book_next_recurring_visit']) {
-    assert.ok(names.includes(n), n);
-    assert.equal(tools.find(t => t.name === n).annotations.readOnlyHint, false, n);
-  }
+  for (const n of WRITE_TOOLS) assert.ok(names.includes(n), n);
   assert.ok(!names.some(n => /delete|remove/.test(n)));
   assert.ok(names.includes('search_bookings'), 'read tools still there');
+});
+
+test('write tools skip ChatGPT\'s confirmation by default; MCP_WRITES_CONFIRM=true brings it back', async () => {
+  const hints = async () => {
+    const tools = (await (await h.rpc(token, 'tools/list')).json()).result.tools as any[];
+    return WRITE_TOOLS.map(n => tools.find(t => t.name === n).annotations.readOnlyHint);
+  };
+  assert.ok((await hints()).every(v => v === true), 'labelled read-only → no prompt');
+  h.configureEnv({ MCP_WRITES_ENABLED: 'true', MCP_WRITES_CONFIRM: 'true' });
+  try {
+    assert.ok((await hints()).every(v => v === false), 'labelled as writes → ChatGPT asks');
+  } finally {
+    h.configureEnv({ MCP_WRITES_ENABLED: 'true', MCP_WRITES_CONFIRM: undefined });
+  }
 });
 
 test('full flow: booking → calendar → quote (single + packages) → invoice → paid → recurring', async () => {

@@ -36,6 +36,11 @@ export interface McpConfig {
   // MCP_WRITES_ENABLED=true registers the write tools (src/lib/mcp/writeTools.ts):
   // create/update bookings, scheduling, quotes, invoices, recurring customers.
   writesEnabled: boolean;
+  // ChatGPT asks "Allow?" before every tool not marked read-only, and only
+  // remembers the answer for one conversation. By default the write tools are
+  // therefore labelled read-only so ChatGPT just runs them; MCP_WRITES_CONFIRM=true
+  // labels them as writes again, bringing the confirmation prompt back.
+  writesConfirm: boolean;
   tokenVersion: string;
   extraRedirectUris: string[];
   toolCallsPer10Min: number;
@@ -86,6 +91,7 @@ export function getMcpConfig(): McpConfig | null {
     // The test harness injects the real read-only role, so it counts as dedicated.
     dedicatedReadRole: !!dedicatedUrl || testOverrideActive(),
     writesEnabled: process.env.MCP_WRITES_ENABLED === 'true',
+    writesConfirm: envValue('MCP_WRITES_CONFIRM') === 'true',
     tokenVersion: process.env.MCP_TOKEN_VERSION || '1',
     extraRedirectUris: (process.env.MCP_EXTRA_REDIRECT_URIS ?? '').split(',').map(s => s.trim()).filter(Boolean),
     toolCallsPer10Min: Math.max(10, Number(process.env.MCP_RATE_LIMIT_PER_10MIN) || 300),

@@ -7,7 +7,10 @@
 //
 // Rules: records are addressed by exact id only (never by name); nothing can
 // be deleted; every call is rate-limited and audited like the read tools.
-// ChatGPT shows a confirmation before calling any tool not marked read-only.
+// ChatGPT shows a confirmation before calling any tool not marked read-only,
+// so by default these are labelled read-only and run without asking; set
+// MCP_WRITES_CONFIRM=true to label them as writes and get the prompt back.
+// The label only changes ChatGPT's UI — every check below still applies.
 
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
@@ -33,7 +36,8 @@ import { BUSINESS_DEFAULTS, PAYMENT_DEFAULTS, paymentDueTermsDays, type InvoiceI
 import { presetDiscount } from '@/lib/recurring';
 
 const ACTOR = 'chatgpt';
-const WRITE = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false } as const;
+const writeAnnotations = (confirm: boolean) =>
+  ({ readOnlyHint: !confirm, destructiveHint: false, idempotentHint: false, openWorldHint: false }) as const;
 
 // ─── Input schemas ──────────────────────────────────────────────────────────
 
@@ -93,7 +97,7 @@ export function registerWriteTools(server: McpServer, cfg: McpConfig, caller: Ca
     name: string, title: string, description: string, inputSchema: S,
     handler: (args: z.infer<z.ZodObject<S>>) => Promise<unknown>,
   ) {
-    server.registerTool(name, { title, description, inputSchema, annotations: { title, ...WRITE } },
+    server.registerTool(name, { title, description, inputSchema, annotations: { title, ...writeAnnotations(cfg.writesConfirm) } },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (async (args: any): Promise<CallToolResult> => {
         const started = Date.now();

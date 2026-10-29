@@ -71,6 +71,8 @@ Off unless `MCP_WRITES_ENABLED=true`. When on, ChatGPT also gets these tools (`s
 | `make_recurring_customer` | Recurring profile from a booking (website plan discounts), returns portal link + PIN |
 | `create_recurring_job`, `book_next_recurring_visit` | Jobs under a recurring profile |
 
+**No confirmation prompts.** ChatGPT asks "Allow?" before any tool that isn't labelled read-only, and only remembers the answer for one conversation. So by default the write tools are labelled read-only and ChatGPT runs them straight away. Set `MCP_WRITES_CONFIRM=true` to get the prompt back. The label only affects ChatGPT's UI; ids-only, no deletes, rate limits and auditing all still apply.
+
 Writes go through `src/lib/db.ts` on the app's normal connection, the same functions the admin uses, so the activity log (actor `chatgpt`), quote → booking price sync and the Facebook-lead sheet status all stay consistent. Records are addressed by id only; there is no delete tool. Every write is rate-limited and audited (field names only, never values). Writes are not run through the read-only role, so with writes on, the "read-only in four places" list above applies to the read tools only.
 
 **`MCP_DATABASE_URL` is optional.** Without it, read tools use the app's own database connection (still inside READ ONLY transactions) and the read-only role self-check is skipped. Set it (steps 2–3 below) for the stricter setup.
@@ -120,6 +122,7 @@ Use the SQL editor, **not** the Roles page: roles created on the Roles page beco
 | `MCP_OWNER_PASSWORD_HASH` | from step 1 (format `scrypt:…`) |
 | `MCP_DATABASE_URL` | optional, from step 3 (without it reads use `DATABASE_URL`) |
 | `MCP_WRITES_ENABLED` | optional, `true` turns on the write tools |
+| `MCP_WRITES_CONFIRM` | optional, `true` makes ChatGPT ask before each write (default: no prompt) |
 | `MCP_TOKEN_VERSION` | optional, default `1`. Change it (e.g. to `2`) to instantly revoke every issued token. |
 | `MCP_RATE_LIMIT_PER_10MIN` | optional, default `300` tool calls per client per 10 min |
 | `MCP_EXTRA_REDIRECT_URIS` | optional, comma-separated; only for testing with another MCP client |
