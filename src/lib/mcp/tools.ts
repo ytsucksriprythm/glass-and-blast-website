@@ -10,7 +10,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
-import type { McpConfig } from './config';
+import { type McpConfig, MCP_SCOPE } from './config';
 import { audit, countEvents } from './authStore';
 import { sha256Hex } from './crypto';
 import { getReadDb, assertReadOnlyRole, ReadOnlyViolation } from './sql';
@@ -18,9 +18,11 @@ import { CursorError } from './records';
 import { isIsoDate, daysBetween } from './time';
 import * as data from './data';
 import { registerWriteTools } from './writeTools';
+import { canUseReadTool, anyWriteTool } from './scopes';
 import { TABLE_COVERAGE, EXCLUDED_TABLES, ADMIN_SECTIONS, KNOWN_GAPS, DATA_CONVENTIONS } from './coverage';
 
-export interface CallerInfo { clientId: string; tokenId: string; ip: string }
+// scopes: from the access token — decides which tools get registered (see scopes.ts).
+export interface CallerInfo { clientId: string; tokenId: string; ip: string; scopes: string[] }
 
 const READ_ONLY = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } as const;
 
@@ -71,11 +73,24 @@ function fail(message: string): CallToolResult {
 
 // ─── Server factory ─────────────────────────────────────────────────────────
 
+// Vapi phone-assistant tokens (bookings.read / quotes.* scopes) get these
+// instead of the owner instructions: the caller on the line is usually a
+// customer, not the owner.
+const PHONE_ASSISTANT_INSTRUCTIONS =
+  'Glass & Blast Window Cleaning (Canberra) phone assistant access: look up bookings, customers, the job schedule and quotes, ' +
+  'and create or update quotes. The person on the phone is usually a customer, not the business owner: only discuss the ' +
+  'caller\'s own booking or quote, after confirming it is theirs (e.g. the phone number or address on the booking matches ' +
+  'what they tell you). Never read out another customer\'s name, phone number, email, address, notes or prices. ' +
+  'Private admin notes (adminNotes) are for the owner only — never repeat them to a caller. ' +
+  'Before creating or changing a quote, find the exact booking or quote id first and confirm the change with the caller. ' +
+  'Dates use Australia/Sydney time.';
+
 export function buildMcpServer(cfg: McpConfig, caller: CallerInfo): McpServer {
+  const isOwner = caller.scopes.includes(MCP_SCOPE);
   const server = new McpServer(
     { name: 'glass-and-blast-business', version: '1.0.0' },
     {
-      instructions:
+      instructions: !isOwner ? PHONE_ASSISTANT_INSTRUCTIONS :
         `${cfg.writesEnabled ? 'Full' : 'Read-only'} access to ALL Glass & Blast Window Cleaning business records (Canberra, Australia): customers/leads/jobs ` +
         '(bookings), quotes, invoices, payments, recurring plans, notes, history, photos, settings and reports. ' +
         (cfg.writesEnabled
@@ -93,6 +108,7 @@ export function buildMcpServer(cfg: McpConfig, caller: CallerInfo): McpServer {
     name: string, title: string, description: string, inputSchema: S,
     handler: (args: z.infer<z.ZodObject<S>>) => Promise<unknown>,
   ) {
+    if (!canUseReadTool(caller.scopes, name)) return; // not in this token's scopes — don't even list it
     server.registerTool(name, { title, description, inputSchema, annotations: { title, ...READ_ONLY } },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (async (args: any): Promise<CallToolResult> => {
@@ -285,7 +301,7 @@ export function buildMcpServer(cfg: McpConfig, caller: CallerInfo): McpServer {
     {},
     async () => ({ conventions: DATA_CONVENTIONS, tables: TABLE_COVERAGE, excludedTables: EXCLUDED_TABLES, adminSections: ADMIN_SECTIONS, knownGaps: KNOWN_GAPS }));
 
-  if (cfg.writesEnabled) registerWriteTools(server, cfg, caller);
+  if (anyWriteTool(caller.scopes, cfg.writesEnabled)) registerWriteTools(server, cfg, caller);
 
   return server;
 }

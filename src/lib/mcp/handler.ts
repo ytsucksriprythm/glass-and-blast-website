@@ -4,7 +4,7 @@
 // what a serverless deployment needs).
 
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
-import { getMcpConfig, MCP_SCOPE, MAX_REQUEST_BYTES, CLIENT_ORIGINS, type McpConfig } from './config';
+import { getMcpConfig, MCP_SCOPE, MAX_REQUEST_BYTES, CLIENT_ORIGINS, MACHINE_SUB, type McpConfig } from './config';
 import { verifyJwt, type AccessTokenClaims } from './crypto';
 import { unauthorized, notConfigured, json, clientIp } from './oauth';
 import { audit } from './authStore';
@@ -20,13 +20,27 @@ export function authenticate(req: Request, cfg: McpConfig): AuthResult {
   // Audience binding (RFC 8707): the token must have been minted for THIS
   // endpoint. Issuer, expiry and the revocation version are checked too.
   if (!claims || claims.iss !== cfg.baseUrl || claims.aud !== cfg.resource || typeof claims.exp !== 'number'
-    || claims.exp <= now || claims.iat > now + 60 || claims.ver !== cfg.tokenVersion || claims.sub !== 'owner') {
+    || claims.exp <= now || claims.iat > now + 60 || claims.ver !== cfg.tokenVersion) {
     return { ok: false, response: unauthorized(cfg, 'invalid_token', 'The access token is invalid or expired.') };
   }
-  if (!String(claims.scope ?? '').split(' ').includes(MCP_SCOPE)) {
-    return { ok: false, response: unauthorized(cfg, 'insufficient_scope', `The ${MCP_SCOPE} scope is required.`) };
+  const scopes = String(claims.scope ?? '').split(' ').filter(Boolean);
+  if (claims.sub === 'owner') {
+    // ChatGPT / Claude: the owner signed in on the sign-in page.
+    if (!scopes.includes(MCP_SCOPE)) {
+      return { ok: false, response: unauthorized(cfg, 'insufficient_scope', `The ${MCP_SCOPE} scope is required.`) };
+    }
+    return { ok: true, claims };
   }
-  return { ok: true, claims };
+  if (claims.sub === MACHINE_SUB) {
+    // Vapi client-credentials token: still configured, same client, and every
+    // scope still allowed — so removing or narrowing MCP_VAPI_* takes effect
+    // immediately, even for tokens already issued.
+    const m = cfg.machineClient;
+    if (m && claims.client_id === m.clientId && scopes.length && scopes.every(s => m.scopes.includes(s))) {
+      return { ok: true, claims };
+    }
+  }
+  return { ok: false, response: unauthorized(cfg, 'invalid_token', 'The access token is invalid or expired.') };
 }
 
 // DNS-rebinding / cross-site protection: browsers always send Origin; ChatGPT
@@ -58,7 +72,10 @@ export async function handleMcp(req: Request): Promise<Response> {
   const body = await req.text();
   if (body.length > MAX_REQUEST_BYTES) return json({ error: 'request_too_large' }, 413);
 
-  const server = buildMcpServer(cfg, { clientId: auth.claims.client_id, tokenId: auth.claims.jti, ip: clientIp(req) });
+  const server = buildMcpServer(cfg, {
+    clientId: auth.claims.client_id, tokenId: auth.claims.jti, ip: clientIp(req),
+    scopes: auth.claims.scope.split(' ').filter(Boolean),
+  });
   const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
   await server.connect(transport);
   try {

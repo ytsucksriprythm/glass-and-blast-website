@@ -15,7 +15,9 @@
 import {
   type McpConfig, getMcpConfig, isAllowedRedirectUri, protectedResourceMetadataUrl, CLIENT_ORIGINS,
   MCP_SCOPE, ACCESS_TOKEN_TTL_SECONDS, REFRESH_TOKEN_TTL_SECONDS, AUTH_CODE_TTL_SECONDS, AUTHORIZE_FORM_TTL_SECONDS,
+  MACHINE_SUB,
 } from './config';
+import { timingSafeEqual } from 'crypto';
 import {
   signJwt, signBlob, verifyBlob, verifyOwnerPassword, randomToken, pkceS256, sha256Hex,
 } from './crypto';
@@ -73,7 +75,9 @@ export function authorizationServerMetadata(): Response {
     revocation_endpoint: `${cfg.baseUrl}/api/oauth/revoke`,
     response_types_supported: ['code'],
     response_modes_supported: ['query'],
-    grant_types_supported: ['authorization_code', 'refresh_token'],
+    grant_types_supported: cfg.machineClient
+      ? ['authorization_code', 'refresh_token', 'client_credentials']
+      : ['authorization_code', 'refresh_token'],
     code_challenge_methods_supported: ['S256'],
     token_endpoint_auth_methods_supported: ['none', 'client_secret_post', 'client_secret_basic'],
     revocation_endpoint_auth_methods_supported: ['none', 'client_secret_post', 'client_secret_basic'],
@@ -342,6 +346,8 @@ export async function token(req: Request): Promise<Response> {
   try { p = await readParams(req); } catch { return oauthError('invalid_request', 'Malformed request body.'); }
   void purgeExpired();
 
+  if (p.get('grant_type') === 'client_credentials') return clientCredentials(req, p, cfg, ip);
+
   const client = await authenticateClient(req, p);
   if (!client) {
     await audit({ event: 'token_fail', ok: false, ip, detail: { reason: 'invalid_client' } });
@@ -381,7 +387,59 @@ export async function token(req: Request): Promise<Response> {
     return issueTokens(cfg, client.clientId, result.grant.scope, result.grant.familyId);
   }
 
-  return oauthError('unsupported_grant_type', 'Only authorization_code and refresh_token are supported.');
+  return oauthError('unsupported_grant_type', 'Only authorization_code, refresh_token and client_credentials are supported.');
+}
+
+// ─── Client credentials (Vapi / machine login) ─────────────────────────────
+// Only the single machine client configured in env (MCP_VAPI_*) can use this.
+// Issues a 1-hour access token for exactly its allowed scopes (or a requested
+// subset) and no refresh token — the client simply asks again.
+
+function readClientCredentials(req: Request, p: URLSearchParams): { id: string; secret: string } {
+  const authz = req.headers.get('authorization');
+  if (authz?.startsWith('Basic ')) {
+    const decoded = Buffer.from(authz.slice(6), 'base64').toString('utf8');
+    const i = decoded.indexOf(':');
+    if (i > 0) {
+      try { return { id: decodeURIComponent(decoded.slice(0, i)), secret: decodeURIComponent(decoded.slice(i + 1)) }; }
+      catch { return { id: '', secret: '' }; }
+    }
+  }
+  return { id: p.get('client_id') ?? '', secret: p.get('client_secret') ?? '' };
+}
+
+const MACHINE_FAILS_PER_IP_15MIN = 10;
+
+async function clientCredentials(req: Request, p: URLSearchParams, cfg: McpConfig, ip: string): Promise<Response> {
+  const machine = cfg.machineClient;
+  if (!machine) return oauthError('unauthorized_client', 'client_credentials is not enabled on this server.', 400);
+  if (await countEvents('machine_token_fail', 15 * 60, { ip }) >= MACHINE_FAILS_PER_IP_15MIN) {
+    return oauthError('temporarily_unavailable', 'Too many failed attempts, try again later.', 429);
+  }
+  const { id, secret } = readClientCredentials(req, p);
+  const expected = Buffer.from(machine.secretHash, 'hex');
+  const actual = Buffer.from(sha256Hex(secret), 'hex');
+  const secretOk = !!secret && expected.length === actual.length && timingSafeEqual(expected, actual);
+  if (id !== machine.clientId || !secretOk) {
+    await audit({ event: 'machine_token_fail', ok: false, ip, detail: { reason: 'invalid_client' } });
+    return oauthError('invalid_client', 'Client authentication failed.', 401);
+  }
+  const resource = p.get('resource');
+  if (resource && resource !== cfg.resource) return oauthError('invalid_target', 'The resource parameter does not match this MCP server.');
+  const requested = (p.get('scope') ?? '').split(/\s+/).filter(Boolean);
+  const scopes = requested.length ? requested : machine.scopes;
+  if (scopes.some(s => !machine.scopes.includes(s))) {
+    await audit({ event: 'machine_token_fail', ok: false, ip, clientId: id, detail: { reason: 'invalid_scope' } });
+    return oauthError('invalid_scope', `Allowed scopes: ${machine.scopes.join(' ')}`);
+  }
+  const now = Math.floor(Date.now() / 1000);
+  const scope = scopes.join(' ');
+  const accessToken = signJwt({
+    iss: cfg.baseUrl, aud: cfg.resource, sub: MACHINE_SUB, client_id: id, scope,
+    iat: now, exp: now + ACCESS_TOKEN_TTL_SECONDS, jti: randomToken(12), ver: cfg.tokenVersion,
+  }, cfg.tokenSecret);
+  await audit({ event: 'machine_token_issued', ok: true, ip, clientId: id, detail: { scope } });
+  return json({ access_token: accessToken, token_type: 'Bearer', expires_in: ACCESS_TOKEN_TTL_SECONDS, scope });
 }
 
 // RFC 7009: always 200, whether or not the token existed.

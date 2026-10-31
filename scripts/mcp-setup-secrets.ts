@@ -8,9 +8,14 @@
 // 16 characters), pipe it in on stdin so it never appears in shell history:
 //
 //   npx tsx scripts/mcp-setup-secrets.ts --hash-only < my-password.txt
+//
+// Vapi (Atlas phone assistant) machine login — a client ID + secret for Vapi's
+// OAuth 2.0 credential, and the matching values for Vercel:
+//
+//   npx tsx scripts/mcp-setup-secrets.ts --vapi
 
 import { randomBytes } from 'crypto';
-import { hashOwnerPassword } from '../src/lib/mcp/crypto';
+import { hashOwnerPassword, sha256Hex } from '../src/lib/mcp/crypto';
 
 function passphrase(): string {
   // 6 groups of 5 from an unambiguous alphabet ≈ 150 bits.
@@ -27,6 +32,20 @@ async function readStdin(): Promise<string> {
 }
 
 async function main() {
+  if (process.argv.includes('--vapi')) {
+    const clientId = `gbvapi_${randomBytes(12).toString('base64url')}`;
+    const secret = randomBytes(32).toString('base64url');
+    console.log('\n=== Vapi (Atlas) login — copy these now, they are not saved anywhere ===\n');
+    console.log('1) Vercel → Project → Settings → Environment Variables (Production), mark Sensitive, then redeploy:');
+    console.log(`   MCP_VAPI_CLIENT_ID=${clientId}`);
+    console.log(`   MCP_VAPI_CLIENT_SECRET_HASH=sha256:${sha256Hex(secret)}`);
+    console.log('');
+    console.log('2) Vapi → OAuth 2.0 credential (Client ID is the same value as above):');
+    console.log(`   Client ID:     ${clientId}`);
+    console.log(`   Client Secret: ${secret}`);
+    console.log('\n   The secret goes ONLY into Vapi. Vercel stores just its hash.\n');
+    return;
+  }
   if (process.argv.includes('--hash-only')) {
     const pw = await readStdin();
     if (pw.length < 16) { console.error('Password must be at least 16 characters.'); process.exit(1); }

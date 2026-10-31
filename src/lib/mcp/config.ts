@@ -51,6 +51,44 @@ export interface McpConfig {
   tokenVersion: string;
   extraRedirectUris: string[];
   toolCallsPer10Min: number;
+  // Vapi ("Atlas" phone assistant) machine login via the client-credentials
+  // grant — no person signs in, so it only gets the narrow scopes listed in
+  // MCP_VAPI_SCOPES. null = not configured (client_credentials is refused and
+  // any token already issued to it stops working).
+  machineClient: MachineClient | null;
+}
+
+// Narrow scopes a machine client can hold — see src/lib/mcp/scopes.ts for the
+// tools each one unlocks.
+export const MACHINE_SCOPES = ['bookings.read', 'quotes.read', 'quotes.write'] as const;
+const DEFAULT_MACHINE_SCOPES = ['bookings.read', 'quotes.read', 'quotes.write'];
+export const MACHINE_SUB = 'vapi';
+
+export interface MachineClient {
+  clientId: string;
+  secretHash: string; // sha256 hex of the client secret (secret itself is only in Vapi)
+  scopes: string[];
+}
+
+// MCP_VAPI_CLIENT_ID / MCP_VAPI_CLIENT_SECRET_HASH / MCP_VAPI_SCOPES. A bad
+// value only disables the Vapi login, never the ChatGPT/Claude connector.
+function machineClientFromEnv(): MachineClient | null {
+  const clientId = envValue('MCP_VAPI_CLIENT_ID');
+  const hash = envValue('MCP_VAPI_CLIENT_SECRET_HASH');
+  if (!clientId && !hash) return null;
+  if (!/^[A-Za-z0-9_-]{8,100}$/.test(clientId)) { warnOnce('MCP_VAPI_CLIENT_ID is missing or malformed — Vapi login disabled'); return null; }
+  const m = /^sha256:([0-9a-f]{64})$/.exec(hash);
+  if (!m) { warnOnce('MCP_VAPI_CLIENT_SECRET_HASH must be "sha256:" + 64 hex chars — Vapi login disabled'); return null; }
+  const raw = envValue('MCP_VAPI_SCOPES');
+  const scopes = raw ? raw.split(/[\s,]+/).filter(Boolean) : DEFAULT_MACHINE_SCOPES;
+  const unknown = scopes.filter(s => !(MACHINE_SCOPES as readonly string[]).includes(s));
+  if (unknown.length || !scopes.length) { warnOnce(`MCP_VAPI_SCOPES has unknown scopes (${unknown.join(', ')}) — Vapi login disabled`); return null; }
+  return { clientId, secretHash: m[1], scopes };
+}
+
+const warned = new Set<string>();
+function warnOnce(msg: string) {
+  if (!warned.has(msg)) { warned.add(msg); console.warn(`[mcp] ${msg}`); }
 }
 
 function trimSlash(s: string): string {
@@ -102,6 +140,7 @@ export function getMcpConfig(): McpConfig | null {
     tokenVersion: process.env.MCP_TOKEN_VERSION || '1',
     extraRedirectUris: (process.env.MCP_EXTRA_REDIRECT_URIS ?? '').split(',').map(s => s.trim()).filter(Boolean),
     toolCallsPer10Min: Math.max(10, Number(process.env.MCP_RATE_LIMIT_PER_10MIN) || 300),
+    machineClient: machineClientFromEnv(),
   };
 }
 

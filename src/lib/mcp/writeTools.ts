@@ -17,6 +17,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import type { McpConfig } from './config';
 import type { CallerInfo } from './tools';
+import { canUseWriteTool } from './scopes';
 import { audit, countEvents } from './authStore';
 import { isIsoDate, toSydney, sydneyToday } from './time';
 import {
@@ -97,6 +98,9 @@ export function registerWriteTools(server: McpServer, cfg: McpConfig, caller: Ca
     name: string, title: string, description: string, inputSchema: S,
     handler: (args: z.infer<z.ZodObject<S>>) => Promise<unknown>,
   ) {
+    // Owner tokens: every write tool (MCP_WRITES_ENABLED). Vapi tokens: only
+    // the ones their scopes allow (quotes.write → create/update quote).
+    if (!canUseWriteTool(caller.scopes, name, cfg.writesEnabled)) return;
     server.registerTool(name, { title, description, inputSchema, annotations: { title, ...writeAnnotations(cfg.writesConfirm) } },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (async (args: any): Promise<CallToolResult> => {

@@ -123,6 +123,7 @@ Use the SQL editor, **not** the Roles page: roles created on the Roles page beco
 | `MCP_DATABASE_URL` | optional, from step 3 (without it reads use `DATABASE_URL`) |
 | `MCP_WRITES_ENABLED` | optional, `true` turns on the write tools |
 | `MCP_WRITES_CONFIRM` | optional, `true` makes ChatGPT ask before each write (default: no prompt) |
+| `MCP_VAPI_CLIENT_ID`, `MCP_VAPI_CLIENT_SECRET_HASH`, `MCP_VAPI_SCOPES` | optional, Vapi (Atlas) machine login, see [mcp-vapi.md](mcp-vapi.md) |
 | `MCP_TOKEN_VERSION` | optional, default `1`. Change it (e.g. to `2`) to instantly revoke every issued token. |
 | `MCP_RATE_LIMIT_PER_10MIN` | optional, default `300` tool calls per client per 10 min |
 | `MCP_EXTRA_REDIRECT_URIS` | optional, comma-separated; only for testing with another MCP client |
