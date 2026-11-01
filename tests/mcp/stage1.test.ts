@@ -205,8 +205,10 @@ test('activity log records who made the change: atlas for Vapi, chatgpt for the 
   assert.equal(updated?.actor, 'chatgpt');
 });
 
-test('permissions: Atlas still cannot create bookings or invoices; unauthenticated callers get nothing', async () => {
-  const names = ((await (await h.rpc(atlas, 'tools/list')).json()).result.tools as any[]).map(t => t.name);
+test('permissions: a narrow Atlas token cannot create bookings or invoices; unauthenticated callers get nothing', async () => {
+  const res = await oauth.token(h.req('/api/oauth/token', { method: 'POST', form: { grant_type: 'client_credentials', client_id: VAPI_ID, client_secret: VAPI_SECRET, scope: 'bookings.read quotes.read quotes.write' } }));
+  const narrow = (await res.json()).access_token;
+  const names = ((await (await h.rpc(narrow, 'tools/list')).json()).result.tools as any[]).map(t => t.name);
   for (const n of ['create_booking', 'schedule_booking', 'create_invoice', 'update_booking', 'get_invoice']) assert.ok(!names.includes(n), n);
   const anon = await h.rpc(null, 'tools/call', { name: 'search_bookings', arguments: { query: 'TEST' } });
   assert.equal(anon.status, 401);

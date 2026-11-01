@@ -8,7 +8,7 @@ Atlas logs in to the same MCP server ChatGPT and Claude use, but with its own
 | | ChatGPT / Claude | Vapi |
 |---|---|---|
 | OAuth grant | Authorization code + PKCE: you type the connector password on the sign-in page | **Client credentials**: Vapi's "OAuth 2.0" credential posts a client ID + secret to the token URL, with no person signing in |
-| Scope | `business.read` (everything, plus writes when `MCP_WRITES_ENABLED=true`) | `bookings.read quotes.read quotes.write` only |
+| Scope | `business.read` (everything, plus writes when `MCP_WRITES_ENABLED=true`) | `business.all` = the same full access (default); or narrow: `bookings.read quotes.read quotes.write` |
 | Token | 1 h access + 30-day rotating refresh | 1 h access, no refresh (Vapi just asks again) |
 
 Vapi can't complete a password sign-in, so the server now also accepts
@@ -19,6 +19,7 @@ Vercel. ChatGPT and Claude are unaffected.
 
 | Scope | Tools |
 |---|---|
+| `business.all` | **Everything the owner gets**: every read tool (invoices, payments, reports, settings, activity, photos…) and every write tool (bookings, calendar, quotes, invoices, recurring) while `MCP_WRITES_ENABLED=true`. Default since 2 Nov 2026 at the owner's request. |
 | `bookings.read` | `search_bookings`, `get_booking`, `get_customer_history`, `list_schedule` |
 | `quotes.read` | `list_quotes`, `get_quote` |
 | `quotes.write` | `create_quote`, `update_quote` |
@@ -76,7 +77,7 @@ Credential** → authentication type **OAuth 2.0**:
 | Token URL | `https://glassandblast.com.au/api/oauth/token` |
 | Client ID | `MCP_VAPI_CLIENT_ID` value from step 1 |
 | Client Secret | Client Secret from step 1 |
-| Scope | `bookings.read quotes.read quotes.write`, or leave blank for all allowed |
+| Scope | `business.all` for full access (or leave blank: same thing). For narrow access: `bookings.read quotes.read quotes.write` |
 
 Save, and note the credential's ID (`cred_…`).
 

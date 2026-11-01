@@ -60,7 +60,7 @@ test('client credentials: post body and Basic auth both work; 1-hour token, no r
   assert.equal(res.status, 200, JSON.stringify(body));
   assert.equal(body.token_type, 'Bearer');
   assert.equal(body.expires_in, 3600);
-  assert.equal(body.scope, 'bookings.read quotes.read quotes.write');
+  assert.equal(body.scope, 'business.all bookings.read quotes.read quotes.write', 'default = full access');
   assert.equal(body.refresh_token, undefined);
   assert.equal(res.headers.get('cache-control'), 'no-store');
 
@@ -84,8 +84,8 @@ test('wrong secret / wrong id / disallowed scope are refused; requesting a narro
   assert.deepEqual(await toolNames(narrow.body.access_token), ['get_booking', 'get_customer_history', 'list_schedule', 'search_bookings']);
 });
 
-test('Vapi token sees only bookings / quotes tools — no invoices, payments, settings, reports or booking writes', async () => {
-  const { body } = await machineToken();
+test('narrow Vapi token sees only bookings / quotes tools — no invoices, payments, settings, reports or booking writes', async () => {
+  const { body } = await machineToken({ scope: 'bookings.read quotes.read quotes.write' });
   assert.deepEqual(await toolNames(body.access_token), ATLAS_TOOLS);
   const init = await (await h.rpc(body.access_token, 'initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'vapi', version: '1' } })).json();
   assert.match(init.result.instructions, /Never read out another customer's/);
@@ -112,7 +112,7 @@ test('Vapi token can read bookings and quotes, and create + update a quote', asy
 test('quote writes work for Vapi even when owner write tools are off', async () => {
   h.configureEnv({ ...VAPI_ENV, MCP_WRITES_ENABLED: 'false' });
   try {
-    const { body } = await machineToken();
+    const { body } = await machineToken({ scope: 'bookings.read quotes.read quotes.write' });
     assert.deepEqual(await toolNames(body.access_token), ATLAS_TOOLS);
   } finally { h.configureEnv(VAPI_ENV); }
 });
@@ -145,6 +145,23 @@ test('the client-credentials secret can only be guessed 10 times per IP per 15 m
   const ip = { 'x-forwarded-for': '203.0.113.99' };
   for (let i = 0; i < 10; i++) assert.equal((await tokenReq({ client_id: CLIENT_ID, client_secret: `bad${i}` }, ip)).status, 401);
   assert.equal((await tokenReq({ client_id: CLIENT_ID, client_secret: SECRET }, ip)).status, 429, 'locked even with the right secret');
+});
+
+test('full-access Vapi token (business.all, the default) gets exactly the owner tools — invoices, quotes, bookings, everything', async () => {
+  const atlasFull = (await machineToken()).body.access_token;
+  const ownerTok = (await h.fullLogin()).accessToken;
+  const atlasNames = await toolNames(atlasFull);
+  assert.deepEqual(atlasNames, await toolNames(ownerTok));
+  for (const n of ['get_invoice', 'list_invoices', 'create_invoice', 'update_invoice_status', 'create_booking', 'schedule_booking', 'update_booking', 'list_payments', 'get_report', 'make_recurring_customer']) {
+    assert.ok(atlasNames.includes(n), n);
+  }
+  const inv = await h.callTool(atlasFull, 'get_invoice', { idOrNumber: 'GB1044' });
+  assert.equal(inv.isError, false, inv.text);
+  const init = await (await h.rpc(atlasFull, 'initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'vapi', version: '1' } })).json();
+  assert.match(init.result.instructions, /phone assistant/, 'still gets the caller-privacy instructions');
+  // Requesting the full scope explicitly also works; an unknown scope does not.
+  assert.equal((await machineToken({ scope: 'business.all' })).body.scope, 'business.all');
+  assert.equal((await tokenReq({ client_id: CLIENT_ID, client_secret: SECRET, scope: 'business.read' })).status, 400);
 });
 
 test('owner (ChatGPT / Claude) tokens are unchanged: all read tools plus write tools', async () => {

@@ -58,10 +58,13 @@ export interface McpConfig {
   machineClient: MachineClient | null;
 }
 
-// Narrow scopes a machine client can hold — see src/lib/mcp/scopes.ts for the
-// tools each one unlocks.
-export const MACHINE_SCOPES = ['bookings.read', 'quotes.read', 'quotes.write'] as const;
-const DEFAULT_MACHINE_SCOPES = ['bookings.read', 'quotes.read', 'quotes.write'];
+// Scopes a machine client can hold — see src/lib/mcp/scopes.ts for the tools
+// each one unlocks. business.all = everything the owner gets (all read tools,
+// plus every write tool while MCP_WRITES_ENABLED=true); the owner chose to
+// give Atlas full access. Narrow it again with MCP_VAPI_SCOPES.
+export const FULL_MACHINE_SCOPE = 'business.all';
+export const MACHINE_SCOPES = [FULL_MACHINE_SCOPE, 'bookings.read', 'quotes.read', 'quotes.write'] as const;
+const DEFAULT_MACHINE_SCOPES = [FULL_MACHINE_SCOPE, 'bookings.read', 'quotes.read', 'quotes.write'];
 export const MACHINE_SUB = 'vapi';
 
 export interface MachineClient {
