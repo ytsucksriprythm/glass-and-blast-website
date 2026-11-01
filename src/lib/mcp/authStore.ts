@@ -64,6 +64,15 @@ export function ensureAuthTables(): Promise<void> {
       )`);
       await db.query(`CREATE INDEX IF NOT EXISTS mcp_audit_event_idx ON mcp_audit_log (event, created_at DESC)`);
       await db.query(`CREATE INDEX IF NOT EXISTS mcp_audit_ip_idx ON mcp_audit_log (ip, created_at DESC)`);
+      // Retry protection for create_* write tools: one row per (client, requestId).
+      await db.query(`CREATE TABLE IF NOT EXISTS mcp_idempotency (
+        client_id  TEXT NOT NULL,
+        request_id TEXT NOT NULL,
+        tool       TEXT NOT NULL,
+        record_id  TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        PRIMARY KEY (client_id, request_id)
+      )`);
     })();
     ready.catch(() => { ready = null; });
   }
@@ -247,5 +256,54 @@ export async function purgeExpired(): Promise<void> {
   try {
     await q(`DELETE FROM mcp_oauth_codes WHERE expires_at < now() - interval '1 day'`);
     await q(`DELETE FROM mcp_oauth_refresh_tokens WHERE expires_at < now() - interval '7 days'`);
+    await q(`DELETE FROM mcp_idempotency WHERE created_at < now() - interval '7 days'`);
   } catch { /* best effort */ }
+}
+
+// ─── Retry protection (idempotency) ────────────────────────────────────────
+// A create_* call carrying a requestId first claims (client, requestId). A
+// retry of the same request then finds the claim: if the first attempt
+// finished it gets that record back instead of a duplicate; if it's still
+// running it's told to wait. A claim left unfinished for 2 minutes (the first
+// attempt crashed) can be taken over.
+
+export type Claim =
+  | { state: 'new' }
+  | { state: 'done'; recordId: string; tool: string }
+  | { state: 'pending' }
+  | { state: 'conflict'; tool: string };
+
+export async function claimRequest(clientId: string, requestId: string, tool: string): Promise<Claim> {
+  const ins = await q(
+    `INSERT INTO mcp_idempotency (client_id, request_id, tool) VALUES ($1, $2, $3)
+     ON CONFLICT (client_id, request_id) DO NOTHING RETURNING request_id`,
+    [clientId, requestId, tool],
+  );
+  if (ins[0]) return { state: 'new' };
+  const rows = await q(
+    `SELECT tool, record_id, created_at < now() - interval '2 minutes' AS stale FROM mcp_idempotency WHERE client_id = $1 AND request_id = $2`,
+    [clientId, requestId],
+  );
+  const r = rows[0];
+  if (!r) return claimRequest(clientId, requestId, tool); // purged in between — try again
+  if (r.tool !== tool) return { state: 'conflict', tool: String(r.tool) };
+  if (r.record_id) return { state: 'done', recordId: String(r.record_id), tool: String(r.tool) };
+  if (r.stale) {
+    const took = await q(
+      `UPDATE mcp_idempotency SET created_at = now() WHERE client_id = $1 AND request_id = $2 AND record_id IS NULL
+       AND created_at < now() - interval '2 minutes' RETURNING request_id`,
+      [clientId, requestId],
+    );
+    if (took[0]) return { state: 'new' };
+  }
+  return { state: 'pending' };
+}
+
+export async function completeRequest(clientId: string, requestId: string, recordId: string): Promise<void> {
+  await q(`UPDATE mcp_idempotency SET record_id = $3 WHERE client_id = $1 AND request_id = $2`, [clientId, requestId, recordId]);
+}
+
+// The create failed before saving anything — let a retry start over.
+export async function releaseRequest(clientId: string, requestId: string): Promise<void> {
+  await q(`DELETE FROM mcp_idempotency WHERE client_id = $1 AND request_id = $2 AND record_id IS NULL`, [clientId, requestId]);
 }

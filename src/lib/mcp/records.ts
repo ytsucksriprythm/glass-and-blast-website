@@ -133,3 +133,16 @@ export const PHONE_CORE_SQL = (col: string) => `regexp_replace(regexp_replace(${
 export function phoneCore(input: string): string {
   return input.replace(/\D/g, '').replace(/^(61|0)/, '');
 }
+
+// ─── Document numbers ──────────────────────────────────────────────────────
+// Quote/invoice numbers are stored as Q1114 / GB1118, but callers (speech in
+// particular) say or type "Q-1114", "q 1114", "#1114" or just "1114". Turn
+// anything that looks like one of those into the stored form; leave ids
+// (QT-…, INV-…) and other text untouched.
+const DOC_NUMBER_RE = { Q: /^(?:q)?\s*[-#:.]?\s*(\d{3,7})$/i, GB: /^(?:gb)?\s*[-#:.]?\s*(\d{3,7})$/i };
+
+export function normalizeDocNumber(input: string, prefix: 'Q' | 'GB'): string {
+  const s = input.trim();
+  const m = DOC_NUMBER_RE[prefix].exec(s);
+  return m ? `${prefix}${m[1]}` : s;
+}

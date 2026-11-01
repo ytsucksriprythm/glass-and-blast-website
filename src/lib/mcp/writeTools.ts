@@ -15,10 +15,11 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
-import type { McpConfig } from './config';
+import { type McpConfig, MCP_SCOPE } from './config';
 import type { CallerInfo } from './tools';
 import { canUseWriteTool } from './scopes';
-import { audit, countEvents } from './authStore';
+import { audit, countEvents, claimRequest, completeRequest, releaseRequest } from './authStore';
+import { normalizeDocNumber } from './records';
 import { isIsoDate, toSydney, sydneyToday } from './time';
 import {
   addBooking, updateBooking, getBookingById, getBookingsInRange, logActivity,
@@ -31,18 +32,19 @@ import { syncBookingStatusToSheet } from '@/lib/metaLeads';
 import {
   addDays, DEFAULT_QUOTE_TERMS, DEFAULT_QUOTE_ASSUMPTIONS, DEFAULT_PAYMENT_DUE_TERMS, QUOTE_VALID_DAYS,
   QUOTE_SERVICE_OPTIONS, QUOTE_EXTRA_OPTIONS, resolvePackageFields, packagePercentsFromSettings,
-  type QuoteInput,
+  type QuoteInput, type Quote,
 } from '@/lib/quote';
 import { BUSINESS_DEFAULTS, PAYMENT_DEFAULTS, paymentDueTermsDays, type InvoiceInput, type Invoice } from '@/lib/invoice';
 import { presetDiscount } from '@/lib/recurring';
 
-const ACTOR = 'chatgpt';
 const writeAnnotations = (confirm: boolean) =>
   ({ readOnlyHint: !confirm, destructiveHint: false, idempotentHint: false, openWorldHint: false }) as const;
 
 // ─── Input schemas ──────────────────────────────────────────────────────────
 
 const id = z.string().min(1).max(100).regex(/^[A-Za-z0-9_.:-]+$/, 'Invalid id format');
+// Quote/invoice id or number as said aloud: "Q1114", "Q-1114", "Q 1114", "#1114".
+const docRef = z.string().trim().min(1).max(100).regex(/^[A-Za-z0-9_.:# -]+$/, 'Invalid quote/invoice id or number');
 const date = z.string().refine(isIsoDate, 'Use a real calendar date in YYYY-MM-DD format (Australia/Sydney).');
 const localDateTime = z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/, 'Use Sydney local time as YYYY-MM-DDTHH:MM, e.g. 2026-11-05T09:30');
 const money = z.number().finite().min(-100000).max(100000);
@@ -75,17 +77,20 @@ const bookingView = (b: Booking) => ({
   adminLink: `/admin/bookings/${b.id}`,
 });
 
+// "Q-1114", "q 1114" and "1114" all find Q1114 (speech-to-text adds dashes).
 async function findQuote(idOrNumber: string) {
-  return (await getQuoteById(idOrNumber)) ?? (await getQuotes()).find(q => q.number.toLowerCase() === idOrNumber.toLowerCase()) ?? null;
+  const number = normalizeDocNumber(idOrNumber, 'Q').toLowerCase();
+  return (await getQuoteById(idOrNumber.trim())) ?? (await getQuotes()).find(q => q.number.toLowerCase() === number) ?? null;
 }
 async function findInvoice(idOrNumber: string): Promise<Invoice | null> {
-  return (await getInvoiceById(idOrNumber)) ?? (await getInvoices()).find(i => i.number.toLowerCase() === idOrNumber.toLowerCase()) ?? null;
+  const number = normalizeDocNumber(idOrNumber, 'GB').toLowerCase();
+  return (await getInvoiceById(idOrNumber.trim())) ?? (await getInvoices()).find(i => i.number.toLowerCase() === number) ?? null;
 }
 
 // Same side effect the admin's booking PATCH route has on a status change.
-async function afterStatusChange(before: Booking, after: Booking) {
+async function afterStatusChange(before: Booking, after: Booking, actor: string) {
   if (after.status === before.status) return;
-  await logActivity('booking.status_changed', `${after.name}: ${before.status} -> ${after.status}`, { bookingId: after.id, from: before.status, to: after.status }, ACTOR);
+  await logActivity('booking.status_changed', `${after.name}: ${before.status} -> ${after.status}`, { bookingId: after.id, from: before.status, to: after.status }, actor);
   syncBookingStatusToSheet(after).catch(err => console.error('[mcp] sheet status sync failed:', err instanceof Error ? err.message : err));
 }
 
@@ -93,6 +98,72 @@ async function afterStatusChange(before: Booking, after: Booking) {
 
 export function registerWriteTools(server: McpServer, cfg: McpConfig, caller: CallerInfo): void {
   const link = (path: string) => `${cfg.baseUrl}${path}`;
+  // Who made the change, for the activity log and note stamps: the owner via
+  // ChatGPT/Claude, or the Atlas phone assistant (Vapi machine login).
+  const isOwner = caller.scopes.includes(MCP_SCOPE);
+  const actor = isOwner ? 'chatgpt' : 'atlas';
+  const via = isOwner ? 'ChatGPT' : 'Atlas';
+
+  // ── Retry protection ─────────────────────────────────────────────────────
+  // create_* tools take an optional requestId. Retrying a timed-out call with
+  // the same requestId returns the record the first attempt saved instead of
+  // creating a duplicate.
+  const requestIdSchema = z.string().trim().min(8).max(100).regex(/^[A-Za-z0-9_.:-]+$/, 'Letters, digits, - _ . : only').optional()
+    .describe('Unique id for THIS create (e.g. a UUID). If the call times out or errors, retry with the SAME requestId: you get back the record already created instead of a duplicate. Use a new requestId for a genuinely new record.');
+
+  type Created = { id: string; result: Record<string, unknown> } | { error: string };
+  async function once(
+    toolName: string, requestId: string | undefined,
+    create: () => Promise<Created>,
+    fetchExisting: (recordId: string) => Promise<Record<string, unknown> | null>,
+  ): Promise<Record<string, unknown>> {
+    if (!requestId) {
+      const r = await create();
+      return 'error' in r ? r : r.result;
+    }
+    const claim = await claimRequest(caller.clientId, requestId, toolName);
+    if (claim.state === 'conflict') return { error: `requestId ${requestId} was already used for ${claim.tool}. Use a new requestId.` };
+    if (claim.state === 'pending') return { error: 'The first attempt with this requestId is still saving. Wait a few seconds, then retry with the same requestId.' };
+    if (claim.state === 'done') {
+      const existing = await fetchExisting(claim.recordId);
+      if (!existing) return { error: `The record created by this requestId (${claim.recordId}) can no longer be found.` };
+      return { ...existing, duplicateRequest: true, note: 'Already created by an earlier attempt with this requestId — nothing new was created. This is the saved record.' };
+    }
+    try {
+      const r = await create();
+      if ('error' in r) { await releaseRequest(caller.clientId, requestId); return r; }
+      await completeRequest(caller.clientId, requestId, r.id);
+      return r.result;
+    } catch (err) {
+      await releaseRequest(caller.clientId, requestId);
+      throw err;
+    }
+  }
+
+  // ── Quote → booking (narrower than the admin Quote Maker) ────────────────
+  // The admin's createQuote syncs every quote onto its booking: it overwrites
+  // the price (even on confirmed/paid jobs) and moves quote-booked bookings
+  // to "quoted" (so a booked quote visit stops counting as one). Connector
+  // quotes skip that and apply only this:
+  //   - draft quotes never touch the booking;
+  //   - a SENT quote moves an open lead (uncontacted / contacted, or
+  //     quote-booked whose visit is already past) to "quoted" with the quote
+  //     total as its price;
+  //   - confirmed / completed / cancelled / cold / quoted / paid bookings and
+  //     upcoming quote visits are left exactly as they are.
+  async function applyQuoteToBooking(quote: Quote): Promise<{ changed: string[]; reason: string }> {
+    if (quote.status !== 'sent') return { changed: [], reason: 'Draft quote: the booking is not changed until the quote is marked sent.' };
+    const b = await getBookingById(quote.bookingId);
+    if (!b || b.deletedAt) return { changed: [], reason: 'Linked booking not found.' };
+    const visitAhead = b.status === 'quote-booked' && !!b.scheduledAt && Date.parse(b.scheduledAt) > Date.now();
+    const open = b.status === 'uncontacted' || b.status === 'contacted' || (b.status === 'quote-booked' && !visitAhead);
+    if (!open || b.paid) {
+      return { changed: [], reason: `Booking is "${b.status}"${visitAhead ? ' with its quote visit still ahead' : ''}${b.paid ? ' and paid' : ''}: its status and price were left unchanged.` };
+    }
+    const after = await updateBooking(b.id, { status: 'quoted', quoteAmount: quote.amount });
+    if (after) await afterStatusChange(b, after, actor);
+    return { changed: ['status', 'quoteAmount'], reason: `Sent quote on an open lead: booking moved ${b.status} -> quoted, price set to $${quote.amount}.` };
+  }
 
   function tool<S extends z.ZodRawShape>(
     name: string, title: string, description: string, inputSchema: S,
@@ -145,6 +216,7 @@ export function registerWriteTools(server: McpServer, cfg: McpConfig, caller: Ca
       leadSource: z.enum(LEAD_SOURCES).optional(),
       scheduledStart: localDateTime.optional().describe('Put on the calendar at this Sydney local time'),
       durationMinutes: z.number().int().min(15).max(720).optional().describe('Calendar slot length, default 120'),
+      requestId: requestIdSchema,
     },
     async a => {
       let scheduledAt: string | null = null;
@@ -154,6 +226,11 @@ export function registerWriteTools(server: McpServer, cfg: McpConfig, caller: Ca
         if (!scheduledAt) return { error: `${a.scheduledStart} isn't a valid Sydney time (it may fall in the daylight-saving gap).` };
         scheduledEnd = new Date(Date.parse(scheduledAt) + (a.durationMinutes ?? 120) * 60_000).toISOString();
       }
+      const fetchBooking = async (bookingId: string) => {
+        const b = await getBookingById(bookingId);
+        return b ? { created: true, booking: bookingView(b) } : null;
+      };
+      return once('create_booking', a.requestId, async () => {
       const booking = await addBooking({
         name: a.name, phone: a.phone ?? '', email: a.email ?? '', address: a.address ?? '', suburb: a.suburb ?? '',
         service: (a.services?.length ? a.services.join(',') : 'window-washing') as ServiceType,
@@ -165,8 +242,12 @@ export function registerWriteTools(server: McpServer, cfg: McpConfig, caller: Ca
         source: 'manual', scheduledAt, scheduledEnd,
         leadSource: a.leadSource ?? null,
       });
-      await logActivity('booking.created', `${booking.name} added via ChatGPT (${booking.service || 'no service'})`, { bookingId: booking.id }, ACTOR);
-      return { created: true, booking: bookingView(booking) };
+      await logActivity('booking.created', `${booking.name} added via ${via} (${booking.service || 'no service'})`, { bookingId: booking.id }, actor);
+      // Report what's actually in the database, not what we meant to save.
+      const saved = await getBookingById(booking.id);
+      if (!saved) return { error: `Booking ${booking.id} could not be read back after saving — check search_bookings before retrying.` };
+      return { id: saved.id, result: { created: true, verified: { reReadFromDatabase: true }, booking: bookingView(saved) } };
+      }, fetchBooking);
     });
 
   tool('update_booking', 'Update a booking',
@@ -194,12 +275,12 @@ export function registerWriteTools(server: McpServer, cfg: McpConfig, caller: Ca
       if (completedDate) updates.completedAt = new Date(`${completedDate}T12:00:00+10:00`).toISOString();
       if (addAdminNote) {
         const stamp = toSydney(new Date().toISOString())!;
-        updates.adminNotes = `${before.adminNotes ? `${before.adminNotes}\n\n` : ''}[${stamp.date} ${stamp.time} · via ChatGPT] ${addAdminNote}`;
+        updates.adminNotes = `${before.adminNotes ? `${before.adminNotes}\n\n` : ''}[${stamp.date} ${stamp.time} · via ${via}] ${addAdminNote}`;
       }
       if (Object.keys(updates).length === 0) return { error: 'Nothing to change — pass at least one field.' };
       const after = await updateBooking(bookingId, updates);
       if (!after) return { error: 'Booking not found.' };
-      await afterStatusChange(before, after);
+      await afterStatusChange(before, after, actor);
       return { updated: true, changedFields: Object.keys(updates), booking: bookingView(after) };
     });
 
@@ -220,7 +301,7 @@ export function registerWriteTools(server: McpServer, cfg: McpConfig, caller: Ca
       if (!before || before.deletedAt) return { error: `No booking with id ${bookingId}.` };
       if (clear) {
         const after = await updateBooking(bookingId, { scheduledAt: null, scheduledEnd: null });
-        await logActivity('booking.unscheduled', `${before.name} taken off the calendar via ChatGPT`, { bookingId }, ACTOR);
+        await logActivity('booking.unscheduled', `${before.name} taken off the calendar via ${via}`, { bookingId }, actor);
         return { updated: true, booking: after ? bookingView(after) : null };
       }
       if (!start) return { error: 'Give a start time (or clear=true to unschedule).' };
@@ -244,15 +325,15 @@ export function registerWriteTools(server: McpServer, cfg: McpConfig, caller: Ca
       const status: BookingStatus = (visitType ?? 'job') === 'quote_visit' ? 'quote-booked' : 'confirmed';
       const after = await updateBooking(bookingId, { scheduledAt, scheduledEnd, status });
       if (!after) return { error: 'Booking not found.' };
-      await logActivity('booking.scheduled', `${after.name} scheduled for ${toSydney(scheduledAt)?.label} via ChatGPT`, { bookingId, scheduledAt }, ACTOR);
-      await afterStatusChange(before, after);
+      await logActivity('booking.scheduled', `${after.name} scheduled for ${toSydney(scheduledAt)?.label} via ${via}`, { bookingId, scheduledAt }, actor);
+      await afterStatusChange(before, after, actor);
       return { updated: true, booking: bookingView(after), overlapsAllowed: clashes.map(c => c.id) };
     });
 
   // ── Quotes ───────────────────────────────────────────────────────────────
 
   tool('create_quote', 'Create a quote',
-    `Creates a quote for a booking (same as the admin quote maker) and returns its customer link. Pricing: items = fixed services/extras with a price each (keys: ${QUOTE_ITEM_KEYS.join(', ')}; inside window cleaning needs outside too); otherLines = anything else, with NEGATIVE amounts for discounts (e.g. "Meta ads discount", -100). quoteType "packages" = the three-package window quote (Essential / Complete / Premium Detail): give completePrice (before discounts) and only window cleaning items; the other two prices are worked out automatically. status "sent" marks it as sent; default draft. Creating a quote also updates the booking's price/status.`,
+    `Creates a quote for a booking (same as the admin quote maker) and returns its customer link. Pricing: items = fixed services/extras with a price each (keys: ${QUOTE_ITEM_KEYS.join(', ')}; inside window cleaning needs outside too); otherLines = anything else, with NEGATIVE amounts for discounts (e.g. "Meta ads discount", -100). quoteType "packages" = the three-package window quote (Essential / Complete / Premium Detail): give completePrice (before discounts) and only window cleaning items; the other two prices are worked out automatically. status "sent" marks it as sent; default draft (nothing is sent to the customer either way). A DRAFT quote never changes the booking. A SENT quote moves an open lead (uncontacted/contacted, or a quote visit already done) to Quoted with the quote total as its price; confirmed, completed, paid, cancelled and cold bookings and upcoming quote visits are never changed. The result is re-read from the database; report bookingChanges to the owner.`,
     {
       bookingId: id,
       quoteType: z.enum(['single', 'packages']).optional(),
@@ -264,6 +345,7 @@ export function registerWriteTools(server: McpServer, cfg: McpConfig, caller: Ca
       notes: z.string().max(4000).optional(),
       validDays: z.number().int().min(1).max(365).optional().describe(`Default ${QUOTE_VALID_DAYS}`),
       status: z.enum(['draft', 'sent']).optional(),
+      requestId: requestIdSchema,
     },
     async a => {
       const booking = await getBookingById(a.bookingId);
@@ -306,15 +388,33 @@ export function registerWriteTools(server: McpServer, cfg: McpConfig, caller: Ca
       input.packagePrices = pkg.packagePrices;
       input.termsText = pkg.termsText;
       if (pkg.amount != null) input.amount = pkg.amount;
-      const quote = await createQuote(input);
-      await logActivity('quote.created', `Quote ${quote.number} created via ChatGPT ($${quote.amount})`, { quoteId: quote.id, bookingId: quote.bookingId }, ACTOR);
-      return { created: true, quote, customerLink: link(`/quote/${quote.token}`) };
+      const expectedAmount = input.amount;
+      const fetchQuote = async (quoteId: string) => {
+        const q = await getQuoteById(quoteId);
+        return q ? { created: true, quote: q, customerLink: link(`/quote/${q.token}`) } : null;
+      };
+      return once('create_quote', a.requestId, async () => {
+        // syncBooking:false — applyQuoteToBooking below decides what the booking gets.
+        const quote = await createQuote(input, { syncBooking: false });
+        const saved = await getQuoteById(quote.id);
+        if (!saved) return { error: `Quote ${quote.number} could not be read back after saving — check list_quotes before retrying.` };
+        const bookingChanges = await applyQuoteToBooking(saved);
+        await logActivity('quote.created', `Quote ${saved.number} created via ${via} ($${saved.amount})`, { quoteId: saved.id, bookingId: saved.bookingId }, actor);
+        return {
+          id: saved.id,
+          result: {
+            created: true,
+            verified: { reReadFromDatabase: true, totalAsCalculated: Math.abs(saved.amount - expectedAmount) < 0.005, expectedTotal: expectedAmount, savedTotal: saved.amount },
+            quote: saved, bookingChanges, customerLink: link(`/quote/${saved.token}`),
+          },
+        };
+      }, fetchQuote);
     });
 
   tool('update_quote', 'Update a quote',
-    'Updates a quote by id (QT-…) or number (Q1003): mark it sent, or change its scope, notes, assumptions or expiry. Prices are changed by creating a new quote.',
+    'Updates a quote by id (QT-…) or number (Q1003; "Q-1003" or "1003" also work): mark it sent, or change its scope, notes, assumptions or expiry. Marking sent does not message the customer. Prices are changed by creating a new quote. The result is re-read from the database.',
     {
-      idOrNumber: id,
+      idOrNumber: docRef,
       status: z.enum(['draft', 'sent']).optional(),
       scope: z.string().max(4000).optional(), notes: z.string().max(4000).optional(),
       assumptions: z.string().max(4000).optional(), validUntil: date.optional(),
@@ -323,10 +423,15 @@ export function registerWriteTools(server: McpServer, cfg: McpConfig, caller: Ca
       const q = await findQuote(idOrNumber);
       if (!q) return { error: `No quote ${idOrNumber}.` };
       if (Object.keys(updates).length === 0) return { error: 'Nothing to change.' };
-      const saved = await updateQuote(q.id, updates);
-      if (!saved) return { error: 'Quote not found.' };
-      await logActivity('quote.updated', `Quote ${saved.number} updated via ChatGPT (${Object.keys(updates).join(', ')})`, { quoteId: saved.id, bookingId: saved.bookingId }, ACTOR);
-      return { updated: true, quote: saved, customerLink: link(`/quote/${saved.token}`) };
+      const result = await updateQuote(q.id, updates);
+      if (!result) return { error: 'Quote not found.' };
+      const saved = await getQuoteById(q.id);
+      if (!saved) return { error: `Quote ${q.number} could not be read back after saving.` };
+      const bookingChanges = updates.status === 'sent' && q.status !== 'sent'
+        ? await applyQuoteToBooking(saved)
+        : { changed: [], reason: 'Booking not changed.' };
+      await logActivity('quote.updated', `Quote ${saved.number} updated via ${via} (${Object.keys(updates).join(', ')})`, { quoteId: saved.id, bookingId: saved.bookingId }, actor);
+      return { updated: true, verified: { reReadFromDatabase: true }, quote: saved, bookingChanges, customerLink: link(`/quote/${saved.token}`) };
     });
 
   // ── Invoices ─────────────────────────────────────────────────────────────
@@ -342,8 +447,9 @@ export function registerWriteTools(server: McpServer, cfg: McpConfig, caller: Ca
       billToName: z.string().max(200).optional(), billToLines: z.string().max(500).optional(),
       invoiceDate: date.optional().describe('Default today'), dueDate: date.optional().describe('Default per payment terms'),
       isTaxInvoice: z.boolean().optional(),
-      status: z.enum(['draft', 'sent']).optional(),
+      status: z.enum(['draft', 'sent']).optional().describe('Default draft. Marking sent does not email or text the customer.'),
       notes: z.string().max(4000).optional(),
+      requestId: requestIdSchema,
     },
     async a => {
       const booking = a.bookingId ? await getBookingById(a.bookingId) : null;
@@ -381,15 +487,31 @@ export function registerWriteTools(server: McpServer, cfg: McpConfig, caller: Ca
         bookingIds: booking ? [booking.id] : [],
         ownerGuestId: null,
       };
-      const invoice = await createInvoice(input);
-      await logActivity('invoice.created', `Invoice ${invoice.number} created via ChatGPT for ${invoice.billToName || 'no recipient'}`, { invoiceId: invoice.id, total: invoice.total }, ACTOR);
-      return { created: true, invoice, customerLink: link(`/invoice/${invoice.token}`) };
+      const fetchInvoice = async (invoiceId: string) => {
+        const inv = await getInvoiceById(invoiceId);
+        return inv ? { created: true, invoice: inv, customerLink: link(`/invoice/${inv.token}`) } : null;
+      };
+      return once('create_invoice', a.requestId, async () => {
+        const invoice = await createInvoice(input);
+        const saved = await getInvoiceById(invoice.id);
+        if (!saved) return { error: `Invoice ${invoice.number} could not be read back after saving — check list_invoices before retrying.` };
+        await logActivity('invoice.created', `Invoice ${saved.number} created via ${via} for ${saved.billToName || 'no recipient'}`, { invoiceId: saved.id, total: saved.total }, actor);
+        const lineSum = saved.items.reduce((s, i) => s + (Number(i.amount) || 0), 0);
+        return {
+          id: saved.id,
+          result: {
+            created: true,
+            verified: { reReadFromDatabase: true, totalEqualsLineItems: Math.abs(saved.total - lineSum) < 0.005, lineItemSum: lineSum, savedTotal: saved.total },
+            invoice: saved, customerLink: link(`/invoice/${saved.token}`),
+          },
+        };
+      }, fetchInvoice);
     });
 
   tool('update_invoice_status', 'Mark an invoice sent / paid / cancelled',
     'Changes an invoice\'s status by id (INV-…) or number (GB1050). For "paid" give paymentMethod (and paidDate if not today); marking an invoice paid does NOT change the booking — use update_booking paid=true for that if the owner wants.',
     {
-      idOrNumber: id,
+      idOrNumber: docRef,
       status: z.enum(['draft', 'sent', 'paid', 'cancelled']),
       paymentMethod: z.enum(['bank_transfer', 'cash', 'card', 'other']).optional(),
       paidDate: date.optional(),
@@ -407,7 +529,7 @@ export function registerWriteTools(server: McpServer, cfg: McpConfig, caller: Ca
       const saved = await updateInvoice(inv.id, updates);
       if (!saved) return { error: 'Invoice not found.' };
       if (saved.status !== inv.status) {
-        await logActivity('invoice.status_changed', `${saved.number} ${inv.status} -> ${saved.status}${status === 'paid' ? ` (${paymentMethod})` : ''} via ChatGPT`, { from: inv.status, to: saved.status, paymentMethod: saved.paymentMethod }, ACTOR, saved.id);
+        await logActivity('invoice.status_changed', `${saved.number} ${inv.status} -> ${saved.status}${status === 'paid' ? ` (${paymentMethod})` : ''} via ${via}`, { from: inv.status, to: saved.status, paymentMethod: saved.paymentMethod }, actor, saved.id);
       }
       return { updated: true, invoice: saved, customerLink: link(`/invoice/${saved.token}`) };
     });
@@ -435,7 +557,7 @@ export function registerWriteTools(server: McpServer, cfg: McpConfig, caller: Ca
         visitPrice: a.visitPrice ?? (booking?.quoteAmount && booking.quoteAmount > 0 ? booking.quoteAmount : null),
       });
       if (!result) return { error: `No booking with id ${a.bookingId}.` };
-      await logActivity('recurring.created', `${result.job.name} made a recurring customer via ChatGPT`, { recurringId: result.job.id, bookingId: a.bookingId }, ACTOR);
+      await logActivity('recurring.created', `${result.job.name} made a recurring customer via ${via}`, { recurringId: result.job.id, bookingId: a.bookingId }, actor);
       return {
         created: true, profile: { ...result.job, portal: undefined }, linkedBookings: result.linked,
         adminLink: `/admin/recurring/${result.job.id}`,
@@ -459,7 +581,7 @@ export function registerWriteTools(server: McpServer, cfg: McpConfig, caller: Ca
       if (a.startTime && !scheduledAt) return { error: 'That start time isn\'t a valid Sydney time.' };
       const result = await createJobForProfile(profile.id, { date: a.date, scheduledAt, price: a.price ?? profile.visitPrice, notes: a.notes });
       if (!result) return { error: 'Recurring customer not found.' };
-      await logActivity('booking.created', `${result.booking.name} recurring job added via ChatGPT for ${a.date}`, { bookingId: result.booking.id, recurringId: profile.id }, ACTOR);
+      await logActivity('booking.created', `${result.booking.name} recurring job added via ${via} for ${a.date}`, { bookingId: result.booking.id, recurringId: profile.id }, actor);
       return { created: true, booking: bookingView(result.booking), nextVisitDue: result.job.nextDate };
     });
 
@@ -469,7 +591,7 @@ export function registerWriteTools(server: McpServer, cfg: McpConfig, caller: Ca
     async ({ profileId }) => {
       const result = await generateNextVisit(profileId);
       if (!result) return { error: `No recurring customer ${profileId}.` };
-      await logActivity('booking.created', `${result.booking.name} next recurring visit booked via ChatGPT`, { bookingId: result.booking.id, recurringId: profileId }, ACTOR);
+      await logActivity('booking.created', `${result.booking.name} next recurring visit booked via ${via}`, { bookingId: result.booking.id, recurringId: profileId }, actor);
       return { created: true, booking: bookingView(result.booking), nextVisitDue: result.job.nextDate };
     });
 }

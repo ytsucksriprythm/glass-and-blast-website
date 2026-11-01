@@ -2934,7 +2934,9 @@ async function syncQuoteAmountToBooking(quote: Quote): Promise<void> {
   } catch { /* best-effort */ }
 }
 
-export async function createQuote(input: QuoteInput): Promise<Quote> {
+// opts.syncBooking=false skips syncQuoteAmountToBooking — the ChatGPT/Atlas
+// connector applies its own narrower booking rules instead (src/lib/mcp/writeTools.ts).
+export async function createQuote(input: QuoteInput, opts: { syncBooking?: boolean } = {}): Promise<Quote> {
   const now = new Date().toISOString();
   if (sql) {
     await ensureSchema();
@@ -2980,7 +2982,7 @@ export async function createQuote(input: QuoteInput): Promise<Quote> {
         ${quote.quoteType}, ${quote.packagePrices ? JSON.stringify(quote.packagePrices) : null}
       )
     `;
-    await syncQuoteAmountToBooking(quote);
+    if (opts.syncBooking !== false) await syncQuoteAmountToBooking(quote);
     return quote;
   }
 
@@ -3013,7 +3015,7 @@ export async function createQuote(input: QuoteInput): Promise<Quote> {
   };
   rows.push(quote);
   writeQuotes(rows);
-  await syncQuoteAmountToBooking(quote);
+  if (opts.syncBooking !== false) await syncQuoteAmountToBooking(quote);
   return quote;
 }
 

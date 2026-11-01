@@ -29,6 +29,8 @@ const READ_ONLY = { readOnlyHint: true, destructiveHint: false, idempotentHint: 
 // ─── Input schemas ──────────────────────────────────────────────────────────
 
 const date = z.string().refine(isIsoDate, 'Use a real calendar date in YYYY-MM-DD format (Australia/Sydney).');
+// Quote/invoice id or number as said aloud: "Q1114", "Q-1114", "Q 1114", "#1114".
+const docRef = z.string().trim().min(1).max(100).regex(/^[A-Za-z0-9_.:# -]+$/, 'Invalid quote/invoice id or number');
 const id = z.string().min(1).max(100).regex(/^[A-Za-z0-9_.:-]+$/, 'Invalid id format');
 const text = (max = 200) => z.string().trim().min(1).max(max);
 const page = {
@@ -214,7 +216,7 @@ export function buildMcpServer(cfg: McpConfig, caller: CallerInfo): McpServer {
 
   tool('get_quote', 'Get complete quote',
     'One quote by id (QT-…) or number (e.g. Q1003): every field, computed line items, discount breakdown, total, GST note, payment terms, validity, inferred acceptance, public link, the linked booking and the quote\'s activity history.',
-    { idOrNumber: id },
+    { idOrNumber: docRef },
     ({ idOrNumber }) => data.getQuoteFull(ctx, idOrNumber));
 
   tool('list_invoices', 'List invoices',
@@ -230,7 +232,7 @@ export function buildMcpServer(cfg: McpConfig, caller: CallerInfo): McpServer {
 
   tool('get_invoice', 'Get complete invoice',
     'One invoice by id (INV-…) or number (e.g. GB1050): every field incl. line items, bill-to, client/DVA block, bank details, Square card-payment fields, plus derived payment history, customer view log (when/where it was opened), activity history and linked bookings.',
-    { idOrNumber: id },
+    { idOrNumber: docRef },
     ({ idOrNumber }) => data.getInvoiceFull(ctx, idOrNumber));
 
   tool('list_payments', 'List payment events',

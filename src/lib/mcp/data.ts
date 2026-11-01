@@ -8,7 +8,7 @@
 import { type ReadDb, type Row, readOne } from './sql';
 import {
   toRecord, Where, contains, likeEscape, PHONE_CORE_SQL, phoneCore, startPage, buildPage, pageArray,
-  type Page, type PageStart, normalizeTimestamp,
+  type Page, type PageStart, normalizeTimestamp, normalizeDocNumber,
 } from './records';
 import { sydneyDayStartSql, sydneyDayEndSql, toSydney, sydneyToday, sydneyMonthKey, daysBetween, isIsoDate } from './time';
 import { signBlob } from './crypto';
@@ -453,7 +453,8 @@ export async function listQuotes(ctx: Ctx, f: QuoteFilters, cursor?: string, pag
   if (f.quoteDateTo) w.add(`q.quote_date <= ${w.p(f.quoteDateTo)}`);
   if (f.expired !== undefined) w.add(`(q.valid_until ~ '^\\d{4}-\\d{2}-\\d{2}$' AND q.valid_until ${f.expired ? '<' : '>='} ${w.p(sydneyToday())})`);
   if (f.query) {
-    for (const term of f.query.trim().split(/\s+/).slice(0, 8)) {
+    // A whole query like "Q-1114" / "q 1114" / "1114" means Q1114.
+    for (const term of normalizeDocNumber(f.query, 'Q').trim().split(/\s+/).slice(0, 8)) {
       const ph = w.p(contains(term));
       w.add(`(${['q.number', 'q.bill_to_name', 'q.bill_to_address', 'q.scope', 'q.notes', 'q.assumptions', 'q.other_lines', 'q.id', 'b.name', 'b.phone', 'b.email']
         .map(c => `coalesce(${c}, '') ILIKE ${ph} ESCAPE '\\'`).join(' OR ')})`);
@@ -472,7 +473,8 @@ export async function listQuotes(ctx: Ctx, f: QuoteFilters, cursor?: string, pag
 }
 
 export async function getQuoteFull(ctx: Ctx, idOrNumber: string) {
-  const [rows] = await ctx.db.many([{ text: `SELECT * FROM quotes WHERE id = $1 OR number = $1`, params: [idOrNumber] }]);
+  // "Q-1114", "q 1114", "1114" all mean Q1114 (speech-to-text often adds the dash).
+  const [rows] = await ctx.db.many([{ text: `SELECT * FROM quotes WHERE id = $1 OR number = $2`, params: [idOrNumber.trim(), normalizeDocNumber(idOrNumber, 'Q')] }]);
   const q = rows[0];
   if (!q || isLarpId(String(q.booking_id))) return { error: `No quote found with id or number ${idOrNumber}.` };
   const [bk, activity] = await ctx.db.many([
@@ -514,7 +516,7 @@ export async function listInvoices(ctx: Ctx, f: InvoiceFilters, cursor?: string,
   dateRange(w, 'paid_at', f.paidFrom, f.paidTo);
   if (f.ownerGuestId) w.add(`owner_guest_id = ${w.p(f.ownerGuestId)}`);
   if (f.query) {
-    for (const term of f.query.trim().split(/\s+/).slice(0, 8)) {
+    for (const term of normalizeDocNumber(f.query, 'GB').trim().split(/\s+/).slice(0, 8)) {
       const ph = w.p(contains(term));
       w.add(`(${['number', 'bill_to_name', 'bill_to_lines', 'notes', 'items', 'id', 'client_name', 'client_claim_ref', 'client_file_no']
         .map(c => `coalesce(${c}, '') ILIKE ${ph} ESCAPE '\\'`).join(' OR ')})`);
@@ -530,7 +532,7 @@ export async function listInvoices(ctx: Ctx, f: InvoiceFilters, cursor?: string,
 }
 
 export async function getInvoiceFull(ctx: Ctx, idOrNumber: string) {
-  const [rows] = await ctx.db.many([{ text: `SELECT * FROM invoices WHERE (id = $1 OR number = $1) AND ${NOT_LARP()}`, params: [idOrNumber] }]);
+  const [rows] = await ctx.db.many([{ text: `SELECT * FROM invoices WHERE (id = $1 OR number = $2) AND ${NOT_LARP()}`, params: [idOrNumber.trim(), normalizeDocNumber(idOrNumber, 'GB')] }]);
   const inv = rows[0];
   if (!inv) return { error: `No invoice found with id or number ${idOrNumber}.` };
   const rec = toRecord(inv);

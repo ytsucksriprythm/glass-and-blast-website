@@ -41,6 +41,7 @@ export const EXCLUDED_TABLES: Record<string, string> = {
   mcp_oauth_codes: 'Connector authentication internals.',
   mcp_oauth_refresh_tokens: 'Connector authentication internals.',
   mcp_audit_log: 'Connector audit trail — kept server-side, not exposed to ChatGPT.',
+  mcp_idempotency: 'Connector retry protection (requestId → record created) — internal only.',
 };
 
 export const ADMIN_SECTIONS: { section: string; tools: string[]; note?: string }[] = [
