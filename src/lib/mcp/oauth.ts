@@ -192,7 +192,9 @@ function pageHeaders(): Record<string, string> {
     'Content-Type': 'text/html; charset=utf-8',
     'X-Frame-Options': 'DENY',
     'Content-Security-Policy': `default-src 'none'; style-src 'unsafe-inline'; form-action 'self' ${[...origins].join(' ')}; frame-ancestors 'none'; base-uri 'none'`,
-    'Referrer-Policy': 'no-referrer',
+    // same-origin, not no-referrer: with no-referrer browsers send `Origin: null`
+    // on the sign-in form POST, which the origin check below then rejected.
+    'Referrer-Policy': 'same-origin',
     ...NO_STORE,
   };
 }
@@ -253,7 +255,9 @@ export async function authorizePost(req: Request): Promise<Response> {
   if (!cfg) return notConfigured();
   // Same-origin form only (the CSP form-action also enforces this in browsers).
   const origin = req.headers.get('origin');
-  if (origin && origin !== cfg.baseUrl) return errorPage('Request blocked', 'This form must be submitted from the sign-in page.');
+  // "null" = privacy-stripped origin (some browsers / in-app webviews); the signed,
+  // 10-minute form token plus the password still protect the request.
+  if (origin && origin !== 'null' && origin !== cfg.baseUrl) return errorPage('Request blocked', 'This form must be submitted from the sign-in page.');
 
   const form = await req.formData().catch(() => null);
   const txRaw = String(form?.get('tx') ?? '');

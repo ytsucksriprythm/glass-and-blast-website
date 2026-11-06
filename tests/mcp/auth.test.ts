@@ -140,6 +140,23 @@ test('wrong password is rejected, and repeated failures lock out sign-in', async
   assert.match(denied.headers.get('location')!, /error=access_denied/);
 });
 
+test('sign-in form: Origin "null" / own origin accepted, foreign origin blocked; page sends a same-origin referrer', async () => {
+  const clientId = await registerClient();
+  const page = await oauth.authorizeGet(req(authorizeUrl(clientId, pkceS256(randomToken(48)))));
+  assert.equal(page.headers.get('referrer-policy'), 'same-origin', 'no-referrer makes browsers send Origin: null');
+  const post = async (origin: string, ip: string) => oauth.authorizePost(req('/api/oauth/authorize', {
+    method: 'POST', form: { tx: await getTx(clientId, pkceS256(randomToken(48))), password: OWNER_PASSWORD, decision: 'approve' },
+    headers: { origin, 'x-forwarded-for': ip },
+  }));
+  for (const [origin, ip] of [['null', '198.51.100.31'], [BASE, '198.51.100.32']]) {
+    const ok = await post(origin, ip);
+    assert.ok(new URL(ok.headers.get('location')!).searchParams.get('code'), `code issued for Origin ${origin}`);
+  }
+  const evil = await post('https://evil.example', '198.51.100.33');
+  assert.match(await evil.text(), /Request blocked/);
+  assert.equal(evil.headers.get('location'), null);
+});
+
 test('token endpoint: PKCE verified, codes single-use, redirect/resource must match', async () => {
   const clientId = await registerClient();
   const verifier = randomToken(48);
