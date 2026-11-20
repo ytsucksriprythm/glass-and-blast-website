@@ -4140,11 +4140,21 @@ export async function listLatestCustomerSms(incomingOnly = false, phone?: string
 }
 
 export async function hasSubmittedCustomerSms(phone: string): Promise<boolean> {
-  if (!sql) return readSmsFile().messages.some(row => row.phone === phone && row.direction === 'outbound' && row.kind !== 'staff-alert' && row.sid);
+  if (!sql) return readSmsFile().messages.some(row => row.phone === phone && row.direction === 'outbound' && !['staff-alert', 'welcome'].includes(row.kind) && row.sid);
   await ensureSchema();
   const rows = await sql`SELECT 1 FROM sms_messages WHERE phone = ${phone}
-    AND data->>'direction' = 'outbound' AND data->>'kind' <> 'staff-alert' AND data->>'sid' IS NOT NULL LIMIT 1`;
+    AND data->>'direction' = 'outbound' AND data->>'kind' NOT IN ('staff-alert', 'welcome') AND data->>'sid' IS NOT NULL LIMIT 1`;
   return rows.length > 0;
+}
+
+export async function listPendingCustomerSms(phone: string): Promise<SmsMessage[]> {
+  if (!sql) return readSmsFile().messages.filter(row => row.phone === phone && row.direction === 'outbound' &&
+    row.status === 'pending' && !['staff-alert', 'welcome'].includes(row.kind)).slice(0, 8);
+  await ensureSchema();
+  const rows = await sql`SELECT data FROM sms_messages WHERE phone = ${phone}
+    AND data->>'status' = 'pending' AND data->>'direction' = 'outbound'
+    AND data->>'kind' NOT IN ('staff-alert', 'welcome') ORDER BY created_at, id LIMIT 8`;
+  return rows.map(row => row.data as SmsMessage);
 }
 export async function listSmsWork(kind: 'pending' | 'invoice' | 'accepted'): Promise<SmsMessage[]> {
   const now = new Date().toISOString();

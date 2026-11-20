@@ -3,7 +3,7 @@ import { buildConfirmationText } from './bookingConfirmation';
 import twilio from 'twilio';
 import {
   changeSms, getBookingById, getBookings, getInvoiceById, getInvoicesForBooking, getQuoteById, getSms, getSmsPreference, hasSubmittedCustomerSms,
-  insertSms, listLatestCustomerSms, listSms, listSmsWork, logActivity, setSmsPreference,
+  insertSms, listLatestCustomerSms, listPendingCustomerSms, listSms, listSmsWork, logActivity, setSmsPreference,
 } from './db';
 import { australianMobile, smsPhone, type SmsConversation, type SmsKind, type SmsMessage } from './smsTypes';
 import { sydneyDay } from './callingTypes';
@@ -131,7 +131,7 @@ export async function dispatchSms(id: string) {
       await changeSms(existing, { status: 'pending', error: undefined });
     }
     const welcome = await dispatchSms(welcomeId);
-    if (!welcome?.sid) {
+    if (welcome?.status !== 'delivered') {
       if (welcome && ['failed', 'undelivered', 'canceled'].includes(welcome.status)) {
         await changeSms(row, { status: 'failed', error: 'The first SMS notice could not be sent. ' + (welcome.error ?? '') });
       }
@@ -299,6 +299,16 @@ export async function receiveSmsStatus(id: string, fields: Record<string, string
   const row = await getSms(id);
   if (!row || row.phone !== australianMobile(fields.To ?? '') || fields.From !== process.env.TWILIO_SMS_FROM) return;
   await updateResult(id, fields.MessageSid, fields.MessageStatus, fields.ErrorCode ? 'Twilio ' + fields.ErrorCode : undefined);
+  if (row.kind === 'welcome' && terminal.has(fields.MessageStatus)) {
+    const updated = await getSms(id);
+    if (updated?.sid === fields.MessageSid && updated.status === fields.MessageStatus) {
+      await releaseMessagesAfterWelcome(row.phone);
+    }
+  }
+}
+
+async function releaseMessagesAfterWelcome(phone: string) {
+  for (const item of await listPendingCustomerSms(phone)) await dispatchSms(item.id);
 }
 
 export async function runSmsCron() {
@@ -315,6 +325,7 @@ export async function runSmsCron() {
     try {
       const message = await client().messages(item.sid!).fetch();
       await updateResult(item.id, message.sid, message.status, message.errorCode ? 'Twilio ' + message.errorCode : undefined);
+      if (item.kind === 'welcome' && terminal.has(message.status)) await releaseMessagesAfterWelcome(item.phone);
     } catch { /* Status callbacks or a later poll can reconcile the message. */ }
   });
   if (!smsAutomation()) return { enabled: true, checked: work.length };

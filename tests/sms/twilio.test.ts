@@ -93,8 +93,17 @@ test('signed Twilio callbacks, consent and outbox dedup work without customer se
     });
     try {
       const target = { kind: 'manual', recordId: 'phone:' + newPhone } as const;
-      await sms.sendSms({ ...target, text: 'First message', requestId: 'first' }, 'Liam');
-      await sms.sendSms({ ...target, text: 'Second message', requestId: 'second' }, 'Liam');
+      const first = await sms.sendSms({ ...target, text: 'First message', requestId: 'first' }, 'Liam');
+      const second = await sms.sendSms({ ...target, text: 'Second message', requestId: 'second' }, 'Liam');
+      assert.equal(first?.status, 'pending');
+      assert.equal(second?.status, 'pending');
+      assert.equal(submitted.length, 1);
+      const welcome = (await db.listSms(newPhone)).find(row => row.kind === 'welcome')!;
+      const callback = { MessageSid: welcome.sid!, From: form.To, To: newPhone };
+      await sms.receiveSmsStatus(welcome.id, { ...callback, MessageStatus: 'sent' });
+      assert.equal(submitted.length, 1);
+      await sms.receiveSmsStatus(welcome.id, { ...callback, MessageStatus: 'delivered' });
+      await sms.receiveSmsStatus(welcome.id, { ...callback, MessageStatus: 'delivered' });
       assert.equal(submitted.length, 3);
       assert.match(submitted[0], /Reply STOP to opt out/);
       assert.match(submitted[1], /First message/);
