@@ -1,3 +1,4 @@
+import { DEFAULT_CALL_POLICY, type CallPolicy } from './callingTypes';
 // App-wide, runtime-editable business settings — one singleton object, stored
 // as a JSON blob (Neon `app_settings` table / data/settings.json locally, see
 // db.ts). Unlike .env vars, these can be changed from /admin/settings without
@@ -5,6 +6,7 @@
 // only non-secret behavior/toggles live here.
 
 export interface AppSettings {
+  callPolicy: CallPolicy;
   // Square card payments (see src/lib/square.ts). Requires SQUARE_ACCESS_TOKEN
   // + SQUARE_LOCATION_ID to also be set in env — this toggle can turn the
   // feature off any time, but can't turn it on without those secrets present.
@@ -77,6 +79,7 @@ export interface AppSettings {
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
+  callPolicy: DEFAULT_CALL_POLICY,
   squareCardPaymentsEnabled: false,
   squareSurchargePercent: Number(process.env.NEXT_PUBLIC_SQUARE_SURCHARGE_PERCENT || '1.9'),
 

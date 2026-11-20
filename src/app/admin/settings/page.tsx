@@ -22,7 +22,7 @@ import type { MediaItem } from '@/lib/media';
 
 function Section({ title, icon: Icon, children }: { title: string; icon: React.ComponentType<{ className?: string }>; children: React.ReactNode }) {
   return (
-    <div className="rounded-xl border border-white/10 bg-navy-800 p-4 sm:p-5">
+    <div id={title.toLowerCase().replaceAll(/[^a-z0-9]+/g, "-").replace(/-$/, "")} className="crm-panel scroll-mt-32 p-4 sm:p-5">
       <h2 className="text-white font-semibold text-sm flex items-center gap-2 mb-4">
         <Icon className="w-4 h-4 text-sky-400" /> {title}
       </h2>
@@ -802,6 +802,7 @@ function ActivityLog() {
 export default function SettingsPage() {
   const router = useRouter();
   const [role, setRole] = useState<'admin' | 'guest' | null>(null);
+  const [showActivity, setShowActivity] = useState(false);
   const [s, setS] = useState<AppSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -962,7 +963,7 @@ export default function SettingsPage() {
       <AdminSidebar active="settings" items={navItems} />
       <div className="flex-1 flex flex-col min-w-0">
         <header
-          className="sticky top-0 z-30 bg-navy-900/90 backdrop-blur border-b border-white/10 px-4 flex items-center justify-between"
+          className="crm-topbar sticky top-0 z-30 bg-navy-900/90 backdrop-blur border-b border-white/10 px-4 flex items-center justify-between"
           style={{ paddingTop: 'calc(env(safe-area-inset-top) + 0.85rem)', paddingBottom: '0.85rem' }}
         >
           <button onClick={() => router.push('/admin/dashboard')} className="inline-flex items-center gap-2 text-slate-300 hover:text-white text-sm cursor-pointer lg:hidden">
@@ -1023,6 +1024,11 @@ export default function SettingsPage() {
                 onDelete={deleteBusinessProfile}
               />
 
+              <nav aria-label="Settings shortcuts" className="flex flex-wrap gap-2">
+                {[["Scheduling", "scheduling"], ["Payments", "card-payments-square"], ["Facebook leads", "facebook-lead-sync"], ["Guest logins", "guest-logins"], ["Deleted bookings", "deleted-bookings"]].map(([label, id]) => (
+                  <a key={id} href={"#" + id} className="inline-flex min-h-11 items-center rounded-lg border border-white/10 px-3 text-sm font-medium text-sky-300">{label}</a>
+                ))}
+              </nav>
               <Section title="Invoice & quote address display" icon={MapPin}>
                 <Toggle
                   label="Show business address on new invoices (default)"
@@ -1192,7 +1198,10 @@ export default function SettingsPage() {
 
               <Vault />
 
-              <ActivityLog />
+              <details onToggle={event => { if (event.currentTarget.open) setShowActivity(true); }} className="rounded-xl border border-white/10 p-3">
+                <summary className="min-h-11 cursor-pointer py-3 font-semibold text-white">Activity log</summary>
+                {showActivity && <ActivityLog />}
+              </details>
 
               <p className="text-center text-slate-700 text-[10px] pt-2">v{APP_VERSION}</p>
             </div>

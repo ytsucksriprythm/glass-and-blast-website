@@ -1,21 +1,27 @@
 'use client';
 
+import { documentBusinessDefaults } from '@/lib/documentDefaults';
+import { useStaffProfile } from '@/components/admin/StaffSession';
+import type { StaffProfile } from '@/lib/staff';
+
+import DocumentSmsDialog from '@/components/admin/DocumentSmsDialog';
+
 import { useEffect, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
-import { X, Check, Copy, Share as ShareIcon, ExternalLink, Plus, Trash2 } from 'lucide-react';
+import { X, Check, Send, Share as ShareIcon, ExternalLink, Plus, Trash2 } from 'lucide-react';
 import type { Booking } from '@/lib/db';
 import {
   type Quote, type QuoteInput, type QuoteStatus, type QuoteOtherLine,
   QUOTE_SERVICE_OPTIONS, QUOTE_EXTRA_OPTIONS, QUOTE_VALID_DAYS, WINDOW_INSIDE_KEY, WINDOW_OUTSIDE_KEY,
   DEFAULT_QUOTE_TERMS, DEFAULT_QUOTE_ASSUMPTIONS, DEFAULT_PAYMENT_DUE_TERMS, PAYMENT_DUE_TERMS_OPTIONS, type PaymentDueTerms,
   SCOPE_PRESETS, ASSUMPTION_PRESETS, DEFAULT_ASSUMPTION_PRESET_KEYS, buildFromPresets,
-  addDays, buildQuoteText, quoteTotal, quoteDiscountBreakdown, money, emptyOtherLine,
+  addDays, quoteTotal, quoteDiscountBreakdown, money, emptyOtherLine,
   type QuoteType, type PackageKey, PACKAGE_KEYS, PACKAGE_INFO, packagePricesFromComplete, packagePercentsFromSettings, packageIneligibleReason, packageTotal,
   toCents, fromCents,
 } from '@/lib/quote';
 import QuotePackageCards from './QuotePackageCards';
 import { quoteShareMessage, quoteShareClipboardText } from '@/lib/quoteShare';
-import { BUSINESS_DEFAULTS, type BusinessProfile, cleanAmountInput, DISCOUNT_PRESETS } from '@/lib/invoice';
+import { type BusinessProfile, cleanAmountInput, DISCOUNT_PRESETS } from '@/lib/invoice';
 import type { AppSettings } from '@/lib/settings';
 import QuotePreview from './QuotePreview';
 
@@ -47,7 +53,7 @@ function draftFromQuote(q: Quote): Draft {
   return { ...rest, quoteType: rest.quoteType ?? 'single' };
 }
 
-function blankDraft(bookingId: string, booking: Pick<Booking, 'name' | 'address' | 'suburb' | 'propertyType'> | null): Draft {
+function blankDraft(bookingId: string, booking: Pick<Booking, 'name' | 'address' | 'suburb' | 'propertyType'> | null, staff: StaffProfile | null): Draft {
   const today = todayStr();
   return {
     bookingId,
@@ -63,7 +69,7 @@ function blankDraft(bookingId: string, booking: Pick<Booking, 'name' | 'address'
     propertyType: booking?.propertyType === 'commercial' ? 'commercial' : 'residential',
     billToName: booking?.name ?? '',
     billToAddress: [booking?.address, booking?.suburb].filter(Boolean).join(', '),
-    ...BUSINESS_DEFAULTS,
+    ...documentBusinessDefaults(staff, []),
     showFromAddress: true,
     quoteDate: today,
     validUntil: addDays(today, QUOTE_VALID_DAYS),
@@ -88,9 +94,12 @@ export default function QuoteModal({ bookingId, booking, initial, onClose, onSav
   onClose: () => void;
   onSaved: (q: Quote) => void;
 }) {
-  const [draft, setDraft] = useState<Draft>(() => initial ? draftFromQuote(initial) : blankDraft(bookingId, booking));
+  const staff = useStaffProfile();
+  const [draft, setDraft] = useState<Draft>(() => initial ? draftFromQuote(initial) : blankDraft(bookingId, booking, staff));
+  const [smsOpen, setSmsOpen] = useState(false);
   const [saved, setSaved] = useState<Quote | null>(initial);
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
   const [tab, setTab] = useState<'form' | 'preview'>('form');
 
   // Scope/Assumptions checkbox presets are UI-only — draft.scope/assumptions
@@ -129,13 +138,9 @@ export default function QuoteModal({ bookingId, booking, initial, onClose, onSav
     if (initial || seededAutofill.current) return;
     if (!settings || businessProfiles.length === 0) return;
     seededAutofill.current = true;
-    if (settings.autofillBusinessInfo) {
-      const p = businessProfiles[0];
-      setDraft(d => ({ ...d, fromName: p.fromName, fromTradingAs: p.fromTradingAs, fromAbn: p.fromAbn, fromAddress: p.fromAddress, fromEmail: p.fromEmail, fromPhone: p.fromPhone }));
-    } else {
-      setDraft(d => ({ ...d, fromName: '', fromTradingAs: '', fromAbn: '', fromAddress: '', fromEmail: '', fromPhone: '' }));
-    }
-  }, [initial, settings, businessProfiles]);
+    const details = documentBusinessDefaults(staff, businessProfiles, settings.autofillBusinessInfo);
+    setDraft(d => ({ ...d, ...details }));
+  }, [initial, settings, businessProfiles, staff]);
 
   // New quote only: seed the address-display toggle from Settings once
   // loaded. Doesn't wait on businessProfiles like the effect above — no
@@ -295,6 +300,8 @@ export default function QuoteModal({ bookingId, booking, initial, onClose, onSav
   };
 
   const save = async () => {
+    if (saving) return;
+    setSaveError("");
     if (draft.services.length === 0 && draft.extras.length === 0 && !draft.otherLines.some(l => l.description.trim())) {
       toast.error('Check at least one service, extra, or add an Other line');
       return;
@@ -310,14 +317,14 @@ export default function QuoteModal({ bookingId, booking, initial, onClose, onSav
       const { services, extras, itemAmounts, otherLines, amount, quoteType, packagePrices, ...nonPricing } = draft;
       const payload = locked ? nonPricing : { ...draft, amount: total };
       const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-      if (!res.ok) { toast.error((await res.json()).error || 'Failed to save'); return; }
+      if (!res.ok) { setSaveError((await res.json()).error || 'Failed to save'); return; }
       const quote: Quote = await res.json();
       // The server's package prices are the real ones — show exactly those.
       if (quote.quoteType === 'packages') setDraft(d => ({ ...d, packagePrices: quote.packagePrices ?? d.packagePrices }));
       setSaved(quote);
       onSaved(quote);
       toast.success(initial || saved ? 'Quote updated' : `Quote ${quote.number} created`);
-    } finally { setSaving(false); }
+    } catch { setSaveError('Could not save quote. Try again.'); } finally { setSaving(false); }
   };
 
   // Best-effort: Copy/Share both mean "this left my hands", so flip status to
@@ -333,11 +340,6 @@ export default function QuoteModal({ bookingId, booking, initial, onClose, onSav
     } catch { /* best-effort */ }
   };
 
-  const copyText = async () => {
-    if (!saved) return;
-    try { await navigator.clipboard.writeText(buildQuoteText(saved)); toast.success('Quote text copied'); void markSent(); }
-    catch { toast.error('Copy failed, select the text manually'); }
-  };
 
   const shareLink = async () => {
     if (!saved) return;
@@ -345,7 +347,7 @@ export default function QuoteModal({ bookingId, booking, initial, onClose, onSav
     const title = `Quote ${saved.number} · ${saved.fromTradingAs}`;
     const nav = navigator as Navigator & { share?: (d: ShareData) => Promise<void> };
     if (nav.share) {
-      try { await nav.share({ title, text: quoteShareMessage(saved), url }); void markSent(); }
+      try { await nav.share({ title, text: quoteShareMessage(saved), url }); toast.success("Quote link shared"); void markSent(); }
       catch { /* user dismissed the share sheet */ }
     } else {
       try { await navigator.clipboard.writeText(quoteShareClipboardText(saved, url)); toast.success('Quote link copied'); void markSent(); }
@@ -481,7 +483,7 @@ export default function QuoteModal({ bookingId, booking, initial, onClose, onSav
                 {draft.otherLines.map(line => (
                   <div key={line.id} className="flex items-start gap-2">
                     <input
-                      className="form-input text-sm w-full" placeholder="e.g. Clean upstairs balcony glass only"
+                      className="form-input text-base sm:text-sm w-full" placeholder="e.g. Clean upstairs balcony glass only"
                       value={line.description}
                       onChange={e => updateOtherLine(line.id, { description: e.target.value })}
                     />
@@ -517,7 +519,7 @@ export default function QuoteModal({ bookingId, booking, initial, onClose, onSav
                 ))}
               </div>
               <L>Custom (overrides the boxes above)</L>
-              <textarea className="form-input text-sm w-full resize-none" rows={2} value={scopeCustom} onChange={e => onScopeCustomChange(e.target.value)} placeholder="e.g. 12 windows, single storey, interior &amp; exterior, excludes flyscreens" />
+              <textarea className="form-input text-base sm:text-sm w-full resize-none" rows={2} value={scopeCustom} onChange={e => onScopeCustomChange(e.target.value)} placeholder="e.g. 12 windows, single storey, interior &amp; exterior, excludes flyscreens" />
               <p className="text-slate-500 text-xs mt-1">
                 {scopeCustom.trim() ? 'Using the custom text above, the checked boxes are ignored while this has anything in it.' : "Exactly what's included, so there's no dispute later about how many windows/areas were quoted."}
               </p>
@@ -534,13 +536,13 @@ export default function QuoteModal({ bookingId, booking, initial, onClose, onSav
                 ))}
               </div>
               <L>Custom (overrides the boxes above)</L>
-              <textarea className="form-input text-sm w-full resize-none" rows={2} value={assumptionCustom} onChange={e => onAssumptionCustomChange(e.target.value)} placeholder="e.g. Assumed ground-level access, no extreme buildup" />
+              <textarea className="form-input text-base sm:text-sm w-full resize-none" rows={2} value={assumptionCustom} onChange={e => onAssumptionCustomChange(e.target.value)} placeholder="e.g. Assumed ground-level access, no extreme buildup" />
               {assumptionCustom.trim() && <p className="text-slate-500 text-xs mt-1">Using the custom text above, the checked boxes are ignored while this has anything in it.</p>}
             </div>
 
             <div>
               <L>Payment terms</L>
-              <select className="form-input text-sm w-full" value={draft.paymentTerms} onChange={e => set('paymentTerms', e.target.value as PaymentDueTerms)}>
+              <select className="form-input text-base sm:text-sm w-full" value={draft.paymentTerms} onChange={e => set('paymentTerms', e.target.value as PaymentDueTerms)}>
                 {PAYMENT_DUE_TERMS_OPTIONS.map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
               </select>
               <p className="text-slate-500 text-xs mt-1">Cash on completion, or bank transfer against the invoice, this is just how long they get to pay it. Carries over to autofill the invoice if you make one from this booking.</p>
@@ -555,22 +557,22 @@ export default function QuoteModal({ bookingId, booking, initial, onClose, onSav
             </div>
 
             <div className="grid grid-cols-2 gap-3">
-              <div><L>Addressed to (name on the quote)</L><input className="form-input text-sm w-full" value={draft.billToName} onChange={e => set('billToName', e.target.value)} /></div>
+              <div><L>Addressed to (name on the quote)</L><input className="form-input text-base sm:text-sm w-full" value={draft.billToName} onChange={e => set('billToName', e.target.value)} /></div>
               <div><L>Property</L>
-                <select className="form-input text-sm w-full" value={draft.propertyType} onChange={e => set('propertyType', e.target.value as 'residential' | 'commercial')}>
+                <select className="form-input text-base sm:text-sm w-full" value={draft.propertyType} onChange={e => set('propertyType', e.target.value as 'residential' | 'commercial')}>
                   <option value="residential">Residential</option>
                   <option value="commercial">Commercial</option>
                 </select>
               </div>
-              <div className="col-span-2"><L>Address</L><input className="form-input text-sm w-full" value={draft.billToAddress} onChange={e => set('billToAddress', e.target.value)} /></div>
-              <div><L>Quote date</L><input type="date" className="form-input text-sm w-full" value={draft.quoteDate} onChange={e => set('quoteDate', e.target.value)} /></div>
-              <div><L>Valid until</L><input type="date" className="form-input text-sm w-full" value={draft.validUntil} onChange={e => set('validUntil', e.target.value)} /></div>
+              <div className="col-span-2"><L>Address</L><input className="form-input text-base sm:text-sm w-full" value={draft.billToAddress} onChange={e => set('billToAddress', e.target.value)} /></div>
+              <div><L>Quote date</L><input type="date" className="form-input text-base sm:text-sm w-full" value={draft.quoteDate} onChange={e => set('quoteDate', e.target.value)} /></div>
+              <div><L>Valid until</L><input type="date" className="form-input text-base sm:text-sm w-full" value={draft.validUntil} onChange={e => set('validUntil', e.target.value)} /></div>
             </div>
 
             <details className="rounded-lg border border-white/10">
-              <summary className="px-3 py-2.5 text-sm text-slate-300 cursor-pointer select-none">Business details &amp; terms</summary>
+              <summary className="px-3 py-2.5 text-sm text-slate-300 cursor-pointer select-none">Options · Business details &amp; terms</summary>
               <div className="p-3 pt-0 space-y-3">
-                {businessProfiles.length > 1 && (
+                {businessProfiles.length > 0 && (
                   <div>
                     <p className="text-xs text-slate-500 mb-2">Pick which identity this quote is from. Fields below stay editable for one-offs.</p>
                     <div className="flex flex-wrap gap-2">
@@ -590,22 +592,22 @@ export default function QuoteModal({ bookingId, booking, initial, onClose, onSav
                     </div>
                   </div>
                 )}
-                {newBusinessProfileOpen && businessProfiles.length > 1 && (
+                {newBusinessProfileOpen && businessProfiles.length > 0 && (
                   <div className="rounded-lg border border-sky-400/30 bg-sky-400/5 p-3">
                     <p className="text-xs text-slate-400 mb-2">Set the fields below, then name and save them as a reusable profile.</p>
                     <div className="flex items-center gap-2">
-                      <input className="form-input text-sm flex-1" placeholder="Profile name (e.g. Liam)" value={newBusinessProfileName} onChange={e => setNewBusinessProfileName(e.target.value)} />
+                      <input className="form-input text-base sm:text-sm flex-1" placeholder="Profile name (e.g. Liam)" value={newBusinessProfileName} onChange={e => setNewBusinessProfileName(e.target.value)} />
                       <button onClick={saveNewBusinessProfile} disabled={savingBusinessProfile} className="px-3 py-2.5 rounded-lg bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-white text-sm font-semibold cursor-pointer whitespace-nowrap">Save profile</button>
                       <button onClick={() => { setNewBusinessProfileOpen(false); setNewBusinessProfileName(''); }} className="p-2.5 text-slate-400 hover:text-white cursor-pointer"><X className="w-4 h-4" /></button>
                     </div>
                   </div>
                 )}
                 <div className="grid grid-cols-2 gap-3">
-                  <div><L>Name</L><input className="form-input text-sm w-full" value={draft.fromName} onChange={e => set('fromName', e.target.value)} /></div>
-                  <div><L>Trading as</L><input className="form-input text-sm w-full" value={draft.fromTradingAs} onChange={e => set('fromTradingAs', e.target.value)} /></div>
-                  <div><L>ABN</L><input className="form-input text-sm w-full" value={draft.fromAbn} onChange={e => set('fromAbn', e.target.value)} /></div>
-                  <div><L>Phone</L><input className="form-input text-sm w-full" value={draft.fromPhone} onChange={e => set('fromPhone', e.target.value)} /></div>
-                  <div className="col-span-2"><L>Email</L><input className="form-input text-sm w-full" value={draft.fromEmail} onChange={e => set('fromEmail', e.target.value)} /></div>
+                  <div><L>Name</L><input className="form-input text-base sm:text-sm w-full" value={draft.fromName} onChange={e => set('fromName', e.target.value)} /></div>
+                  <div><L>Trading as</L><input className="form-input text-base sm:text-sm w-full" value={draft.fromTradingAs} onChange={e => set('fromTradingAs', e.target.value)} /></div>
+                  <div><L>ABN</L><input className="form-input text-base sm:text-sm w-full" value={draft.fromAbn} onChange={e => set('fromAbn', e.target.value)} /></div>
+                  <div><L>Phone</L><input className="form-input text-base sm:text-sm w-full" value={draft.fromPhone} onChange={e => set('fromPhone', e.target.value)} /></div>
+                  <div className="col-span-2"><L>Email</L><input className="form-input text-base sm:text-sm w-full" value={draft.fromEmail} onChange={e => set('fromEmail', e.target.value)} /></div>
                   <div className="col-span-2">
                     <div className="flex items-center justify-between mb-1.5">
                       <span className="block text-slate-400 text-xs font-medium">Address</span>
@@ -619,11 +621,11 @@ export default function QuoteModal({ bookingId, booking, initial, onClose, onSav
                         <span className="text-slate-400">Show on quote</span>
                       </label>
                     </div>
-                    <input className="form-input text-sm w-full" value={draft.fromAddress} onChange={e => set('fromAddress', e.target.value)} />
+                    <input className="form-input text-base sm:text-sm w-full" value={draft.fromAddress} onChange={e => set('fromAddress', e.target.value)} />
                   </div>
                 </div>
-                <div><L>Terms &amp; conditions</L><textarea className="form-input text-sm w-full resize-none" rows={4} value={draft.termsText} onChange={e => set('termsText', e.target.value)} /></div>
-                <div><L>Note to customer (optional)</L><textarea className="form-input text-sm w-full resize-none" rows={2} value={draft.notes} onChange={e => set('notes', e.target.value)} /></div>
+                <div><L>Terms &amp; conditions</L><textarea className="form-input text-base sm:text-sm w-full resize-none" rows={4} value={draft.termsText} onChange={e => set('termsText', e.target.value)} /></div>
+                <div><L>Note to customer (optional)</L><textarea className="form-input text-base sm:text-sm w-full resize-none" rows={2} value={draft.notes} onChange={e => set('notes', e.target.value)} /></div>
               </div>
             </details>
           </div>
@@ -654,13 +656,20 @@ export default function QuoteModal({ bookingId, booking, initial, onClose, onSav
           </div>
         </div>
 
-        <div className="p-4 border-t border-white/10 flex-shrink-0 space-y-2">
+        {saved && smsOpen && <DocumentSmsDialog target={{ kind: "quote", id: saved.id, draft: saved.status === 'draft' }}
+          onClose={() => setSmsOpen(false)} onQuoteApproved={quote => {
+            setSaved(quote);
+            setDraft(current => ({ ...current, status: quote.status }));
+            onSaved(quote);
+          }} />}
+        <div className="p-4 border-t border-white/10 flex-shrink-0 space-y-2" style={{ paddingBottom: "calc(1rem + env(safe-area-inset-bottom))" }}>
+          {saveError && <p role="alert" className="text-sm text-red-300">{saveError}</p>}
           <button onClick={save} disabled={saving} className="w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-lg bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-white text-sm font-semibold cursor-pointer">
             {saving ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <Check className="w-4 h-4" />} {saved ? 'Save changes' : 'Save quote'}
           </button>
           {saved && (
             <div className="grid grid-cols-3 gap-2">
-              <button onClick={copyText} className="inline-flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-lg border border-white/10 text-slate-200 hover:text-white hover:border-sky-400/40 text-sm font-semibold cursor-pointer"><Copy className="w-4 h-4" /> Copy</button>
+              <button onClick={() => setSmsOpen(true)} className="inline-flex min-h-11 items-center justify-center gap-1.5 rounded-lg border border-white/10 px-2 text-sm font-semibold text-sky-300"><Send className="size-4 shrink-0" /> Send via SMS</button>
               <button onClick={shareLink} className="inline-flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-lg border border-white/10 text-slate-200 hover:text-white hover:border-sky-400/40 text-sm font-semibold cursor-pointer"><ShareIcon className="w-4 h-4" /> Share</button>
               <a href={`/quote/${saved.token}`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-lg border border-white/10 text-slate-200 hover:text-white hover:border-sky-400/40 text-sm font-semibold cursor-pointer"><ExternalLink className="w-4 h-4" /> Open</a>
             </div>

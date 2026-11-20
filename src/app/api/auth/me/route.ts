@@ -27,5 +27,5 @@ export async function GET() {
     });
   }
 
-  return NextResponse.json({ role: ctx?.role ?? null, isAdmin, guest: null });
+  return NextResponse.json({ role: ctx?.role ?? null, profile: ctx?.role === 'admin' ? ctx.profile : null, isAdmin, guest: null });
 }

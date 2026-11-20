@@ -1,3 +1,4 @@
+import { isStaffProfile, type StaffProfile } from '../staff';
 // OAuth 2.1 authorization server + protected-resource metadata for the
 // ChatGPT MCP connector, per the MCP authorization spec and OpenAI's Apps SDK
 // auth requirements:
@@ -211,8 +212,8 @@ body{margin:0;background:#060D1A;color:#e2e8f0;font:16px/1.5 system-ui,-apple-sy
 main{max-width:420px;width:100%;background:#0f1b2e;border:1px solid #1e2d45;border-radius:16px;padding:28px}
 h1{font-size:20px;margin:0 0 8px}p{color:#94a3b8;margin:0 0 16px}ul{color:#cbd5e1;padding-left:20px;margin:0 0 20px}
 label{display:block;font-size:14px;margin-bottom:6px}
-input[type=password]{width:100%;box-sizing:border-box;padding:12px;border-radius:10px;border:1px solid #334155;background:#060D1A;color:#fff;font-size:16px}
-.row{display:flex;gap:10px;margin-top:18px}button{flex:1;padding:12px;border-radius:10px;border:0;font-weight:600;font-size:15px;cursor:pointer}
+input[type=password],select{width:100%;box-sizing:border-box;padding:12px;border-radius:10px;border:1px solid #334155;background:#060D1A;color:#fff;font-size:16px}
+select{margin-bottom:12px}.row{display:flex;gap:10px;margin-top:18px}button{flex:1;padding:12px;border-radius:10px;border:0;font-weight:600;font-size:15px;cursor:pointer}
 .ok{background:#0ea5e9;color:#fff}.no{background:#1e293b;color:#cbd5e1}.err{color:#fca5a5;margin-bottom:12px}
 code{color:#7dd3fc}</style></head><body><main>${inner}</main></body></html>`, { status, headers: pageHeaders() });
 }
@@ -231,6 +232,8 @@ function consentPage(cfg: McpConfig, tx: string, clientName: string, redirectUri
 ${error ? `<p class="err">${esc(error)}</p>` : ''}
 <form method="post" action="${esc(cfg.baseUrl)}/api/oauth/authorize" autocomplete="off">
 <input type="hidden" name="tx" value="${esc(tx)}">
+<label for="profile">CRM profile</label>
+<select id="profile" name="profile" required><option value="">Choose your profile</option><option value="liam">Liam</option><option value="lincoln">Lincoln</option></select>
 <label for="pw">Connector owner password</label>
 <input id="pw" type="password" name="password" autocomplete="current-password" required autofocus>
 <div class="row"><button class="no" type="submit" name="decision" value="deny" formnovalidate>Deny</button>
@@ -288,8 +291,10 @@ export async function authorizePost(req: Request): Promise<Response> {
     return consentPage(cfg, txRaw, client.clientName, tx.redirectUri, 'Incorrect password.');
   }
 
+  const profile = form?.get("profile");
+  if (!isStaffProfile(profile)) return consentPage(cfg, txRaw, client.clientName, tx.redirectUri, "Choose Liam or Lincoln to connect.");
   const code = randomToken(32);
-  await saveCode(code, tx, AUTH_CODE_TTL_SECONDS);
+  await saveCode(code, { ...tx, profile }, AUTH_CODE_TTL_SECONDS);
   await audit({ event: 'login_ok', ok: true, ip, clientId: tx.clientId });
   return redirectWith(tx.redirectUri, { code, state: tx.state }, cfg);
 }
@@ -327,15 +332,15 @@ async function authenticateClient(req: Request, p: URLSearchParams): Promise<{ c
   return { clientId };
 }
 
-async function issueTokens(cfg: McpConfig, clientId: string, scope: string, familyId: string): Promise<Response> {
+async function issueTokens(cfg: McpConfig, clientId: string, scope: string, familyId: string, profile?: StaffProfile, channel?: "chatgpt" | "claude" | "connector"): Promise<Response> {
   const now = Math.floor(Date.now() / 1000);
   const jti = randomToken(12);
   const accessToken = signJwt({
-    iss: cfg.baseUrl, aud: cfg.resource, sub: 'owner', client_id: clientId, scope,
+    iss: cfg.baseUrl, aud: cfg.resource, sub: 'owner', client_id: clientId, scope, profile, channel,
     iat: now, exp: now + ACCESS_TOKEN_TTL_SECONDS, jti, ver: cfg.tokenVersion,
   }, cfg.tokenSecret);
   const refreshToken = randomToken(32);
-  await saveRefreshToken(refreshToken, { familyId, clientId, scope, resource: cfg.resource, tokenVersion: cfg.tokenVersion }, REFRESH_TOKEN_TTL_SECONDS);
+  await saveRefreshToken(refreshToken, { familyId, clientId, scope, resource: cfg.resource, tokenVersion: cfg.tokenVersion, profile, channel }, REFRESH_TOKEN_TTL_SECONDS);
   return json({
     access_token: accessToken, token_type: 'Bearer', expires_in: ACCESS_TOKEN_TTL_SECONDS,
     refresh_token: refreshToken, scope,
@@ -374,7 +379,9 @@ export async function token(req: Request): Promise<Response> {
     if (!/^[A-Za-z0-9._~-]{43,128}$/.test(verifier) || pkceS256(verifier) !== grant.codeChallenge) return fail('pkce_failed');
     if (grant.resource !== cfg.resource) return fail('resource_mismatch');
     await audit({ event: 'token_issued', ok: true, ip, clientId: client.clientId });
-    return issueTokens(cfg, client.clientId, grant.scope, randomToken(12));
+    const host = new URL(grant.redirectUri).hostname;
+    const channel = host === "chatgpt.com" ? "chatgpt" : host === "claude.ai" || host === "claude.com" ? "claude" : "connector";
+    return issueTokens(cfg, client.clientId, grant.scope, randomToken(12), grant.profile, channel);
   }
 
   if (grantType === 'refresh_token') {
@@ -388,7 +395,7 @@ export async function token(req: Request): Promise<Response> {
     if (result.grant.tokenVersion !== cfg.tokenVersion) return fail('token_version_revoked');
     if (result.grant.resource !== cfg.resource) return fail('resource_mismatch');
     await audit({ event: 'token_refreshed', ok: true, ip, clientId: client.clientId });
-    return issueTokens(cfg, client.clientId, result.grant.scope, result.grant.familyId);
+    return issueTokens(cfg, client.clientId, result.grant.scope, result.grant.familyId, result.grant.profile, result.grant.channel);
   }
 
   return oauthError('unsupported_grant_type', 'Only authorization_code, refresh_token and client_credentials are supported.');

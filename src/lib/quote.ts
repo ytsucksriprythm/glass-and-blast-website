@@ -86,6 +86,7 @@ export function serviceLabel(key: string): string {
 // in invoice.ts (re-exported below) for the fixed set of choices.
 
 export interface Quote {
+  createdBy?: string | null;
   id: string;              // QT-<timestamp>
   number: string;          // Q1000, Q1001, ... sequential (atomic counter, mirrors invoice numbering)
   seq: number;

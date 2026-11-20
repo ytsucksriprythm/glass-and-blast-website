@@ -65,3 +65,20 @@ export function sydneyMonthKey(iso: string): string | null {
 export function daysBetween(fromDate: string, toDate: string): number {
   return Math.round((Date.parse(`${toDate}T00:00:00Z`) - Date.parse(`${fromDate}T00:00:00Z`)) / 86400000);
 }
+
+// Sydney local wall time → UTC ISO. Tries both possible offsets (AEST +10,
+// AEDT +11) and keeps the one that renders back to the same wall time, so a
+// time skipped by the daylight-saving change is rejected instead of shifted.
+export function sydneyLocalToIso(local: string): string | null {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(local)) return null;
+  const [d, t] = local.split('T');
+  if (!isIsoDate(d)) return null;
+  const [hh, mm] = t.split(':').map(Number);
+  if (hh > 23 || mm > 59) return null;
+  for (const off of [11, 10]) {
+    const iso = new Date(Date.UTC(+d.slice(0, 4), +d.slice(5, 7) - 1, +d.slice(8, 10), hh - off, mm)).toISOString();
+    const back = toSydney(iso);
+    if (back && back.date === d && back.time === t) return iso;
+  }
+  return null;
+}

@@ -1,15 +1,19 @@
 'use client';
 
+import DocumentSmsDialog, { type DocumentSmsTarget } from '@/components/admin/DocumentSmsDialog';
+
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
+import CreatedBy from '@/components/admin/CreatedBy';
+import { readStaffPreference, writeStaffPreference, useStaffProfile } from '@/components/admin/StaffSession';
 import toast from 'react-hot-toast';
 import {
   ArrowLeft, Plus, FileText, Send, BadgeCheck, Share, Undo2, Eye, Banknote, ScrollText, X,
-  Smartphone, Tablet, Monitor, MapPin, Clock, AlertTriangle, FileSignature, Copy, ExternalLink, Search, Trash2,
+  Smartphone, Tablet, Monitor, MapPin, Clock, AlertTriangle, FileSignature, ExternalLink, Search, Trash2,
 } from 'lucide-react';
 import { type Invoice, type InvoiceStatus, type PaymentMethod, PAYMENT_METHOD_LABEL, isInvoiceOverdue, money, longDate } from '@/lib/invoice';
-import { type Quote, type QuoteStatus, money as quoteMoney, longDate as quoteLongDate, buildQuoteText } from '@/lib/quote';
+import { type Quote, type QuoteStatus, money as quoteMoney, longDate as quoteLongDate } from '@/lib/quote';
 import { quoteShareMessage, quoteShareClipboardText } from '@/lib/quoteShare';
 import type { AppSettings } from '@/lib/settings';
 import type { Booking } from '@/lib/db';
@@ -150,14 +154,19 @@ const serviceTextForBooking = (s: string) => (s ?? '').split(',').filter(Boolean
 
 export default function InvoicesQuotesPage() {
   const router = useRouter();
+  const profile = useStaffProfile();
+  const [overdueOnly, setOverdueOnly] = useState(false);
+  useEffect(() => { setOverdueOnly(new URLSearchParams(window.location.search).get('filter') === 'overdue'); }, []);
   const [tab, setTab] = useState<'invoices' | 'quotes'>('invoices');
   // Restore the tab from ?tab=… so a link like /admin/invoices?tab=quotes (or
   // the /admin/quotes redirect stub) lands on the right side. Runs client-side
   // only (window.location, not useSearchParams) so this stays a plain client
   // component with no Suspense-boundary requirement.
   useEffect(() => {
-    if (new URLSearchParams(window.location.search).get('tab') === 'quotes') setTab('quotes');
-  }, []);
+    const params = new URLSearchParams(window.location.search);
+    const preferQuotes = !params.has('tab') && !params.has('filter') && readStaffPreference(profile, 'documents-tab') === 'quotes';
+    setTab(params.get('tab') === 'quotes' || preferQuotes ? 'quotes' : 'invoices');
+  }, [profile]);
 
   // ─── Invoices ────────────────────────────────────────────────────────────
   const [invoices, setInvoices] = useState<Invoice[]>([]);
@@ -168,6 +177,7 @@ export default function InvoicesQuotesPage() {
   // see the Quotes tab at all (quoting is an admin-only concern).
   const [isGuest, setIsGuest] = useState(false);
   const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [smsTarget, setSmsTarget] = useState<DocumentSmsTarget | null>(null);
   const [viewLogFor, setViewLogFor] = useState<Invoice | null>(null);
 
   useEffect(() => {
@@ -188,6 +198,7 @@ export default function InvoicesQuotesPage() {
 
   const backHref = isGuest ? '/guest' : '/admin/dashboard';
 
+  const visibleInvoices = overdueOnly ? invoices.filter(isInvoiceOverdue) : invoices;
   const unpaidTotal = invoices.filter(i => i.status !== 'paid' && i.status !== 'cancelled').reduce((s, i) => s + i.total, 0);
 
   const setStatus = async (inv: Invoice, status: InvoiceStatus, paymentMethod?: PaymentMethod) => {
@@ -252,10 +263,6 @@ export default function InvoicesQuotesPage() {
     if (nav.share) { try { await nav.share({ title, text: quoteShareMessage(q), url }); } catch { /* dismissed */ } }
     else { try { await navigator.clipboard.writeText(quoteShareClipboardText(q, url)); toast.success('Quote link copied'); } catch { toast.error('Copy failed'); } }
   };
-  const copyQuote = async (q: Quote) => {
-    try { await navigator.clipboard.writeText(buildQuoteText(q)); toast.success('Quote text copied'); }
-    catch { toast.error('Copy failed'); }
-  };
   const removeQuote = async (q: Quote) => {
     if (!window.confirm(`Delete quote ${q.number}? This cannot be undone.`)) return;
     setDeletingQuoteId(q.id);
@@ -274,6 +281,7 @@ export default function InvoicesQuotesPage() {
 
   const switchTab = (t: 'invoices' | 'quotes') => {
     setTab(t);
+    writeStaffPreference(profile, 'documents-tab', t);
     router.replace(`/admin/invoices${t === 'quotes' ? '?tab=quotes' : ''}`, { scroll: false });
   };
 
@@ -282,12 +290,13 @@ export default function InvoicesQuotesPage() {
       {!isGuest && <AdminSidebar active="invoices" items={navItems} />}
       <div className="flex-1 flex flex-col min-w-0">
       <header
-        className="sticky top-0 z-30 bg-navy-900/90 backdrop-blur border-b border-white/10 px-4 flex items-center justify-between"
+        className="crm-topbar sticky top-0 z-30 bg-navy-900/90 backdrop-blur border-b border-white/10 px-4 flex items-center justify-between"
         style={{ paddingTop: 'calc(env(safe-area-inset-top) + 0.85rem)', paddingBottom: '0.85rem' }}
       >
         <button onClick={() => router.push(backHref)} className={`inline-flex items-center gap-2 text-slate-300 hover:text-white text-sm cursor-pointer ${isGuest ? '' : 'lg:hidden'}`}>
           <ArrowLeft className="w-5 h-5" /> {isGuest ? 'My jobs' : 'Dashboard'}
         </button>
+        {tab === 'invoices' && overdueOnly && <button onClick={() => setOverdueOnly(false)} className="mb-3 min-h-11 px-3 text-sky-300">Overdue only · Show all invoices</button>}
         {tab === 'invoices' ? (
           <Link href="/admin/invoices/new" className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-white text-sm font-semibold cursor-pointer">
             <Plus className="w-4 h-4" /> New invoice
@@ -299,7 +308,7 @@ export default function InvoicesQuotesPage() {
         )}
       </header>
 
-      <main className="max-w-2xl mx-auto px-4 py-6 pb-28">
+      <main className="mx-auto w-full max-w-4xl px-4 py-6 pb-28 sm:px-6">
         <div className="mb-5">
           <h1 className="font-display text-2xl font-bold text-white flex items-center gap-2">
             {tab === 'invoices' ? <><FileText className="w-6 h-6 text-sky-400" /> Invoices</> : <><FileSignature className="w-6 h-6 text-sky-400" /> Quotes</>}
@@ -322,6 +331,8 @@ export default function InvoicesQuotesPage() {
         {tab === 'invoices' ? (
           invLoading ? (
             <div className="space-y-3">{[0, 1, 2].map(i => <div key={i} className="h-28 bg-white/5 rounded-xl animate-pulse" />)}</div>
+          ) : overdueOnly && visibleInvoices.length === 0 ? (
+            <p className="py-8 text-center text-slate-300">No overdue invoices.</p>
           ) : invoices.length === 0 ? (
             <div className="text-center py-16 text-slate-500 text-sm">
               No invoices yet.
@@ -333,10 +344,10 @@ export default function InvoicesQuotesPage() {
             </div>
           ) : (
             <ul className="space-y-3">
-              {invoices.map(inv => (
+              {visibleInvoices.map(inv => (
                 <li key={inv.id}>
                   <div
-                    onClick={() => router.push(`/admin/invoices/${inv.id}`)}
+                    onClick={() => router.push("/admin/invoices/" + inv.id + (overdueOnly ? "?from=" + encodeURIComponent("/admin/invoices?filter=overdue") : ""))}
                     className="rounded-xl border border-white/10 bg-navy-800 p-4 hover:border-sky-400/30 hover:bg-white/[0.02] transition-colors cursor-pointer"
                   >
                     <div className="flex items-start justify-between gap-3">
@@ -380,7 +391,7 @@ export default function InvoicesQuotesPage() {
                     </div>
 
                     {/* Quick actions — dead zone: stop the row-open click so these act on their own */}
-                    <div className="mt-3 pt-3 border-t border-white/5 flex items-center gap-2" onClick={e => e.stopPropagation()}>
+                    <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-white/5 pt-3" onClick={e => e.stopPropagation()}>
                       {inv.status === 'draft' && (
                         <button disabled={busyId === inv.id} onClick={() => setStatus(inv, 'sent')} className={`${iconBtn} border-sky-400/30 bg-sky-400/10 text-sky-300 hover:bg-sky-400/15`}>
                           <Send className="w-3.5 h-3.5" /> Mark sent
@@ -417,11 +428,13 @@ export default function InvoicesQuotesPage() {
                       <button onClick={() => setViewLogFor(inv)} title="View log" aria-label="View log" className={`${iconBtn} ml-auto border-white/10 text-slate-300 hover:text-white`}>
                         <ScrollText className="w-3.5 h-3.5" /> View log
                       </button>
+                      {!isGuest && <button onClick={() => setSmsTarget({ kind: "invoice", id: inv.id, draft: inv.status === "draft" })} aria-label="Send invoice via SMS" className={`${iconBtn} min-h-11 border-white/10 text-sky-300`}>Send via SMS</button>}
                       <button onClick={() => shareInvoice(inv)} title="Share invoice link" aria-label="Share invoice link" className={`${iconBtn} border-white/10 text-slate-300 hover:text-white`}>
                         <Share className="w-4 h-4" />
                       </button>
                     </div>
                   </div>
+                  <CreatedBy name={inv.createdBy} />
                 </li>
               ))}
             </ul>
@@ -452,6 +465,7 @@ export default function InvoicesQuotesPage() {
                         <div className="min-w-0">
                           <div className="flex items-center gap-2">
                             <span className="text-white font-semibold">{q.number}</span>
+                            <CreatedBy name={q.createdBy} />
                             {q.acceptedAt ? (
                               <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold border border-emerald-400/30 bg-emerald-400/10 text-emerald-300">Accepted</span>
                             ) : q.status !== 'draft' && (
@@ -474,7 +488,7 @@ export default function InvoicesQuotesPage() {
                             View job
                           </Link>
                         )}
-                        <button onClick={() => copyQuote(q)} title="Copy quote text" className={`${iconBtn} ml-auto border-white/10 text-slate-300 hover:text-white`}><Copy className="w-3.5 h-3.5" /></button>
+                        <button onClick={() => setSmsTarget({ kind: "quote", id: q.id, draft: q.status === "draft" })} aria-label="Send quote via SMS" className={`${iconBtn} ml-auto min-h-11 border-white/10 text-sky-300`}>Send via SMS</button>
                         <button onClick={() => shareQuote(q)} title="Share quote link" className={`${iconBtn} border-white/10 text-slate-300 hover:text-white`}><Share className="w-3.5 h-3.5" /></button>
                         <a href={`/quote/${q.token}`} target="_blank" rel="noopener noreferrer" title="Open" className={`${iconBtn} border-white/10 text-slate-300 hover:text-white`}><ExternalLink className="w-3.5 h-3.5" /></a>
                         <button onClick={() => removeQuote(q)} disabled={deletingQuoteId === q.id} title="Delete quote" className={`${iconBtn} border-red-400/30 text-red-300 hover:bg-red-400/10`}><Trash2 className="w-3.5 h-3.5" /></button>
@@ -486,6 +500,7 @@ export default function InvoicesQuotesPage() {
             </ul>
           )
         )}
+        {smsTarget && <DocumentSmsDialog target={smsTarget} onClose={() => setSmsTarget(null)} onQuoteApproved={quote => setQuotes(current => current.map(item => item.id === quote.id ? quote : item))} onInvoiceApproved={invoice => setInvoices(current => current.map(item => item.id === invoice.id ? invoice : item))} />}
         {viewLogFor && <ViewLogModal invoice={viewLogFor} onClose={() => setViewLogFor(null)} />}
       </main>
       </div>

@@ -1,5 +1,12 @@
 'use client';
 
+import { documentBusinessDefaults, documentPaymentDefaults } from '@/lib/documentDefaults';
+import { useStaffProfile } from '@/components/admin/StaffSession';
+import type { StaffProfile } from '@/lib/staff';
+
+import DocumentSmsDialog from '@/components/admin/DocumentSmsDialog';
+
+import CreatedBy from '@/components/admin/CreatedBy';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import toast from 'react-hot-toast';
@@ -8,7 +15,7 @@ import {
 } from 'lucide-react';
 import {
   type Invoice, type InvoiceStatus, type InvoiceLineItem, type PaymentProfile, type BusinessProfile, type PaymentMethod,
-  BUSINESS_DEFAULTS, PAYMENT_DEFAULTS, PAYMENT_METHOD_LABEL, SQUARE_SURCHARGE_PERCENT_FALLBACK, isInvoiceOverdue, addDays, cardTotal, computeTotals, money, longDate, addressesMatch,
+  PAYMENT_METHOD_LABEL, SQUARE_SURCHARGE_PERCENT_FALLBACK, isInvoiceOverdue, addDays, cardTotal, computeTotals, money, longDate, addressesMatch,
   DEFAULT_PAYMENT_DUE_TERMS, paymentDueTermsDays, PAYMENT_DUE_TERMS_OPTIONS, cleanAmountInput, DISCOUNT_PRESETS,
 } from '@/lib/invoice';
 import type { AppSettings } from '@/lib/settings';
@@ -85,11 +92,11 @@ export type InvoicePrefill = {
   dueDays?: number;
 };
 
-function blankForm(prefill?: InvoicePrefill): Form {
+function blankForm(prefill: InvoicePrefill | undefined, staff: StaffProfile | null): Form {
   const t = todayStr();
   return {
     isTaxInvoice: false,
-    ...BUSINESS_DEFAULTS,
+    ...documentBusinessDefaults(staff, []),
     showFromAddress: true,
     billToName: prefill?.billToName ?? '',
     billToLines: prefill?.billToLines ?? '',
@@ -105,7 +112,7 @@ function blankForm(prefill?: InvoicePrefill): Form {
       amount: prefill?.amount ? String(prefill.amount) : '',
     }],
     notes: 'Thank you for your business.',
-    ...PAYMENT_DEFAULTS,
+    ...documentPaymentDefaults(staff, []),
   };
 }
 
@@ -121,7 +128,7 @@ function toLineItems(items: ItemForm[]): InvoiceLineItem[] {
 
 function Section({ title, children, right }: { title: string; children: React.ReactNode; right?: React.ReactNode }) {
   return (
-    <div className="rounded-xl border border-white/10 bg-navy-800 p-4">
+    <div className="crm-panel p-4">
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-white font-semibold text-sm">{title}</h3>
         {right}
@@ -142,10 +149,12 @@ const STATUS_STYLE: Record<InvoiceStatus, string> = {
   cancelled: 'bg-red-400/15 text-red-300 border-red-400/25',
 };
 
-export default function InvoiceEditor({ initial, prefill }: { initial: Invoice | null; prefill?: InvoicePrefill }) {
+export default function InvoiceEditor({ initial, prefill, returnHref, onChanged, onDeleted }: { initial: Invoice | null; prefill?: InvoicePrefill; returnHref?: string; onChanged?: (invoice: Invoice) => void; onDeleted?: () => void }) {
   const router = useRouter();
+  const staff = useStaffProfile();
+  const [smsOpen, setSmsOpen] = useState(false);
   const [inv, setInv] = useState<Invoice | null>(initial);
-  const [f, setF] = useState<Form>(initial ? fromInvoice(initial) : blankForm(prefill));
+  const [f, setF] = useState<Form>(initial ? fromInvoice(initial) : blankForm(prefill, staff));
   const [saving, setSaving] = useState(false);
   const [tab, setTab] = useState<'edit' | 'preview'>('edit');
   // Linked bookings (multi). Linkage is the single source of truth on the invoice.
@@ -210,23 +219,12 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
     seededAutofill.current = true;
     setF(prev => {
       const next = { ...prev };
-      if (settings.autofillBusinessInfo) {
-        const p = businessProfiles[0];
-        next.fromName = p.fromName; next.fromTradingAs = p.fromTradingAs; next.fromAbn = p.fromAbn;
-        next.fromAddress = p.fromAddress; next.fromEmail = p.fromEmail; next.fromPhone = p.fromPhone;
-      } else {
-        next.fromName = ''; next.fromTradingAs = ''; next.fromAbn = ''; next.fromAddress = ''; next.fromEmail = ''; next.fromPhone = '';
-      }
-      if (settings.autofillPaymentDetails) {
-        const p = profiles[0];
-        next.payAccountName = p.accountName; next.payBsb = p.bsb; next.payAccountNumber = p.accountNumber;
-      } else {
-        next.payAccountName = ''; next.payBsb = ''; next.payAccountNumber = '';
-      }
+      Object.assign(next, documentBusinessDefaults(staff, businessProfiles, settings.autofillBusinessInfo),
+        documentPaymentDefaults(staff, profiles, settings.autofillPaymentDetails));
       next.showFromAddress = settings.defaultShowAddressOnInvoice;
       return next;
     });
-  }, [initial, settings, profiles, businessProfiles]);
+  }, [initial, settings, profiles, businessProfiles, staff]);
 
   // Load bookings up front so linked jobs render by name and address suggestions work.
   useEffect(() => {
@@ -407,7 +405,10 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
     bookingIds: linkedIds,
   });
 
+  const [saveError, setSaveError] = useState("");
   const save = async () => {
+    if (saving) return;
+    setSaveError("");
     if (!f.billToName.trim() && !f.clientShow) { toast.error('Add who the invoice is billed to'); return; }
     if (lineItems.every(i => !i.description && !i.amount)) { toast.error('Add at least one line item'); return; }
     setSaving(true);
@@ -416,7 +417,9 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
         const res = await fetch(`/api/admin/invoices/${inv.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload()) });
         if (res.status === 401) { router.push('/admin'); return; }
         if (!res.ok) throw new Error((await res.json()).error || 'Save failed');
-        setInv(await res.json());
+        const updated: Invoice = await res.json();
+        setInv(updated);
+        onChanged?.(updated);
         toast.success('Invoice saved');
       } else {
         const res = await fetch('/api/admin/invoices', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload()) });
@@ -424,10 +427,11 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
         if (!res.ok) throw new Error((await res.json()).error || 'Create failed');
         const created: Invoice = await res.json();
         toast.success(`Invoice ${created.number} created`);
-        router.push(`/admin/invoices/${created.id}`);
+        if (onChanged) { setInv(created); onChanged(created); }
+        else router.replace("/admin/invoices/" + created.id + (returnHref ? "?from=" + encodeURIComponent(returnHref) : ""));
       }
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Save failed');
+      setSaveError(err instanceof Error ? err.message : 'Save failed');
     } finally { setSaving(false); }
   };
 
@@ -437,7 +441,9 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
     if (paymentMethod) body.paymentMethod = paymentMethod;
     const res = await fetch(`/api/admin/invoices/${inv.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     if (res.ok) {
-      setInv(await res.json());
+      const updated: Invoice = await res.json();
+      setInv(updated);
+      onChanged?.(updated);
       toast.success(status === 'paid' && paymentMethod ? `Marked paid: ${PAYMENT_METHOD_LABEL[paymentMethod].toLowerCase()}` : `Marked ${STATUS_LABEL[status].toLowerCase()}`);
     } else toast.error('Update failed');
   };
@@ -466,7 +472,7 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
     if (!inv) return;
     if (!window.confirm(`Delete invoice ${inv.number}? This cannot be undone.`)) return;
     const res = await fetch(`/api/admin/invoices/${inv.id}`, { method: 'DELETE' });
-    if (res.ok) { toast.success('Invoice deleted'); router.push('/admin/invoices'); }
+    if (res.ok) { toast.success('Invoice deleted'); if (onDeleted) onDeleted(); else router.push('/admin/invoices'); }
     else toast.error('Delete failed');
   };
 
@@ -476,8 +482,19 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
     catch { toast.error('Copy failed'); }
   };
 
+  const shareInvoice = async () => {
+    if (!navigator.share) return copyLink();
+    try {
+      await navigator.share({ title: "Invoice " + inv?.number, url: publicUrl });
+      toast.success("Invoice link shared");
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === "AbortError")) toast.error("Could not share invoice.");
+    }
+  };
+
   return (
     <div className="max-w-6xl mx-auto">
+      {inv && smsOpen && <DocumentSmsDialog target={{ kind: "invoice", id: inv.id, draft: inv.status === "draft" }} onClose={() => setSmsOpen(false)} onInvoiceApproved={invoice => { setInv(invoice); onChanged?.(invoice); }} />}
       {/* Share link + status (existing invoices) */}
       {inv && (
         <div className="mb-5 rounded-xl border border-sky-400/25 bg-sky-400/5 p-4">
@@ -518,9 +535,11 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
               {inv.status !== 'draft' && <button onClick={() => setStatus('draft')} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/15 text-slate-400 hover:text-white text-xs font-semibold cursor-pointer"><Undo2 className="w-3.5 h-3.5" /> Draft</button>}
             </div>
           </div>
+          <CreatedBy name={inv.createdBy} />
           <div className="mt-3 flex flex-wrap items-center gap-2">
-            <input readOnly value={publicUrl} className="form-input flex-1 min-w-[12rem] text-xs" onFocus={e => e.currentTarget.select()} />
-            <button onClick={copyLink} className="inline-flex items-center gap-1.5 px-3 py-2.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-white text-sm font-semibold cursor-pointer"><Copy className="w-4 h-4" /> Copy link</button>
+            <input readOnly value={publicUrl} aria-label="Invoice link" className="form-input w-full min-h-11 text-base sm:flex-1" onFocus={e => e.currentTarget.select()} />
+            <button onClick={shareInvoice} className="min-h-11 rounded-lg bg-sky-500 px-3 font-semibold text-navy-900">Share invoice</button>
+            <button onClick={() => setSmsOpen(true)} className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-white/15 px-3 text-sm font-semibold text-sky-300"><Send className="size-4" /> Send via SMS</button>
             <a href={publicUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 px-3 py-2.5 rounded-lg border border-white/15 text-slate-200 hover:text-white text-sm font-semibold cursor-pointer"><ExternalLink className="w-4 h-4" /> Open</a>
           </div>
           <p className="mt-2 text-slate-500 text-xs">Send this link to the customer. They view the invoice and pay by bank transfer using reference <span className="text-sky-300 font-semibold">{inv.number}</span>.</p>
@@ -586,6 +605,64 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
       <div className="grid lg:grid-cols-2 gap-6 items-start">
         {/* ── Form ── */}
         <div className={`space-y-4 ${tab === 'edit' ? '' : 'hidden lg:block'}`}>
+          <Section title="Bill to">
+            <div className="space-y-3">
+              <div><L>Name / business</L><input className="form-input text-base sm:text-sm" value={f.billToName} onChange={e => set('billToName', e.target.value)} placeholder="Customer or organisation" /></div>
+              <div><L>Extra lines (optional)</L><textarea className="form-input text-base sm:text-sm resize-none" rows={2} value={f.billToLines} onChange={e => set('billToLines', e.target.value)} placeholder="Attn / program / address" /></div>
+            </div>
+          </Section>
+
+          <Section title="Client details" right={
+            <button type="button" onClick={() => set('clientShow', !f.clientShow)} className={`text-xs font-semibold cursor-pointer ${f.clientShow ? 'text-sky-400' : 'text-slate-500'}`}>{f.clientShow ? 'Shown' : 'Hidden'}</button>
+          }>
+            <p className="text-xs text-slate-500 mb-3">Optional block for government / DVA jobs. Leave hidden for normal customers.</p>
+            {f.clientShow && (
+              <div className="grid grid-cols-2 gap-3">
+                <div><L>Client name</L><input className="form-input text-base sm:text-sm" value={f.clientName} onChange={e => set('clientName', e.target.value)} /></div>
+                <div><L>TRN</L><input className="form-input text-base sm:text-sm" value={f.clientTrn} onChange={e => set('clientTrn', e.target.value)} /></div>
+                <div><L>File no.</L><input className="form-input text-base sm:text-sm" value={f.clientFileNo} onChange={e => set('clientFileNo', e.target.value)} /></div>
+                <div><L>Claim reference</L><input className="form-input text-base sm:text-sm" value={f.clientClaimRef} onChange={e => set('clientClaimRef', e.target.value)} /></div>
+              </div>
+            )}
+          </Section>
+
+          <Section title="Line items" right={
+            <span className="text-xs text-slate-400">Subtotal <span className="text-white font-semibold">{money(subtotal)}</span></span>
+          }>
+            <div className="space-y-3">
+              {f.items.map((it, i) => (
+                <div key={i} className="rounded-lg border border-white/10 bg-white/[0.02] p-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-xs text-slate-500">Item {i + 1}</span>
+                    <button type="button" onClick={() => removeItem(i)} disabled={f.items.length <= 1} className="text-slate-500 hover:text-red-400 disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed"><Trash2 className="w-4 h-4" /></button>
+                  </div>
+                  <div className="space-y-2">
+                    <input className="form-input text-base sm:text-sm" placeholder="Description (e.g. Window Cleaning)" value={it.description} onChange={e => setItem(i, 'description', e.target.value)} />
+                    <textarea className="form-input text-base sm:text-sm resize-none" rows={2} placeholder="Detail (optional)" value={it.detail} onChange={e => setItem(i, 'detail', e.target.value)} />
+                    <input className="form-input text-base sm:text-sm" placeholder="Service address (optional)" value={it.serviceAddress} onChange={e => setItem(i, 'serviceAddress', e.target.value)} />
+                    <div className="grid grid-cols-2 gap-2">
+                      <div><L>Date</L><input type="date" className="form-input text-base sm:text-sm" value={it.date} onChange={e => setItem(i, 'date', e.target.value)} /></div>
+                      <div><L>Amount ($)</L><input inputMode="text" className={`form-input text-base sm:text-sm ${it.amount.startsWith('-') ? 'text-emerald-300' : ''}`} placeholder="0.00 (use - for a discount)" value={it.amount} onChange={e => setItem(i, 'amount', cleanAmountInput(e.target.value))} /></div>
+                    </div>
+                  </div>
+                </div>
+              ))}
+              <button type="button" onClick={addItem} className="w-full inline-flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg border border-dashed border-white/15 text-slate-300 hover:border-sky-400/40 hover:text-white text-sm font-semibold cursor-pointer"><Plus className="w-4 h-4" /> Add item</button>
+              <div className="flex flex-wrap gap-1.5">
+                {DISCOUNT_PRESETS.map(d => (
+                  <button key={d.label} type="button" onClick={() => addDiscount(d.label, d.amount)} className="px-2.5 py-1 rounded-md border border-emerald-400/30 text-xs text-emerald-300 hover:bg-emerald-400/10 cursor-pointer">
+                    + {d.label} ({money(d.amount)})
+                  </button>
+                ))}
+              </div>
+            </div>
+          </Section>
+
+          <div className="flex justify-between rounded-lg border border-white/10 p-3 font-semibold text-white"><span>Total</span><span>{money(lineItems.reduce((sum, item) => sum + item.amount, 0))}</span></div>
+
+          <details className="rounded-xl border border-white/10">
+            <summary className="min-h-11 cursor-pointer p-3 font-semibold text-slate-200">Invoice options</summary>
+            <div className="space-y-4 px-3 pb-3">
           <button type="button" onClick={openPicker} className="w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-lg border border-dashed border-sky-400/40 bg-sky-400/5 text-sky-300 hover:bg-sky-400/10 text-sm font-semibold cursor-pointer">
             <ClipboardList className="w-4 h-4" /> Copy details from a booking
           </button>
@@ -640,9 +717,9 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
 
           <Section title="Dates">
             <div className="grid grid-cols-3 gap-3">
-              <div><L>Invoice date</L><input type="date" className="form-input text-sm" value={f.invoiceDate} onChange={e => { set('invoiceDate', e.target.value); }} /></div>
-              <div><L>Service date</L><input type="date" className="form-input text-sm" value={f.serviceDate} onChange={e => set('serviceDate', e.target.value)} /></div>
-              <div><L>Due date</L><input type="date" className="form-input text-sm" value={f.dueDate} onChange={e => set('dueDate', e.target.value)} /></div>
+              <div><L>Invoice date</L><input type="date" className="form-input text-base sm:text-sm" value={f.invoiceDate} onChange={e => { set('invoiceDate', e.target.value); }} /></div>
+              <div><L>Service date</L><input type="date" className="form-input text-base sm:text-sm" value={f.serviceDate} onChange={e => set('serviceDate', e.target.value)} /></div>
+              <div><L>Due date</L><input type="date" className="form-input text-base sm:text-sm" value={f.dueDate} onChange={e => set('dueDate', e.target.value)} /></div>
             </div>
             <div className="mt-2 flex flex-wrap gap-1.5">
               {PAYMENT_DUE_TERMS_OPTIONS.map(o => (
@@ -653,61 +730,8 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
             </div>
           </Section>
 
-          <Section title="Bill to">
-            <div className="space-y-3">
-              <div><L>Name / business</L><input className="form-input text-sm" value={f.billToName} onChange={e => set('billToName', e.target.value)} placeholder="Customer or organisation" /></div>
-              <div><L>Extra lines (optional)</L><textarea className="form-input text-sm resize-none" rows={2} value={f.billToLines} onChange={e => set('billToLines', e.target.value)} placeholder="Attn / program / address" /></div>
-            </div>
-          </Section>
-
-          <Section title="Client details" right={
-            <button type="button" onClick={() => set('clientShow', !f.clientShow)} className={`text-xs font-semibold cursor-pointer ${f.clientShow ? 'text-sky-400' : 'text-slate-500'}`}>{f.clientShow ? 'Shown' : 'Hidden'}</button>
-          }>
-            <p className="text-xs text-slate-500 mb-3">Optional block for government / DVA jobs. Leave hidden for normal customers.</p>
-            {f.clientShow && (
-              <div className="grid grid-cols-2 gap-3">
-                <div><L>Client name</L><input className="form-input text-sm" value={f.clientName} onChange={e => set('clientName', e.target.value)} /></div>
-                <div><L>TRN</L><input className="form-input text-sm" value={f.clientTrn} onChange={e => set('clientTrn', e.target.value)} /></div>
-                <div><L>File no.</L><input className="form-input text-sm" value={f.clientFileNo} onChange={e => set('clientFileNo', e.target.value)} /></div>
-                <div><L>Claim reference</L><input className="form-input text-sm" value={f.clientClaimRef} onChange={e => set('clientClaimRef', e.target.value)} /></div>
-              </div>
-            )}
-          </Section>
-
-          <Section title="Line items" right={
-            <span className="text-xs text-slate-400">Subtotal <span className="text-white font-semibold">{money(subtotal)}</span></span>
-          }>
-            <div className="space-y-3">
-              {f.items.map((it, i) => (
-                <div key={i} className="rounded-lg border border-white/10 bg-white/[0.02] p-3">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-xs text-slate-500">Item {i + 1}</span>
-                    <button type="button" onClick={() => removeItem(i)} disabled={f.items.length <= 1} className="text-slate-500 hover:text-red-400 disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed"><Trash2 className="w-4 h-4" /></button>
-                  </div>
-                  <div className="space-y-2">
-                    <input className="form-input text-sm" placeholder="Description (e.g. Window Cleaning)" value={it.description} onChange={e => setItem(i, 'description', e.target.value)} />
-                    <textarea className="form-input text-sm resize-none" rows={2} placeholder="Detail (optional)" value={it.detail} onChange={e => setItem(i, 'detail', e.target.value)} />
-                    <input className="form-input text-sm" placeholder="Service address (optional)" value={it.serviceAddress} onChange={e => setItem(i, 'serviceAddress', e.target.value)} />
-                    <div className="grid grid-cols-2 gap-2">
-                      <div><L>Date</L><input type="date" className="form-input text-sm" value={it.date} onChange={e => setItem(i, 'date', e.target.value)} /></div>
-                      <div><L>Amount ($)</L><input inputMode="text" className={`form-input text-sm ${it.amount.startsWith('-') ? 'text-emerald-300' : ''}`} placeholder="0.00 (use - for a discount)" value={it.amount} onChange={e => setItem(i, 'amount', cleanAmountInput(e.target.value))} /></div>
-                    </div>
-                  </div>
-                </div>
-              ))}
-              <button type="button" onClick={addItem} className="w-full inline-flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg border border-dashed border-white/15 text-slate-300 hover:border-sky-400/40 hover:text-white text-sm font-semibold cursor-pointer"><Plus className="w-4 h-4" /> Add item</button>
-              <div className="flex flex-wrap gap-1.5">
-                {DISCOUNT_PRESETS.map(d => (
-                  <button key={d.label} type="button" onClick={() => addDiscount(d.label, d.amount)} className="px-2.5 py-1 rounded-md border border-emerald-400/30 text-xs text-emerald-300 hover:bg-emerald-400/10 cursor-pointer">
-                    + {d.label} ({money(d.amount)})
-                  </button>
-                ))}
-              </div>
-            </div>
-          </Section>
-
           <Section title="Footer note">
-            <input className="form-input text-sm" value={f.notes} onChange={e => set('notes', e.target.value)} placeholder="Thank you for your business." />
+            <input className="form-input text-base sm:text-sm" value={f.notes} onChange={e => set('notes', e.target.value)} placeholder="Thank you for your business." />
           </Section>
 
           <Section title="Payment details">
@@ -734,7 +758,7 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
               <div className="mt-3 rounded-lg border border-sky-400/30 bg-sky-400/5 p-3">
                 <p className="text-xs text-slate-400 mb-2">Set the account fields below, then name and save them as a reusable profile.</p>
                 <div className="flex items-center gap-2">
-                  <input className="form-input text-sm flex-1" placeholder="Profile name (e.g. Liam)" value={newProfileName} onChange={e => setNewProfileName(e.target.value)} />
+                  <input className="form-input text-base sm:text-sm flex-1" placeholder="Profile name (e.g. Liam)" value={newProfileName} onChange={e => setNewProfileName(e.target.value)} />
                   <button onClick={saveNewProfile} disabled={savingProfile} className="px-3 py-2.5 rounded-lg bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-white text-sm font-semibold cursor-pointer whitespace-nowrap">Save profile</button>
                   <button onClick={() => { setNewProfileOpen(false); setNewProfileName(''); }} className="p-2.5 text-slate-400 hover:text-white cursor-pointer"><X className="w-4 h-4" /></button>
                 </div>
@@ -742,15 +766,15 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
             )}
 
             <div className={`grid grid-cols-3 gap-3 ${profiles.length > 1 ? 'mt-3' : ''}`}>
-              <div><L>Account name</L><input className="form-input text-sm" value={f.payAccountName} onChange={e => set('payAccountName', e.target.value)} /></div>
-              <div><L>BSB</L><input className="form-input text-sm" value={f.payBsb} onChange={e => set('payBsb', e.target.value)} /></div>
-              <div><L>Account no.</L><input className="form-input text-sm" value={f.payAccountNumber} onChange={e => set('payAccountNumber', e.target.value)} /></div>
+              <div><L>Account name</L><input className="form-input text-base sm:text-sm" value={f.payAccountName} onChange={e => set('payAccountName', e.target.value)} /></div>
+              <div><L>BSB</L><input className="form-input text-base sm:text-sm" value={f.payBsb} onChange={e => set('payBsb', e.target.value)} /></div>
+              <div><L>Account no.</L><input className="form-input text-base sm:text-sm" value={f.payAccountNumber} onChange={e => set('payAccountNumber', e.target.value)} /></div>
             </div>
           </Section>
 
           <Section title="Business details (from)">
-            {businessProfiles.length > 1 && <p className="text-xs text-slate-500 mb-2">Pick which identity this invoice is from. Fields below stay editable for one-offs.</p>}
-            {businessProfiles.length > 1 && (
+            {businessProfiles.length > 0 && <p className="text-xs text-slate-500 mb-2">Pick which identity this invoice is from. Fields below stay editable for one-offs.</p>}
+            {businessProfiles.length > 0 && (
               <div className="flex flex-wrap gap-2">
                 {businessProfiles.map(p => {
                   const on = activeBusinessProfileId === p.id;
@@ -768,11 +792,11 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
               </div>
             )}
 
-            {newBusinessProfileOpen && businessProfiles.length > 1 && (
+            {newBusinessProfileOpen && businessProfiles.length > 0 && (
               <div className="mt-3 rounded-lg border border-sky-400/30 bg-sky-400/5 p-3">
                 <p className="text-xs text-slate-400 mb-2">Set the fields below, then name and save them as a reusable profile.</p>
                 <div className="flex items-center gap-2">
-                  <input className="form-input text-sm flex-1" placeholder="Profile name (e.g. Liam)" value={newBusinessProfileName} onChange={e => setNewBusinessProfileName(e.target.value)} />
+                  <input className="form-input text-base sm:text-sm flex-1" placeholder="Profile name (e.g. Liam)" value={newBusinessProfileName} onChange={e => setNewBusinessProfileName(e.target.value)} />
                   <button onClick={saveNewBusinessProfile} disabled={savingBusinessProfile} className="px-3 py-2.5 rounded-lg bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-white text-sm font-semibold cursor-pointer whitespace-nowrap">Save profile</button>
                   <button onClick={() => { setNewBusinessProfileOpen(false); setNewBusinessProfileName(''); }} className="p-2.5 text-slate-400 hover:text-white cursor-pointer"><X className="w-4 h-4" /></button>
                 </div>
@@ -780,10 +804,10 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
             )}
 
             {/* Field order matches how they render on the actual invoice's From block. */}
-            <div className={`grid grid-cols-2 gap-3 ${businessProfiles.length > 1 ? 'mt-3' : ''}`}>
-              <div><L>Your name</L><input className="form-input text-sm" value={f.fromName} onChange={e => set('fromName', e.target.value)} /></div>
-              <div><L>Trading as</L><input className="form-input text-sm" value={f.fromTradingAs} onChange={e => set('fromTradingAs', e.target.value)} /></div>
-              <div className="col-span-2"><L>ABN</L><input className="form-input text-sm" value={f.fromAbn} onChange={e => set('fromAbn', e.target.value)} /></div>
+            <div className={`grid grid-cols-2 gap-3 ${businessProfiles.length > 0 ? 'mt-3' : ''}`}>
+              <div><L>Your name</L><input className="form-input text-base sm:text-sm" value={f.fromName} onChange={e => set('fromName', e.target.value)} /></div>
+              <div><L>Trading as</L><input className="form-input text-base sm:text-sm" value={f.fromTradingAs} onChange={e => set('fromTradingAs', e.target.value)} /></div>
+              <div className="col-span-2"><L>ABN</L><input className="form-input text-base sm:text-sm" value={f.fromAbn} onChange={e => set('fromAbn', e.target.value)} /></div>
               <div className="col-span-2">
                 <div className="flex items-center justify-between mb-1">
                   <span className="block text-slate-400 text-xs font-medium">Address</span>
@@ -798,14 +822,18 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
                     <span className="text-slate-400">{f.isTaxInvoice ? 'Always shown on tax invoices' : 'Show on invoice'}</span>
                   </label>
                 </div>
-                <input className="form-input text-sm" value={f.fromAddress} onChange={e => set('fromAddress', e.target.value)} />
+                <input className="form-input text-base sm:text-sm" value={f.fromAddress} onChange={e => set('fromAddress', e.target.value)} />
               </div>
-              <div><L>Email</L><input className="form-input text-sm" value={f.fromEmail} onChange={e => set('fromEmail', e.target.value)} /></div>
-              <div><L>Phone</L><input className="form-input text-sm" value={f.fromPhone} onChange={e => set('fromPhone', e.target.value)} /></div>
+              <div><L>Email</L><input className="form-input text-base sm:text-sm" value={f.fromEmail} onChange={e => set('fromEmail', e.target.value)} /></div>
+              <div><L>Phone</L><input className="form-input text-base sm:text-sm" value={f.fromPhone} onChange={e => set('fromPhone', e.target.value)} /></div>
             </div>
           </Section>
 
-          <div className="flex items-center gap-3 pt-1">
+            </div>
+          </details>
+
+          {saveError && <p role="alert" className="text-sm text-red-300">{saveError}</p>}
+          <div className="sticky bottom-0 z-20 flex items-center gap-3 border-t border-white/10 bg-navy-900 pt-3 lg:static lg:border-0" style={{ paddingBottom: "calc(0.75rem + env(safe-area-inset-bottom))" }}>
             <button onClick={save} disabled={saving} className="flex-1 inline-flex items-center justify-center gap-2 py-3 bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-white font-semibold rounded-lg cursor-pointer">
               {saving ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <Check className="w-4 h-4" />}
               {inv ? 'Save changes' : 'Create invoice'}
@@ -834,7 +862,7 @@ export default function InvoiceEditor({ initial, prefill }: { initial: Invoice |
             <div className="p-3 border-b border-white/5">
               <div className="relative">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
-                <input autoFocus className="form-input text-sm pl-9" placeholder="Search name, phone, address…" value={pickerSearch} onChange={e => setPickerSearch(e.target.value)} />
+                <input autoFocus className="form-input text-base sm:text-sm pl-9" placeholder="Search name, phone, address…" value={pickerSearch} onChange={e => setPickerSearch(e.target.value)} />
               </div>
             </div>
             <div className="overflow-y-auto p-2" style={{ paddingBottom: 'calc(0.5rem + env(safe-area-inset-bottom))' }}>

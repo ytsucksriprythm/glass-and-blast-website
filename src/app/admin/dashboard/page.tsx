@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { Suspense, useState, useEffect, useCallback, useRef } from 'react';
+import UnreadTexts from '@/components/admin/UnreadTexts';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
@@ -17,7 +18,9 @@ import {
 } from 'lucide-react';
 import Image from 'next/image';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import CreatedBy from '@/components/admin/CreatedBy';
+import { isInvoiceOverdue } from '@/lib/invoice';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { formatDuration } from '@/lib/analytics';
 import toast from 'react-hot-toast';
 import type { Booking, BookingStatus, RecurringJob, BookingGroup } from '@/lib/db';
@@ -418,72 +421,37 @@ type BookingRowActions = {
 
 // One booking, mobile-card layout (phone-first list + inside expanded groups).
 function BookingCard({ b, actions }: { b: Booking; actions: BookingRowActions }) {
-  const { guestName, onOpen, onInlineStatus, onTogglePaid, onManage, onRemove, onFlag } = actions;
+  const { guestName, onOpen, onRemove, onFlag } = actions;
   return (
-    <div
-      onClick={() => onOpen(b.id)}
-      className={`glass rounded-2xl border p-4 cursor-pointer hover:border-white/20 hover:bg-white/[0.03] active:bg-white/[0.05] transition-colors ${flagHighlightClass(b) || 'border-white/8'}`}
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="text-white font-semibold flex items-center gap-2 flex-wrap">
-            <CustomerName name={b.name} bookingId={b.id} recurringId={b.recurringId} />
-            {b.source === 'manual' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-400/15 text-violet-300 border border-violet-400/20">Added</span>}
-            {b.source === 'facebook-lead-ad' && <span className="text-[10px] px-1.5 py-0.5 rounded bg-sky-400/15 text-sky-300 border border-sky-400/20 inline-flex items-center gap-1"><Facebook className="w-2.5 h-2.5" />FB Lead</span>}
-            <AssignBadge guestId={b.assignedGuestId} name={guestName(b.assignedGuestId)} />
-            <CustomerPaidClaimBadge booking={b} />
-            <FlagBadge booking={b} />
-          </div>
-          <a href={`tel:${b.phone}`} onClick={e => e.stopPropagation()} className="text-sky-400 text-sm cursor-pointer">{b.phone}</a>
-          <div className="text-slate-500 text-xs mt-0.5">{serviceText(b.service)}{b.propertyType === 'commercial' ? ' · Commercial' : ''}</div>
-        </div>
-        {typeof b.quoteAmount === 'number' && b.quoteAmount > 0 && (
-          <div className="text-violet-300 font-bold text-lg whitespace-nowrap">{money(b.quoteAmount)}</div>
+    <article className={'glass rounded-2xl border p-4 ' + (flagHighlightClass(b) || 'border-white/10')}>
+      <button type="button" onClick={() => onOpen(b.id)} className="block w-full min-h-11 text-left">
+        <span className="block text-base font-semibold text-white">{b.name}</span>
+        <span className="block text-sm text-slate-300">{[b.suburb, serviceText(b.service)].filter(Boolean).join(' · ')}</span>
+        <span className="block text-sm text-slate-300">{b.scheduledAt ? scheduledLabel(b.scheduledAt) : new Date(b.createdAt).toLocaleDateString('en-AU')}</span>
+      </button>
+      <CreatedBy name={b.createdBy} />
+      <div className="flex flex-wrap gap-2 mt-2 text-xs">
+        <span className={'rounded px-2 py-1 badge-' + b.status}>{STATUS_CONFIG[b.status].label}</span>
+        {b.source === 'facebook-lead-ad' && <span className="text-sky-300">FB Lead</span>}
+        <AssignBadge guestId={b.assignedGuestId} name={guestName(b.assignedGuestId)} />
+        <CustomerPaidClaimBadge booking={b} />
+        <FlagBadge booking={b} />
+      </div>
+      <div className="mt-3 flex items-start justify-between gap-2 border-t border-white/10 pt-2">
+        {b.status === 'uncontacted' && b.phone ? (
+          <a href={'tel:' + b.phone} className="inline-flex min-h-11 items-center px-3 font-semibold text-sky-300">Call</a>
+        ) : b.scheduledAt && b.address && b.status === 'confirmed' ? (
+          <AddressLink address={[b.address, b.suburb].filter(Boolean).join(', ')} label="Directions" className="inline-flex min-h-11 shrink-0 items-center px-2 font-semibold text-sky-300" />
+        ) : (
+          <button onClick={() => onOpen(b.id)} className="min-h-11 px-3 font-semibold text-sky-300">Open booking</button>
         )}
+        <details className="text-right">
+          <summary className="min-h-11 cursor-pointer px-3 py-3 text-sm text-slate-200">Actions</summary>
+          <button onClick={() => onFlag(b)} className="block min-h-11 w-full px-3 text-sm">Flag booking</button>
+          <button onClick={() => onRemove(b.id)} className="block min-h-11 w-full px-3 text-sm text-red-300">Delete booking</button>
+        </details>
       </div>
-      {(b.preferredDate || b.suburb || b.address) && (
-        <div className="text-slate-500 text-xs mt-2">
-          {[b.preferredDate, b.preferredTime].filter(Boolean).join(' ')}
-          {(b.preferredDate || b.preferredTime) && (b.suburb || b.address) ? ' · ' : ''}
-          {b.suburb}{b.address ? `, ${b.address}` : ''}
-        </div>
-      )}
-      {b.adminNotes && (
-        <div className="text-slate-400 text-xs mt-2 flex items-start gap-1.5">
-          <StickyNote className="w-3 h-3 mt-0.5 flex-shrink-0 text-slate-500" /> {b.adminNotes}
-        </div>
-      )}
-      {/* Controls strip — dead zone: stopPropagation so taps here (and in the
-          gaps between buttons) never open the booking, only the buttons act. */}
-      <div className="mt-4 pt-3 border-t border-white/5 space-y-2.5" onClick={e => e.stopPropagation()}>
-        <select
-          value={b.status}
-          onChange={e => onInlineStatus(b, e.target.value as BookingStatus)}
-          className={`w-full text-sm font-semibold rounded-lg px-3 py-2.5 cursor-pointer bg-transparent border focus:outline-none badge-${b.status}`}
-        >
-          {STATUS_KEYS.map(s => <option key={s} value={s} className="bg-navy-800 text-white">{STATUS_CONFIG[s].label}</option>)}
-        </select>
-        <div className="flex items-center gap-3">
-          <button
-            onClick={() => onTogglePaid(b)}
-            title={b.paid ? 'Mark unpaid' : 'Mark paid'}
-            className={`flex-1 px-3 py-2.5 rounded-lg border text-sm font-semibold transition-all cursor-pointer ${b.paid ? 'bg-emerald-500/20 border-emerald-400/40 text-emerald-300' : 'bg-red-500/15 border-red-400/40 text-red-300'}`}
-          >
-            {b.paid ? '✓ Paid' : 'Not Paid'}
-          </button>
-          <button onClick={() => onManage(b)} className="p-2.5 rounded-lg glass border border-white/10 text-sky-400 cursor-pointer" title="Manage / notes / quote">
-            <Edit3 className="w-4 h-4" />
-          </button>
-          <Link href={`/admin/calendar?schedule=${b.id}`} className={`p-2.5 rounded-lg glass border border-white/10 cursor-pointer ${b.scheduledAt ? 'text-emerald-300' : 'text-sky-300'}`} title={b.scheduledAt ? `Scheduled: ${scheduledLabel(b.scheduledAt)}` : 'Add to calendar'}>
-            <CalendarClock className="w-4 h-4" />
-          </Link>
-          <FlagButton booking={b} onClick={() => onFlag(b)} />
-          <button onClick={() => onRemove(b.id)} className="p-2.5 rounded-lg glass border border-white/10 text-red-400 cursor-pointer" title="Delete">
-            <Trash2 className="w-4 h-4" />
-          </button>
-        </div>
-      </div>
-    </div>
+    </article>
   );
 }
 
@@ -502,6 +470,7 @@ function BookingRow({ b, actions }: { b: Booking; actions: BookingRowActions }) 
           <CustomerPaidClaimBadge booking={b} />
           <FlagBadge booking={b} />
         </div>
+        <CreatedBy name={b.createdBy} />
         <div className="text-slate-500 text-xs">{b.phone}</div>
         <div className="text-slate-600 text-xs truncate">{b.suburb}{b.address ? ` · ${b.address}` : ''}</div>
       </div>
@@ -903,7 +872,74 @@ type TabKey = 'overview' | 'bookings' | 'business' | 'site';
 
 // ─── Main Dashboard ─────────────────────────────────────────────────────
 
+function needsJobDate(booking: Booking, acceptedIds: string[]) {
+  return acceptedIds.includes(booking.id) && (booking.status === "quoted" || booking.status === "quote-booked" || (booking.status === "confirmed" && !booking.scheduledAt));
+}
+
+function TodayWork({ bookings, invoices, newLeads, acceptedIds, loading, onOpen }: {
+  bookings: Booking[];
+  invoices: Invoice[];
+  newLeads: number;
+  acceptedIds: string[];
+  loading: boolean;
+  onOpen: (id: string) => void;
+}) {
+  const now = new Date();
+  const day = (date: Date) => date.toLocaleDateString('en-AU', { timeZone: 'Australia/Sydney' });
+  const nowMs = now.getTime();
+  const appointments = bookings.filter(b => b.scheduledAt &&
+    !['completed', 'cancelled', 'cold'].includes(b.status) && day(new Date(b.scheduledAt)) === day(now))
+    .sort((a, b) => {
+      const first = Date.parse(a.scheduledAt!);
+      const second = Date.parse(b.scheduledAt!);
+      return Number(first < nowMs) - Number(second < nowMs) || first - second;
+    });
+  const toSchedule = bookings.filter(b => needsJobDate(b, acceptedIds));
+  const overdue = invoices.filter(isInvoiceOverdue).length;
+  const linked = new Set(invoices.filter(i => i.status !== 'cancelled').flatMap(i => [...(i.bookingIds ?? []), i.bookingId]));
+  const toInvoice = bookings.filter(b => b.status === 'completed' && !b.paid && !linked.has(b.id));
+
+  return (
+    <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1.7fr)_minmax(18rem,1fr)]">
+      <div className="grid gap-4">
+      <UnreadTexts />
+      <section aria-labelledby="today-appointments" className="crm-panel p-4 sm:p-5">
+        <div className="flex items-center justify-between">
+          <h2 id="today-appointments" className="text-lg font-semibold text-white">Today’s appointments</h2>
+          <Link href="/admin/calendar?view=agenda" className="inline-flex min-h-11 items-center text-sky-300">Calendar</Link>
+        </div>
+        {loading && appointments.length === 0 && <p role="status" className="text-slate-300">Loading appointments…</p>}
+        {!loading && appointments.length === 0 && <p className="rounded-xl border border-white/10 p-4 text-slate-300">No appointments left on today’s schedule.</p>}
+        <div className="space-y-2">
+          {appointments.map(b => (
+            <div key={b.id} className="flex items-center gap-3 rounded-lg border border-white/10 bg-navy-900/55 p-3">
+              <button onClick={() => onOpen(b.id)} className="min-h-11 min-w-0 flex-1 text-left">
+                <span className="block text-sm text-sky-300">{new Date(b.scheduledAt!).toLocaleTimeString('en-AU', { timeZone: 'Australia/Sydney', hour: 'numeric', minute: '2-digit' })} · {['uncontacted', 'contacted', 'quote-booked'].includes(b.status) ? 'Quote visit' : 'Job'}</span>
+                <span className="block font-semibold text-white">{b.name}{b.suburb ? ' · ' + b.suburb : ''}</span>
+              </button>
+              {b.address && <AddressLink address={[b.address, b.suburb].filter(Boolean).join(', ')} label="Directions" className="inline-flex min-h-11 shrink-0 items-center px-2 font-semibold text-sky-300" />}
+            </div>
+          ))}
+        </div>
+      </section>
+      </div>
+      <section aria-labelledby="today-attention" className="crm-panel p-4 sm:p-5">
+        <h2 id="today-attention" className="mb-2 text-lg font-semibold text-white">Needs attention</h2>
+        <Link href="/admin/dashboard?tab=bookings&status=uncontacted" className="crm-count-row flex min-h-12 items-center justify-between text-sky-300">New leads <span>{newLeads}</span></Link>
+        <Link href="/admin/dashboard?tab=bookings&attention=invoice" className="crm-count-row flex min-h-12 items-center justify-between text-sky-300">Ready to invoice <span>{toInvoice.length}</span></Link>
+        <Link href="/admin/dashboard?tab=bookings&attention=schedule" className="crm-count-row flex min-h-12 items-center justify-between text-sky-300">Accepted quotes to schedule <span>{toSchedule.length}</span></Link>
+        {overdue > 0 && <Link href="/admin/invoices?filter=overdue" className="crm-count-row flex min-h-12 items-center justify-between text-amber-300">Overdue invoices <span>{overdue}</span></Link>}
+      </section>
+    </div>
+  );
+}
+
 export default function Dashboard() {
+  return <Suspense fallback={<div className="min-h-[100svh] bg-navy-900" />}><DashboardContent /></Suspense>;
+}
+
+function DashboardContent() {
+  const routeQuery = useSearchParams();
   const router = useRouter();
   const [stats, setStats] = useState<Stats | null>(null);
   const [bookings, setBookings] = useState<Booking[]>([]);
@@ -915,11 +951,11 @@ export default function Dashboard() {
   // lands on the same tab it was opened from, not the default. Runs before data
   // loads, so the swap happens behind the loading skeletons — no visible flash.
   useEffect(() => {
-    const t = new URLSearchParams(window.location.search).get('tab');
+    const t = routeQuery.get('tab');
     if (t === 'bookings' || t === 'business' || t === 'site' || t === 'overview') {
       setActiveTab(t);
-    }
-  }, []);
+    } else setActiveTab('overview');
+  }, [routeQuery]);
 
   // Stats for the dedicated tabs (lazy-loaded when first opened)
   const [bizStats, setBizStats] = useState<BusinessStats | null>(null);
@@ -961,9 +997,9 @@ export default function Dashboard() {
     } catch { /* indicator just won't show */ }
   }, []);
   useEffect(() => { loadInvoices(); }, [loadInvoices]);
-  const invoicedBookingIds = new Set(invoices.flatMap(i => i.bookingIds ?? []));
+  const invoicedBookingIds = new Set(invoices.filter(i => i.status !== "cancelled").flatMap(i => [...(i.bookingIds ?? []), i.bookingId]));
   // First unpaid invoice linked to a booking — that's the one "mark paid" should settle.
-  const unpaidInvoiceFor = (bookingId: string) => invoices.find(i => (i.bookingIds ?? []).includes(bookingId) && i.status !== 'paid') ?? null;
+  const unpaidInvoiceFor = (bookingId: string) => invoices.find(i => ((i.bookingIds ?? []).includes(bookingId) || i.bookingId === bookingId) && i.status !== "paid" && i.status !== "cancelled") ?? null;
 
   // Filters — multi-select checkboxes now, so these are arrays. Empty = "all".
   // 'facebook-lead-ad' is a synthetic status option that actually filters by
@@ -976,7 +1012,7 @@ export default function Dashboard() {
   // already-fetched `bookings` — see viewBookings below — so it can't starve
   // Overview's widgets (they read the same shared, unscoped fetch).
   const [bookingsView, setBookingsView] = useState<'leads' | 'pipeline'>('leads');
-  const switchBookingsView = (v: 'leads' | 'pipeline') => { setBookingsView(v); setStatusFilter([]); };
+  const switchBookingsView = (v: 'leads' | 'pipeline') => { setBookingsView(v); setStatusFilter([]); setAttention(""); };
   const [showPaid, setShowPaid] = useState(true);
   // Default to the manual drag order, not createdAt — a booking's sortOrder
   // is null until someone drags it, and the API's sortOrder sort floats
@@ -986,6 +1022,44 @@ export default function Dashboard() {
   // — new/unset bookings (including Facebook leads) still land above it.
   const [sortField, setSortField] = useState('sortOrder');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
+  const [query, setQuery] = useState('');
+  const [listReady, setListReady] = useState(false);
+  const [attention, setAttention] = useState('');
+  const [acceptedIds, setAcceptedIds] = useState<string[]>([]);
+  const restoreScroll = useRef<number | null>(null);
+  useEffect(() => {
+    const params = routeQuery;
+    const search = params.get('search') ?? '';
+    setSearch(search);
+    setQuery(search);
+    setStatusFilter(params.get('status')?.split(',').filter(Boolean) ?? []);
+    setServiceFilter(params.get('service')?.split(',').filter(Boolean) ?? []);
+    setBookingsView(params.get('view') === 'pipeline' || params.has('attention') ? 'pipeline' : 'leads');
+    setSortField(params.get('sort') ?? 'sortOrder');
+    setSortOrder(params.get('order') === 'desc' ? 'desc' : 'asc');
+    setShowPaid(params.get('paid') !== 'hide');
+    const filter = params.get('attention');
+    setAttention(filter === 'invoice' || filter === 'schedule' ? filter : '');
+    if (params.has('scroll')) restoreScroll.current = Number(params.get('scroll'));
+    setListReady(true);
+  }, [routeQuery]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setQuery(search), 300);
+    return () => window.clearTimeout(timer);
+  }, [search]);
+  useEffect(() => {
+    if (activeTab !== 'overview' && attention !== 'schedule') return;
+    const controller = new AbortController();
+    fetch('/api/admin/quotes?view=accepted-bookings', { signal: controller.signal })
+      .then(async res => {
+        if (!res.ok) return;
+        const ids: string[] = await res.json();
+        if (!controller.signal.aborted) setAcceptedIds(ids);
+      })
+      .catch(() => {});
+    return () => controller.abort();
+  }, [activeTab, attention]);
+
 
   // Modals
   const [manage, setManage] = useState<Booking | null>(null);
@@ -1045,7 +1119,7 @@ export default function Dashboard() {
       if (!res.ok) throw new Error();
       toast.success(msg);
       clearSel();
-      await fetchData();
+      await Promise.all([fetchData(), fetchStats()]);
       await loadGroups();
     } catch { toast.error('Bulk action failed'); }
     finally { setBulkBusy(false); }
@@ -1061,7 +1135,7 @@ export default function Dashboard() {
       if (!res.ok) throw new Error();
       toast.success(`Group "${title}" created`);
       setShowGroupModal(false); clearSel();
-      await Promise.all([fetchData(), loadGroups()]);
+      await Promise.all([fetchData(), fetchStats(), loadGroups()]);
     } catch { toast.error('Could not create group'); }
     finally { setBulkBusy(false); }
   };
@@ -1076,21 +1150,53 @@ export default function Dashboard() {
     } catch { toast.error('Delete failed'); }
   };
 
-  const fetchData = useCallback(async () => {
-    setLoading(true);
-    try {
-      const [sRes, bRes] = await Promise.all([
-        fetch('/api/admin/bookings?type=stats'),
-        fetch(`/api/admin/bookings?status=${statusFilter.join(',') || 'all'}&service=${serviceFilter.join(',') || 'all'}&sort=${sortField}&order=${sortOrder}&search=${encodeURIComponent(search)}`),
-      ]);
-      if (sRes.status === 401 || bRes.status === 401) { router.push('/admin'); return; }
-      setStats(await sRes.json());
-      setBookings(await bRes.json());
-    } catch { toast.error('Failed to load data'); }
-    finally { setLoading(false); }
-  }, [statusFilter, serviceFilter, sortField, sortOrder, search, router]);
 
-  useEffect(() => { fetchData(); }, [fetchData]);
+  const fetchStats = useCallback(async () => {
+    try {
+      const res = await fetch('/api/admin/bookings?type=stats');
+      if (res.status === 401) router.push('/admin');
+      if (res.ok) setStats(await res.json());
+    } catch { toast.error('Could not load summary'); }
+  }, [router]);
+
+  const fetchData = useCallback(async (signal?: AbortSignal) => {
+    const params = new URLSearchParams();
+    if (activeTab === 'bookings') {
+      params.set('status', statusFilter.join(',') || 'all');
+      params.set('service', serviceFilter.join(',') || 'all');
+      params.set('sort', sortField);
+      params.set('order', sortOrder);
+      params.set('search', query);
+    }
+    try {
+      const res = await fetch('/api/admin/bookings?' + params, { signal });
+      if (res.status === 401) router.push('/admin');
+      if (!res.ok) throw new Error();
+      const rows: Booking[] = await res.json();
+      if (!signal?.aborted) setBookings(rows);
+    } catch {
+      if (!signal?.aborted) toast.error('Failed to load bookings');
+    } finally {
+      if (!signal?.aborted) setLoading(false);
+    }
+  }, [activeTab, statusFilter, serviceFilter, sortField, sortOrder, query, router]);
+
+  useEffect(() => { void fetchStats(); }, [fetchStats]);
+  useEffect(() => {
+    if (!listReady || activeTab === "business" || activeTab === "site") return;
+    const controller = new AbortController();
+    void fetchData(controller.signal);
+    return () => controller.abort();
+  }, [activeTab, fetchData, listReady]);
+  useEffect(() => {
+    if (loading || restoreScroll.current === null) return;
+    const position = restoreScroll.current;
+    const frame = requestAnimationFrame(() => {
+      window.scrollTo(0, position);
+      restoreScroll.current = null;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [loading, bookings, routeQuery]);
 
   // Facebook lead sync: pulls in anything new from the Google Sheet (see
   // /api/cron/meta-leads-sheet), then reloads bookings. Dedup means existing
@@ -1109,8 +1215,8 @@ export default function Dashboard() {
       }
     } catch { /* best-effort — bookings still refresh below */ }
     finally { setFbSyncing(false); }
-    await fetchData();
-  }, [fetchData]);
+    await Promise.all([fetchData(), fetchStats()]);
+  }, [fetchData, fetchStats]);
 
   // Background check while the Bookings tab is open: quietly pulls in new
   // Facebook leads and re-fetches the list, but only swaps it in when a booking
@@ -1118,36 +1224,44 @@ export default function Dashboard() {
   // position, open menus and selections stay put; nothing changes otherwise.
   const bookingsRef = useRef<Booking[]>([]);
   useEffect(() => { bookingsRef.current = bookings; }, [bookings]);
-  const backgroundCheck = useCallback(async () => {
-    if (document.hidden) return;
+  const backgroundCheck = useCallback(async (signal: AbortSignal) => {
+    if (document.hidden || signal.aborted) return;
     try {
-      const fb = await fetch('/api/cron/meta-leads-sheet');
+      const fb = await fetch('/api/cron/meta-leads-sheet', { signal });
       if (fb.ok) {
         const data = await fb.json();
         if (data.imported > 0) toast.success(`${data.imported} new Facebook lead${data.imported !== 1 ? 's' : ''} imported`);
       }
     } catch { /* best-effort */ }
+    if (signal.aborted) return;
     try {
-      const bRes = await fetch(`/api/admin/bookings?status=${statusFilter.join(',') || 'all'}&service=${serviceFilter.join(',') || 'all'}&sort=${sortField}&order=${sortOrder}&search=${encodeURIComponent(search)}`);
+      const bRes = await fetch(`/api/admin/bookings?status=${statusFilter.join(',') || 'all'}&service=${serviceFilter.join(',') || 'all'}&sort=${sortField}&order=${sortOrder}&search=${encodeURIComponent(query)}`, { signal });
       if (!bRes.ok) return;
       const fresh: Booking[] = await bRes.json();
       const known = new Set(bookingsRef.current.map(b => b.id));
       const added = fresh.filter(b => !known.has(b.id));
-      if (added.length === 0) return;
+      if (signal.aborted || added.length === 0) return;
       setBookings(fresh);
-      const sRes = await fetch('/api/admin/bookings?type=stats');
+      const sRes = await fetch('/api/admin/bookings?type=stats', { signal });
       if (sRes.ok) setStats(await sRes.json());
       toast.success(added.length === 1 ? `New booking: ${added[0].name}` : `${added.length} new bookings`);
     } catch { /* try again next tick */ }
-  }, [statusFilter, serviceFilter, sortField, sortOrder, search]);
+  }, [statusFilter, serviceFilter, sortField, sortOrder, query]);
 
   useEffect(() => {
     if (activeTab !== 'bookings') return;
-    const id = setInterval(() => { backgroundCheck(); }, 60_000);
+    const controller = new AbortController();
+    let checking = false;
+    const check = async () => {
+      if (checking) return;
+      checking = true;
+      try { await backgroundCheck(controller.signal); } finally { checking = false; }
+    };
+    const id = setInterval(() => { void check(); }, 60_000);
     // Coming back to the app (phone unlocked, tab switched back) — check straight away.
-    const onVisible = () => { if (!document.hidden) backgroundCheck(); };
+    const onVisible = () => { if (!document.hidden) void check(); };
     document.addEventListener('visibilitychange', onVisible);
-    return () => { clearInterval(id); document.removeEventListener('visibilitychange', onVisible); };
+    return () => { controller.abort(); clearInterval(id); document.removeEventListener('visibilitychange', onVisible); };
   }, [activeTab, backgroundCheck]);
 
   const fetchBusiness = useCallback(async () => {
@@ -1183,7 +1297,20 @@ export default function Dashboard() {
 
   // Tap a booking (card or row) to see its full read-only detail page. Pass the
   // current tab as ?from=… so the detail page's Back button returns here exactly.
-  const openBooking = (id: string) => router.push(`/admin/bookings/${id}?from=${encodeURIComponent(`/admin/dashboard?tab=${activeTab}`)}`);
+const openBooking = (id: string) => {
+    const params = new URLSearchParams({ tab: activeTab, scroll: String(window.scrollY) });
+    if (activeTab === 'bookings') {
+      if (search) params.set('search', search);
+      if (statusFilter.length) params.set('status', statusFilter.join(','));
+      if (serviceFilter.length) params.set('service', serviceFilter.join(','));
+      params.set('view', bookingsView);
+      params.set('sort', sortField);
+      params.set('order', sortOrder);
+      if (!showPaid) params.set('paid', 'hide');
+      if (attention) params.set('attention', attention);
+    }
+    router.push('/admin/bookings/' + id + '?from=' + encodeURIComponent('/admin/dashboard?' + params));
+  };
 
   // Quick inline status change. "Quoted" opens the manage modal to capture the amount.
   const onInlineStatus = (b: Booking, val: BookingStatus) => {
@@ -1213,7 +1340,7 @@ export default function Dashboard() {
       if (!res.ok) throw new Error();
       toast.success(`Marked paid: ${PAYMENT_METHOD_LABEL[method].toLowerCase()}`);
       setPayInvoicePrompt(null);
-      await Promise.all([fetchData(), loadInvoices()]);
+      await Promise.all([fetchData(), fetchStats(), loadInvoices()]);
     } catch { toast.error('Could not mark paid'); }
   };
 
@@ -1224,7 +1351,7 @@ export default function Dashboard() {
       });
       if (!res.ok) throw new Error();
       toast.success('Saved');
-      await fetchData();
+      await Promise.all([fetchData(), fetchStats()]);
     } catch { toast.error('Save failed'); }
   };
 
@@ -1241,10 +1368,11 @@ export default function Dashboard() {
     const target = bookings.find(x => x.id === id);
     if (!confirm(`Delete the booking for ${target?.name ?? 'this customer'}? It's kept in Settings -> Deleted bookings for 60 days, then gone for good.`)) return;
     try {
-      await fetch(`/api/admin/bookings/${id}`, { method: 'DELETE' });
+      const response = await fetch('/api/admin/bookings/' + id, { method: 'DELETE' });
+      if (!response.ok) throw new Error();
       setBookings(prev => prev.filter(b => b.id !== id));
-      toast.success('Booking deleted — restorable from Settings for 60 days');
-      fetchData();
+      toast.success('Booking deleted. Restore it under Settings → Deleted bookings.');
+      await Promise.all([fetchData(), fetchStats()]);
     } catch { toast.error('Delete failed'); }
   };
 
@@ -1298,7 +1426,11 @@ export default function Dashboard() {
   );
 
 
-  const navItems = adminNavItems({ onTab: setActiveTab, pending: stats?.uncontacted ?? 0 });
+  const navItems = adminNavItems({ onTab: tab => {
+    const href = '/admin/dashboard?tab=' + tab;
+    if (window.location.pathname + window.location.search !== href) router.push(href);
+    else setActiveTab(tab);
+  }, pending: stats?.uncontacted ?? 0 });
 
   // Grouped bookings collapse into one row instead of showing as separate
   // lines — fewer rows to scan. The group sits inline with everything else,
@@ -1310,7 +1442,7 @@ export default function Dashboard() {
   // (see bookingsView above) — never touches `bookings` itself, so Overview's
   // widgets (which read the same state) keep seeing everything.
   const viewStatuses = bookingsView === 'leads' ? LEADS_STATUSES : PIPELINE_STATUSES;
-  const viewBookings = visibleBookings.filter(b => viewStatuses.includes(b.status));
+  const viewBookings = visibleBookings.filter(b => viewStatuses.includes(b.status) && (!attention || (attention === "invoice" ? b.status === "completed" && !b.paid && !invoicedBookingIds.has(b.id) : needsJobDate(b, acceptedIds))));
   // Counts for the Leads/Pipeline toggle badges — always both, regardless of
   // which view is currently active, so the count on the OTHER tab is visible too.
   const leadsCount = visibleBookings.filter(b => LEADS_STATUSES.includes(b.status)).length;
@@ -1381,10 +1513,10 @@ export default function Dashboard() {
 
       {/* Main */}
       <div className="flex-1 flex flex-col min-w-0">
-        <header className="sticky top-0 z-30 border-b border-white/5 bg-navy-800/80 backdrop-blur px-4 sm:px-6 pb-3 flex items-center justify-between" style={{ paddingTop: 'calc(env(safe-area-inset-top) + 0.85rem)' }}>
+        <header className="crm-topbar sticky top-0 z-30 border-b border-white/5 bg-navy-800/80 backdrop-blur px-4 sm:px-6 pb-3 flex items-center justify-between" style={{ paddingTop: 'calc(env(safe-area-inset-top) + 0.85rem)' }}>
           <div>
             <h1 className="font-display text-lg sm:text-xl font-bold text-white">
-              {activeTab === 'overview' ? 'Dashboard Overview'
+              {activeTab === 'overview' ? 'Today'
                 : activeTab === 'bookings' ? 'Bookings & Quotes'
                 : activeTab === 'business' ? 'Business Statistics'
                 : 'Site Statistics'}
@@ -1415,7 +1547,7 @@ export default function Dashboard() {
             <button onClick={() => { setActiveTab('bookings'); setShowAdd(true); }} className="hidden sm:inline-flex items-center gap-2 px-4 py-2 bg-sky-500 hover:bg-sky-400 text-white text-sm font-semibold rounded-xl transition-all cursor-pointer">
               <Plus className="w-4 h-4" /> Add Booking
             </button>
-            <button onClick={() => { if (activeTab === 'business') fetchBusiness(); else if (activeTab === 'site') fetchSite(); else if (activeTab === 'bookings') syncFacebookLeadsAndRefresh(); else fetchData(); }} title={activeTab === 'bookings' ? 'Refresh — also checks for new Facebook leads' : 'Refresh'} className="p-2 rounded-xl glass border border-white/10 text-slate-400 hover:text-white transition-colors cursor-pointer">
+            <button onClick={() => { if (activeTab === 'business') fetchBusiness(); else if (activeTab === 'site') fetchSite(); else if (activeTab === 'bookings') syncFacebookLeadsAndRefresh(); else void Promise.all([fetchData(), fetchStats()]); }} title={activeTab === 'bookings' ? 'Refresh — also checks for new Facebook leads' : 'Refresh'} className="p-2 rounded-xl glass border border-white/10 text-slate-400 hover:text-white transition-colors cursor-pointer">
               <RefreshCw className={`w-4 h-4 ${(loading || bizLoading || siteLoading || fbSyncing) ? 'animate-spin' : ''}`} />
             </button>
             <button onClick={logout} className="lg:hidden p-2 rounded-xl glass border border-white/10 text-red-400 cursor-pointer">
@@ -1457,6 +1589,8 @@ export default function Dashboard() {
             {/* ── OVERVIEW ─────────────────────────────────────────────── */}
             {activeTab === 'overview' && (
               <motion.div key="overview" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-6">
+                <TodayWork bookings={bookings} invoices={invoices} newLeads={stats?.uncontacted ?? 0} acceptedIds={acceptedIds} loading={loading} onOpen={openBooking} />
+                <div className="hidden lg:block space-y-5">
                 {loading ? (
                   <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
                     {Array.from({ length: 5 }).map((_, i) => <div key={i} className="glass rounded-2xl border border-white/8 p-6 h-32 animate-pulse" />)}
@@ -1556,33 +1690,19 @@ export default function Dashboard() {
                   );
                 })()}
 
-                {stats && (
-                  <div className="glass rounded-2xl border border-white/8 p-6">
-                    <div>
-                      <h3 className="font-display font-semibold text-white mb-6">Leads by Month</h3>
-                      <ResponsiveContainer width="100%" height={220}>
-                        <BarChart data={stats.byMonth} margin={{ top: 0, right: 0, left: -20, bottom: 0 }}>
-                          <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
-                          <XAxis dataKey="month" tick={{ fill: '#64748b', fontSize: 12 }} axisLine={false} tickLine={false} />
-                          <YAxis tick={{ fill: '#64748b', fontSize: 12 }} axisLine={false} tickLine={false} allowDecimals={false} />
-                          <Tooltip contentStyle={{ background: '#0F2035', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 12, color: '#fff' }} cursor={{ fill: 'rgba(56,189,248,0.05)' }} />
-                          <Bar dataKey="count" name="Leads" fill="#38BDF8" radius={[6, 6, 0, 0]} maxBarSize={40} />
-                        </BarChart>
-                      </ResponsiveContainer>
-                    </div>
-                  </div>
-                )}
+               </div>
               </motion.div>
             )}
 
             {/* ── BOOKINGS ─────────────────────────────────────────────── */}
             {activeTab === 'bookings' && (
               <motion.div key="bookings" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-4">
+                {attention && <button className="min-h-11 px-3 text-sky-300" onClick={() => setAttention("")}>{attention === "invoice" ? "Ready to invoice" : "Accepted quotes to schedule"} · Clear filter</button>}
                 {/* Filters + add */}
                 <div className="glass rounded-2xl border border-white/8 p-3 sm:p-4 flex flex-col sm:flex-row gap-2 sm:gap-3">
                   <div className="relative flex-1">
                     <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
-                    <input className="form-input pl-9 py-2.5 text-sm" placeholder="Search name, phone, address..." value={search} onChange={e => setSearch(e.target.value)} />
+                    <input className="form-input pl-9 py-2.5 text-base" aria-label="Search bookings" placeholder="Search name, phone, address..." value={search} onChange={e => setSearch(e.target.value)} />
                   </div>
                   <div className="grid grid-cols-2 sm:flex gap-2">
                     <MultiSelectDropdown
@@ -1754,6 +1874,23 @@ export default function Dashboard() {
             {/* ── BUSINESS STATS ──────────────────────────────────────── */}
             {activeTab === 'business' && (
               <motion.div key="business" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-6">
+                {stats && (
+                  <div className="glass rounded-2xl border border-white/8 p-6">
+                    <div>
+                      <h3 className="font-display font-semibold text-white mb-6">Leads by Month</h3>
+                      <ResponsiveContainer width="100%" height={220}>
+                        <BarChart data={stats.byMonth} margin={{ top: 0, right: 0, left: -20, bottom: 0 }}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+                          <XAxis dataKey="month" tick={{ fill: '#64748b', fontSize: 12 }} axisLine={false} tickLine={false} />
+                          <YAxis tick={{ fill: '#64748b', fontSize: 12 }} axisLine={false} tickLine={false} allowDecimals={false} />
+                          <Tooltip contentStyle={{ background: 'var(--crm-panel)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 12, color: '#fff' }} cursor={{ fill: 'rgba(56,189,248,0.05)' }} />
+                          <Bar dataKey="count" name="Leads" fill="#38BDF8" radius={[6, 6, 0, 0]} maxBarSize={40} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+                )}
+
                 {bizLoading || !bizStats ? (
                   <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
                     {Array.from({ length: 4 }).map((_, i) => <div key={i} className="glass rounded-2xl border border-white/8 p-6 h-32 animate-pulse" />)}
@@ -1792,7 +1929,7 @@ export default function Dashboard() {
                             <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
                             <XAxis dataKey="month" tick={{ fill: '#64748b', fontSize: 12 }} axisLine={false} tickLine={false} />
                             <YAxis tick={{ fill: '#64748b', fontSize: 12 }} axisLine={false} tickLine={false} />
-                            <Tooltip contentStyle={{ background: '#0F2035', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 12, color: '#fff' }} cursor={{ fill: 'rgba(56,189,248,0.05)' }} formatter={(v: number) => money(v)} />
+                            <Tooltip contentStyle={{ background: 'var(--crm-panel)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 12, color: '#fff' }} cursor={{ fill: 'rgba(56,189,248,0.05)' }} formatter={(v: number) => money(v)} />
                             <Bar dataKey="revenue" name="Revenue" fill="#34D399" radius={[6, 6, 0, 0]} maxBarSize={48} />
                           </BarChart>
                         </ResponsiveContainer>
@@ -1907,7 +2044,7 @@ export default function Dashboard() {
                           <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
                           <XAxis dataKey="day" tick={{ fill: '#64748b', fontSize: 11 }} axisLine={false} tickLine={false} />
                           <YAxis tick={{ fill: '#64748b', fontSize: 12 }} axisLine={false} tickLine={false} allowDecimals={false} />
-                          <Tooltip contentStyle={{ background: '#0F2035', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 12, color: '#fff' }} />
+                          <Tooltip contentStyle={{ background: 'var(--crm-panel)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 12, color: '#fff' }} />
                           <Line type="monotone" dataKey="views" name="Views" stroke="#38BDF8" strokeWidth={2.5} dot={{ r: 3, fill: '#38BDF8' }} activeDot={{ r: 5 }} />
                         </LineChart>
                       </ResponsiveContainer>
@@ -2045,7 +2182,7 @@ export default function Dashboard() {
         {showAdd && (
           <AddModal
             onClose={() => setShowAdd(false)}
-            onSaved={() => { setShowAdd(false); fetchData(); }}
+            onSaved={() => { setShowAdd(false); void Promise.all([fetchData(), fetchStats()]); }}
           />
         )}
         {showGroupModal && (

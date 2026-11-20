@@ -1,3 +1,6 @@
+import type { SmsMessage, SmsPreference } from './smsTypes';
+import { callState, type CallState } from './callingTypes';
+import type { StaffProfile } from './staff';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
@@ -39,6 +42,9 @@ export type PropertyType = 'residential' | 'commercial';
 export type BookingSource = 'website' | 'manual' | 'facebook-lead-ad';
 
 export interface Booking {
+  quoteStaff?: StaffProfile;
+  callingManaged?: boolean;
+  createdBy?: string | null;
   id: string;
   name: string;
   email: string;
@@ -170,6 +176,7 @@ export type IntervalUnit = 'weeks' | 'months' | 'years';
 // the cron, "New job" on the profile, or linked when the profile was created)
 // carries recurringId = this id, which is what ties their history together.
 export interface RecurringJob {
+  createdBy?: string | null;
   id: string;         // RJ-timestamp
   name: string;
   phone: string;
@@ -275,7 +282,11 @@ function withTimeout<T>(p: Promise<T>, ms = 8000): Promise<T> {
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 function rowToBooking(r: any): Booking {
+  const calling = callState(r.call_state);
   return {
+    createdBy: r.created_by ?? null,
+    quoteStaff: calling.quoteStaff,
+    callingManaged: isCallingManaged(calling),
     id: r.id,
     name: r.name,
     email: r.email,
@@ -365,6 +376,7 @@ export async function ensureSchema(): Promise<void> {
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS assigned_guest_id TEXT`;
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS assigned_at TIMESTAMPTZ`;
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMPTZ`;
+      await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS call_state JSONB`;
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS scheduled_end TIMESTAMPTZ`;
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS recurring_id TEXT`;
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS lead_source TEXT`;
@@ -382,6 +394,7 @@ export async function ensureSchema(): Promise<void> {
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS flagged_at TIMESTAMPTZ`;
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS flag_note TEXT`;
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS attribution_source TEXT`;
+      await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS created_by TEXT`;
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS external_lead_id TEXT`;
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ`;
       // Backfill customer-link tokens for pre-existing rows.
@@ -486,6 +499,7 @@ export async function ensureSchema(): Promise<void> {
       `;
       // Weekly/fortnightly/custom cadences + per-visit price, added after the
       // original monthly/quarterly/biannual-only design.
+      await sql`ALTER TABLE recurring_jobs ADD COLUMN IF NOT EXISTS created_by TEXT`;
       await sql`ALTER TABLE recurring_jobs ADD COLUMN IF NOT EXISTS custom_interval_weeks INTEGER`;
       await sql`ALTER TABLE recurring_jobs ADD COLUMN IF NOT EXISTS visit_price NUMERIC`;
       // Billing cycle (how often invoiced) replaces the old flat $-off-per-clean
@@ -549,6 +563,7 @@ export async function ensureSchema(): Promise<void> {
         )
       `;
       // Backfill view-tracking columns on pre-existing invoice tables
+      await sql`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS created_by TEXT`;
       await sql`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS view_count INTEGER NOT NULL DEFAULT 0`;
       await sql`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS first_viewed_at TIMESTAMPTZ`;
       await sql`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS last_viewed_at TIMESTAMPTZ`;
@@ -605,6 +620,7 @@ export async function ensureSchema(): Promise<void> {
       // Itemised pricing + scope/assumptions/payment terms, added after the
       // initial lump-sum-only design (see quote.ts) — ALTER so existing rows
       // (and existing prod tables) pick these up without a data migration.
+      await sql`ALTER TABLE quotes ADD COLUMN IF NOT EXISTS created_by TEXT`;
       await sql`ALTER TABLE quotes ADD COLUMN IF NOT EXISTS item_amounts TEXT NOT NULL DEFAULT '{}'`;
       await sql`ALTER TABLE quotes ADD COLUMN IF NOT EXISTS scope TEXT NOT NULL DEFAULT ''`;
       await sql`ALTER TABLE quotes ADD COLUMN IF NOT EXISTS assumptions TEXT NOT NULL DEFAULT ''`;
@@ -645,6 +661,15 @@ export async function ensureSchema(): Promise<void> {
         `;
       }
       // Selectable business-info ("from") profiles for invoices — same idea as
+      await sql`CREATE TABLE IF NOT EXISTS sms_messages (
+        id TEXT PRIMARY KEY, phone TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL, data JSONB NOT NULL
+      )`;
+      await sql`CREATE INDEX IF NOT EXISTS sms_messages_phone_idx ON sms_messages (phone, created_at DESC)`;
+      await sql`CREATE UNIQUE INDEX IF NOT EXISTS sms_messages_sid_idx ON sms_messages ((data->>'sid')) WHERE data->>'sid' IS NOT NULL`;
+      await sql`CREATE TABLE IF NOT EXISTS sms_preferences (
+        phone TEXT PRIMARY KEY, preference TEXT NOT NULL, actor TEXT NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      )`;
+
       // payment profiles, managed from Settings -> Invoice autofill.
       await sql`
         CREATE TABLE IF NOT EXISTS business_profiles (
@@ -770,7 +795,7 @@ export async function getBookings(): Promise<Booking[]> {
       return (rows as any[]).map(rowToBooking);
     })());
   }
-  return readFile().filter(b => !b.deletedAt).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  return readFile().filter(b => !b.deletedAt).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map(row => localCallingRecord(row).booking);
 }
 
 // Bookings with a calendar slot inside [startISO, endISO). Powers the internal
@@ -789,7 +814,7 @@ export async function getBookingsInRange(startISO: string, endISO: string): Prom
   }
   return readFile()
     .filter(b => !b.deletedAt && b.scheduledAt && b.scheduledAt >= startISO && b.scheduledAt < endISO)
-    .sort((a, b) => (a.scheduledAt ?? '').localeCompare(b.scheduledAt ?? ''));
+    .sort((a, b) => (a.scheduledAt ?? '').localeCompare(b.scheduledAt ?? '')).map(row => localCallingRecord(row).booking);
 }
 
 export async function getBookingById(id: string): Promise<Booking | null> {
@@ -799,7 +824,8 @@ export async function getBookingById(id: string): Promise<Booking | null> {
     const arr = rows as any[];
     return arr.length ? rowToBooking(arr[0]) : null;
   }
-  return readFile().find(b => b.id === id) ?? null;
+  const row = readFile().find(b => b.id === id);
+  return row ? localCallingRecord(row).booking : null;
 }
 
 // Meta's Google Sheets connector prefixes phone answers with "p:" (e.g.
@@ -810,9 +836,10 @@ export function stripPhonePrefix(phone: string): string {
   return (phone ?? '').replace(/^p:\s*/i, '').trim();
 }
 
-export async function addBooking(data: NewBooking): Promise<Booking> {
+export async function addBooking(data: NewBooking, createdBy: string | null = null): Promise<Booking> {
   const now = new Date().toISOString();
   const booking: Booking = {
+    createdBy,
     name: data.name,
     email: data.email ?? '',
     phone: stripPhonePrefix(data.phone),
@@ -857,15 +884,17 @@ export async function addBooking(data: NewBooking): Promise<Booking> {
   if (sql) {
     await ensureSchema();
     await sql`
-      INSERT INTO bookings (id, name, email, phone, service, property_type, address, suburb, preferred_date, preferred_time, notes, status, quote_amount, admin_notes, paid, source, assigned_guest_id, assigned_at, scheduled_at, scheduled_end, recurring_id, lead_source, attribution_source, group_id, external_lead_id, public_token, quoted_at)
-      VALUES (${booking.id}, ${booking.name}, ${booking.email}, ${booking.phone}, ${booking.service}, ${booking.propertyType}, ${booking.address}, ${booking.suburb}, ${booking.preferredDate}, ${booking.preferredTime}, ${booking.notes}, ${booking.status}, ${booking.quoteAmount}, ${booking.adminNotes}, ${booking.paid}, ${booking.source}, ${booking.assignedGuestId}, ${booking.assignedAt}, ${booking.scheduledAt}, ${booking.scheduledEnd}, ${booking.recurringId}, ${booking.leadSource}, ${booking.attributionSource}, ${booking.groupId}, ${booking.externalLeadId}, ${booking.publicToken}, ${booking.quotedAt})
+      INSERT INTO bookings (id, name, email, phone, service, property_type, address, suburb, preferred_date, preferred_time, notes, status, quote_amount, admin_notes, paid, source, assigned_guest_id, assigned_at, scheduled_at, scheduled_end, recurring_id, lead_source, attribution_source, group_id, external_lead_id, public_token, quoted_at, created_by)
+      VALUES (${booking.id}, ${booking.name}, ${booking.email}, ${booking.phone}, ${booking.service}, ${booking.propertyType}, ${booking.address}, ${booking.suburb}, ${booking.preferredDate}, ${booking.preferredTime}, ${booking.notes}, ${booking.status}, ${booking.quoteAmount}, ${booking.adminNotes}, ${booking.paid}, ${booking.source}, ${booking.assignedGuestId}, ${booking.assignedAt}, ${booking.scheduledAt}, ${booking.scheduledEnd}, ${booking.recurringId}, ${booking.leadSource}, ${booking.attributionSource}, ${booking.groupId}, ${booking.externalLeadId}, ${booking.publicToken}, ${booking.quotedAt}, ${createdBy})
     `;
+    await bookingSmsTransition(null, booking);
     return booking;
   }
 
   const rows = readFile();
   rows.push(booking);
   writeFile(rows);
+  await bookingSmsTransition(null, booking);
   return booking;
 }
 
@@ -879,7 +908,8 @@ export async function getBookingByExternalLeadId(externalLeadId: string): Promis
     const arr = rows as any[];
     return arr.length ? rowToBooking(arr[0]) : null;
   }
-  return readFile().find(b => b.externalLeadId === externalLeadId) ?? null;
+  const row = readFile().find(b => b.externalLeadId === externalLeadId);
+  return row ? localCallingRecord(row).booking : null;
 }
 
 // ─── Customer thank-you link + feedback ─────────────────────────────────────
@@ -891,7 +921,8 @@ export async function getBookingByToken(token: string): Promise<Booking | null> 
     const arr = rows as any[];
     return arr.length ? rowToBooking(arr[0]) : null;
   }
-  return readFile().find(b => b.publicToken === token) ?? null;
+  const row = readFile().find(b => b.publicToken === token);
+  return row ? localCallingRecord(row).booking : null;
 }
 
 // Returns the booking's public token, generating + persisting one if it's an old
@@ -997,6 +1028,14 @@ function withAutoMoveReset(updates: Partial<Booking>): Partial<Booking> {
 }
 
 export async function updateBooking(id: string, rawUpdates: Partial<Booking>): Promise<Booking | null> {
+  if ('createdBy' in rawUpdates || 'callState' in rawUpdates || 'quoteStaff' in rawUpdates || 'callingManaged' in rawUpdates) {
+    const safe = { ...rawUpdates } as Partial<StoredCallBooking>;
+    delete safe.createdBy;
+    delete safe.callState;
+    delete safe.quoteStaff;
+    delete safe.callingManaged;
+    rawUpdates = safe;
+  }
   if (typeof rawUpdates.phone === 'string') rawUpdates = { ...rawUpdates, phone: stripPhonePrefix(rawUpdates.phone) };
   if (sql) {
     await ensureSchema();
@@ -1048,16 +1087,21 @@ export async function updateBooking(id: string, rawUpdates: Partial<Booking>): P
       RETURNING *
     `;
     const arr = rows as any[];
-    return arr.length ? rowToBooking(arr[0]) : null;
+    const saved = arr.length ? rowToBooking(arr[0]) : null;
+    if (saved) await bookingSmsTransition(cur, saved);
+    return saved;
   }
 
   const rows = readFile();
   const idx = rows.findIndex(b => b.id === id);
   if (idx === -1) return null;
+  const prior = rows[idx];
   const updates = withAutoMoveReset(withAssignedAt(rows[idx], withPaidAt(rows[idx], withCompletedAt(rows[idx], withContactedAt(rows[idx], withQuotedAt(rows[idx], rawUpdates))))));
   rows[idx] = { ...rows[idx], ...updates, updatedAt: new Date().toISOString() };
   writeFile(rows);
-  return rows[idx];
+  const saved = localCallingRecord(rows[idx]).booking;
+  await bookingSmsTransition(prior, saved);
+  return saved;
 }
 
 // ─── Manual drag order + stale-lead auto-move (Bookings tab, select mode) ───
@@ -1103,7 +1147,7 @@ const STALE_LEAD_DAYS = 14;
 export async function checkStaleLeads(): Promise<Booking[]> {
   const all = await getBookings();
   const cutoff = Date.now() - STALE_LEAD_DAYS * 24 * 60 * 60 * 1000;
-  const stale = all.filter(b => (b.status === 'uncontacted' || b.status === 'contacted') && new Date(b.createdAt).getTime() <= cutoff);
+  const stale = all.filter(b => !b.callingManaged && (b.status === 'uncontacted' || b.status === 'contacted') && new Date(b.createdAt).getTime() <= cutoff);
   const moved: Booking[] = [];
   for (const b of stale) {
     const updated = await updateBooking(b.id, {
@@ -1864,6 +1908,7 @@ function writeRecurring(rows: RecurringJob[]): void {
 
 function rowToRecurring(r: any): RecurringJob {
   return {
+    createdBy: r.created_by ?? null,
     id: r.id,
     name: r.name,
     phone: r.phone ?? '',
@@ -1901,9 +1946,10 @@ export async function getRecurringJobs(): Promise<RecurringJob[]> {
   return readRecurring().sort((a, b) => a.nextDate.localeCompare(b.nextDate));
 }
 
-export async function addRecurringJob(data: NewRecurringJob): Promise<RecurringJob> {
+export async function addRecurringJob(data: NewRecurringJob, createdBy: string | null = null): Promise<RecurringJob> {
   const now = new Date().toISOString();
   const job: RecurringJob = {
+    createdBy,
     id: `RJ-${Date.now()}`,
     name: data.name,
     phone: data.phone ?? '',
@@ -1931,8 +1977,8 @@ export async function addRecurringJob(data: NewRecurringJob): Promise<RecurringJ
   if (sql) {
     await ensureSchema();
     await sql`
-      INSERT INTO recurring_jobs (id, name, phone, email, address, suburb, service, property_type, frequency, custom_interval_weeks, custom_interval_unit, discount, next_date, preferred_time, notes, visit_price, billing_cycle, custom_billing_cycle, active, portal_data)
-      VALUES (${job.id}, ${job.name}, ${job.phone}, ${job.email}, ${job.address}, ${job.suburb}, ${job.service}, ${job.propertyType}, ${job.frequency}, ${job.customInterval}, ${job.customIntervalUnit}, ${job.discount}, ${job.nextDate}, ${job.preferredTime}, ${job.notes}, ${job.visitPrice}, ${job.billingCycle}, ${job.customBillingCycle}, ${job.active}, ${job.portal ? JSON.stringify(job.portal) : null})
+      INSERT INTO recurring_jobs (id, name, phone, email, address, suburb, service, property_type, frequency, custom_interval_weeks, custom_interval_unit, discount, next_date, preferred_time, notes, visit_price, billing_cycle, custom_billing_cycle, active, portal_data, created_by)
+      VALUES (${job.id}, ${job.name}, ${job.phone}, ${job.email}, ${job.address}, ${job.suburb}, ${job.service}, ${job.propertyType}, ${job.frequency}, ${job.customInterval}, ${job.customIntervalUnit}, ${job.discount}, ${job.nextDate}, ${job.preferredTime}, ${job.notes}, ${job.visitPrice}, ${job.billingCycle}, ${job.customBillingCycle}, ${job.active}, ${job.portal ? JSON.stringify(job.portal) : null}, ${createdBy})
     `;
     return job;
   }
@@ -1971,6 +2017,10 @@ export async function deleteRecurringByIdPrefix(prefix: string): Promise<number>
 }
 
 export async function updateRecurringJob(id: string, updates: Partial<RecurringJob>): Promise<RecurringJob | null> {
+  if ("createdBy" in updates) {
+    updates = { ...updates };
+    delete updates.createdBy;
+  }
   if (sql) {
     await ensureSchema();
     const rows = await sql`SELECT * FROM recurring_jobs WHERE id = ${id} LIMIT 1`;
@@ -2075,7 +2125,7 @@ function planPricing(job: RecurringJob, price: number | null): { quoteAmount: nu
 // nextDate, then advance the plan a cycle. Shared by the daily cron and the
 // manual "book next visit" action. The booking carries recurringId so the
 // customer's visit history stays linked to their profile.
-async function createBookingFromPlan(job: RecurringJob): Promise<{ job: RecurringJob; booking: Booking }> {
+async function createBookingFromPlan(job: RecurringJob, createdBy: string | null = null): Promise<{ job: RecurringJob; booking: Booking }> {
   // Default recurring visits to the configured start time (Settings ->
   // Scheduling) on the due date; editable on the calendar afterwards. This is
   // what "generates the future calendar entry".
@@ -2100,7 +2150,7 @@ async function createBookingFromPlan(job: RecurringJob): Promise<{ job: Recurrin
     source: 'manual',
     scheduledAt,
     recurringId: job.id,
-  });
+  }, createdBy);
   const advanced = await updateRecurringJob(job.id, {
     nextDate: advancePlan(job, job.nextDate),
     lastBookingId: booking.id,
@@ -2125,10 +2175,10 @@ export async function runRecurringDue(): Promise<{ job: RecurringJob; booking: B
 
 // Manually roll a plan forward one visit now (regardless of due date), placing a
 // scheduled booking on the calendar. Returns the created booking + advanced plan.
-export async function generateNextVisit(planId: string): Promise<{ job: RecurringJob; booking: Booking } | null> {
+export async function generateNextVisit(planId: string, createdBy: string | null = null): Promise<{ job: RecurringJob; booking: Booking } | null> {
   const job = (await getRecurringJobs()).find(j => j.id === planId);
   if (!job) return null;
-  return createBookingFromPlan(job);
+  return createBookingFromPlan(job, createdBy);
 }
 
 // "New job" on a customer's profile: a booking on a date the admin picks,
@@ -2141,7 +2191,7 @@ export async function createJobForProfile(planId: string, input: {
   price: number | null;       // before the plan discount
   service?: string;
   notes?: string;
-}): Promise<{ job: RecurringJob; booking: Booking } | null> {
+}, createdBy: string | null = null): Promise<{ job: RecurringJob; booking: Booking } | null> {
   const job = (await getRecurringJobs()).find(j => j.id === planId);
   if (!job) return null;
   const pricing = planPricing(job, input.price);
@@ -2162,7 +2212,7 @@ export async function createJobForProfile(planId: string, input: {
     source: 'manual',
     scheduledAt: input.scheduledAt,
     recurringId: job.id,
-  });
+  }, createdBy);
   const next = advancePlan(job, input.date);
   const advanced = await updateRecurringJob(job.id, {
     lastBookingId: booking.id,
@@ -2200,7 +2250,7 @@ export async function getCustomerBookings(bookingId: string): Promise<{ anchor: 
 // to be a recurring customer the job still links to that profile.
 export async function createJobForCustomer(bookingId: string, input: {
   date: string; scheduledAt: string | null; price: number | null; service?: string; notes?: string;
-}): Promise<Booking | null> {
+}, createdBy: string | null = null): Promise<Booking | null> {
   const found = await getCustomerBookings(bookingId);
   if (!found) return null;
   const src = found.bookings[0] ?? found.anchor;
@@ -2221,7 +2271,7 @@ export async function createJobForCustomer(bookingId: string, input: {
     source: 'manual',
     scheduledAt: input.scheduledAt,
     recurringId: found.bookings.find(b => b.recurringId)?.recurringId ?? null,
-  });
+  }, createdBy);
 }
 
 // "Make recurring customer" on a booking: build the profile from that
@@ -2234,7 +2284,7 @@ export async function createProfileFromBooking(bookingId: string, plan: {
   customIntervalUnit: IntervalUnit;
   discount: number | null;
   visitPrice: number | null;
-}): Promise<{ job: RecurringJob; linked: number } | null> {
+}, createdBy: string | null = null): Promise<{ job: RecurringJob; linked: number } | null> {
   const b = await getBookingById(bookingId);
   if (!b) return null;
   if (b.recurringId) {
@@ -2264,7 +2314,7 @@ export async function createProfileFromBooking(bookingId: string, plan: {
     visitPrice: plan.visitPrice,
     billingCycle: 'per_visit',
     customBillingCycle: null,
-  });
+  }, createdBy);
 
   const toLink = (await getBookings()).filter(x => x.id === b.id || (!x.recurringId && sameCustomer(x, b)));
   for (const x of toLink) await updateBooking(x.id, { recurringId: job.id });
@@ -2304,6 +2354,7 @@ function parseItems(raw: any): InvoiceLineItem[] {
 function rowToInvoice(r: any): Invoice {
   const items = parseItems(r.items);
   return {
+    createdBy: r.created_by ?? null,
     id: r.id,
     number: r.number,
     seq: Number(r.seq),
@@ -2429,7 +2480,7 @@ export async function getInvoiceBySquareOrderId(orderId: string): Promise<Invoic
   return readInvoices().find(i => i.squareOrderId === orderId) ?? null;
 }
 
-export async function createInvoice(input: InvoiceInput): Promise<Invoice> {
+export async function createInvoice(input: InvoiceInput, createdBy: string | null = null): Promise<Invoice> {
   const now = new Date().toISOString();
   const items = (input.items ?? []).map(it => ({
     description: it.description ?? '',
@@ -2469,6 +2520,7 @@ export async function createInvoice(input: InvoiceInput): Promise<Invoice> {
       bookingId,
       bookingIds,
       ownerGuestId: input.ownerGuestId ?? null,
+      createdBy,
       createdAt: now, updatedAt: now, sentAt: null, paidAt: null,
       viewCount: 0, firstViewedAt: null, lastViewedAt: null,
       squarePaymentLinkUrl: null, squareOrderId: null, squarePaymentId: null, squareLinkAmount: null, squarePaidAt: null,
@@ -2482,7 +2534,7 @@ export async function createInvoice(input: InvoiceInput): Promise<Invoice> {
         invoice_date, service_date, due_date,
         items, subtotal, total, notes,
         pay_account_name, pay_bsb, pay_account_number,
-        token, booking_id, booking_ids, owner_guest_id, payment_method
+        token, booking_id, booking_ids, owner_guest_id, payment_method, created_by
       ) VALUES (
         ${invoice.id}, ${invoice.number}, ${invoice.seq}, ${invoice.isTaxInvoice}, ${invoice.status},
         ${invoice.fromName}, ${invoice.fromTradingAs}, ${invoice.fromAbn}, ${invoice.fromAddress}, ${invoice.fromEmail}, ${invoice.fromPhone}, ${invoice.showFromAddress},
@@ -2491,9 +2543,10 @@ export async function createInvoice(input: InvoiceInput): Promise<Invoice> {
         ${invoice.invoiceDate}, ${invoice.serviceDate}, ${invoice.dueDate},
         ${JSON.stringify(invoice.items)}, ${invoice.subtotal}, ${invoice.total}, ${invoice.notes},
         ${invoice.payAccountName}, ${invoice.payBsb}, ${invoice.payAccountNumber},
-        ${invoice.token}, ${invoice.bookingId}, ${JSON.stringify(invoice.bookingIds)}, ${invoice.ownerGuestId}, ${invoice.paymentMethod}
+        ${invoice.token}, ${invoice.bookingId}, ${JSON.stringify(invoice.bookingIds)}, ${invoice.ownerGuestId}, ${invoice.paymentMethod}, ${createdBy}
       )
     `;
+    if (invoice.status === "sent") await documentSmsTransition("invoice", invoice.id);
     return invoice;
   }
 
@@ -2519,12 +2572,14 @@ export async function createInvoice(input: InvoiceInput): Promise<Invoice> {
     bookingId,
     bookingIds,
     ownerGuestId: input.ownerGuestId ?? null,
+      createdBy,
     createdAt: now, updatedAt: now, sentAt: null, paidAt: null,
     viewCount: 0, firstViewedAt: null, lastViewedAt: null,
     squarePaymentLinkUrl: null, squareOrderId: null, squarePaymentId: null, squareLinkAmount: null, squarePaidAt: null,
   };
   rows.push(invoice);
   writeInvoices(rows);
+  if (invoice.status === "sent") await documentSmsTransition("invoice", invoice.id);
   return invoice;
 }
 
@@ -2619,6 +2674,10 @@ async function syncInvoicePaidToBookings(cur: Invoice, updated: Invoice): Promis
 }
 
 export async function updateInvoice(id: string, rawUpdates: Partial<Invoice>): Promise<Invoice | null> {
+  if ("createdBy" in rawUpdates) {
+    rawUpdates = { ...rawUpdates };
+    delete rawUpdates.createdBy;
+  }
   if (sql) {
     await ensureSchema();
     const cur = await getInvoiceById(id);
@@ -2663,6 +2722,7 @@ export async function updateInvoice(id: string, rawUpdates: Partial<Invoice>): P
     const arr = rows as any[];
     const updated = arr.length ? rowToInvoice(arr[0]) : null;
     if (updated) await syncInvoicePaidToBookings(cur, updated);
+    if (updated?.status === "sent" && cur.status !== "sent") await documentSmsTransition("invoice", updated.id);
     return updated;
   }
 
@@ -2682,6 +2742,7 @@ export async function updateInvoice(id: string, rawUpdates: Partial<Invoice>): P
   rows[idx] = m;
   writeInvoices(rows);
   await syncInvoicePaidToBookings(cur, m);
+  if (m.status === "sent" && cur.status !== "sent") await documentSmsTransition("invoice", m.id);
   return rows[idx];
 }
 
@@ -2829,6 +2890,7 @@ function migrateLegacyOtherLine(legacyOtherText: unknown, itemAmounts: Record<st
 // holds plain camelCase Quote objects, same as every other entity in this file.
 function rowToQuote(r: any): Quote {
   return {
+    createdBy: r.created_by ?? null,
     id: r.id,
     number: r.number,
     seq: Number(r.seq),
@@ -2936,7 +2998,7 @@ async function syncQuoteAmountToBooking(quote: Quote): Promise<void> {
 
 // opts.syncBooking=false skips syncQuoteAmountToBooking — the ChatGPT/Atlas
 // connector applies its own narrower booking rules instead (src/lib/mcp/writeTools.ts).
-export async function createQuote(input: QuoteInput, opts: { syncBooking?: boolean } = {}): Promise<Quote> {
+export async function createQuote(input: QuoteInput, opts: { syncBooking?: boolean; createdBy?: string } = {}): Promise<Quote> {
   const now = new Date().toISOString();
   if (sql) {
     await ensureSchema();
@@ -2965,6 +3027,7 @@ export async function createQuote(input: QuoteInput, opts: { syncBooking?: boole
       quoteType: input.quoteType === 'packages' ? 'packages' : 'single',
       packagePrices: input.quoteType === 'packages' ? parsePackagePrices(input.packagePrices) : null,
       selectedPackage: null, acceptedAt: null,
+      createdBy: opts.createdBy ?? null,
     };
     await sql`
       INSERT INTO quotes (
@@ -2972,17 +3035,18 @@ export async function createQuote(input: QuoteInput, opts: { syncBooking?: boole
         bill_to_name, bill_to_address,
         from_name, from_trading_as, from_abn, from_address, from_email, from_phone, show_from_address,
         quote_date, valid_until, notes, scope, assumptions, payment_terms, terms_text, token,
-        quote_type, package_prices
+        quote_type, package_prices, created_by
       ) VALUES (
         ${quote.id}, ${quote.number}, ${quote.seq}, ${quote.status}, ${quote.bookingId},
         ${JSON.stringify(quote.services)}, ${JSON.stringify(quote.extras)}, ${JSON.stringify(quote.itemAmounts)}, ${JSON.stringify(quote.otherLines)}, ${quote.amount}, ${quote.propertyType},
         ${quote.billToName}, ${quote.billToAddress},
         ${quote.fromName}, ${quote.fromTradingAs}, ${quote.fromAbn}, ${quote.fromAddress}, ${quote.fromEmail}, ${quote.fromPhone}, ${quote.showFromAddress},
         ${quote.quoteDate}, ${quote.validUntil}, ${quote.notes}, ${quote.scope}, ${quote.assumptions}, ${quote.paymentTerms}, ${quote.termsText}, ${quote.token},
-        ${quote.quoteType}, ${quote.packagePrices ? JSON.stringify(quote.packagePrices) : null}
+        ${quote.quoteType}, ${quote.packagePrices ? JSON.stringify(quote.packagePrices) : null}, ${quote.createdBy}
       )
     `;
     if (opts.syncBooking !== false) await syncQuoteAmountToBooking(quote);
+    if (quote.status === "sent") await documentSmsTransition("quote", quote.id);
     return quote;
   }
 
@@ -3012,10 +3076,12 @@ export async function createQuote(input: QuoteInput, opts: { syncBooking?: boole
     quoteType: input.quoteType === 'packages' ? 'packages' : 'single',
     packagePrices: input.quoteType === 'packages' ? parsePackagePrices(input.packagePrices) : null,
     selectedPackage: null, acceptedAt: null,
+      createdBy: opts.createdBy ?? null,
   };
   rows.push(quote);
   writeQuotes(rows);
   if (opts.syncBooking !== false) await syncQuoteAmountToBooking(quote);
+  if (quote.status === "sent") await documentSmsTransition("quote", quote.id);
   return quote;
 }
 
@@ -3030,6 +3096,10 @@ function withQuoteStamps(cur: Quote, updates: Partial<Quote>): Partial<Quote> {
 }
 
 export async function updateQuote(id: string, rawUpdates: Partial<Quote>): Promise<Quote | null> {
+  if ("createdBy" in rawUpdates) {
+    rawUpdates = { ...rawUpdates };
+    delete rawUpdates.createdBy;
+  }
   if (sql) {
     await ensureSchema();
     const cur = await getQuoteById(id);
@@ -3061,6 +3131,7 @@ export async function updateQuote(id: string, rawUpdates: Partial<Quote>): Promi
     const arr = rows as any[];
     const updated = arr.length ? rowToQuote(arr[0]) : null;
     if (updated && updated.amount !== cur.amount) await syncQuoteAmountToBooking(updated);
+    if (updated?.status === "sent" && cur.status !== "sent") await documentSmsTransition("quote", updated.id);
     return updated;
   }
 
@@ -3077,6 +3148,7 @@ export async function updateQuote(id: string, rawUpdates: Partial<Quote>): Promi
   rows[idx] = m;
   writeQuotes(rows);
   if (m.amount !== cur.amount) await syncQuoteAmountToBooking(m);
+  if (m.status === "sent" && cur.status !== "sent") await documentSmsTransition("quote", m.id);
   return rows[idx];
 }
 
@@ -3847,7 +3919,7 @@ export async function getBookingsForGuest(guestId: string): Promise<Booking[]> {
       return (rows as any[]).map(rowToBooking);
     })());
   }
-  return readFile().filter(b => b.assignedGuestId === guestId && !b.deletedAt).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  return readFile().filter(b => b.assignedGuestId === guestId && !b.deletedAt).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map(row => localCallingRecord(row).booking);
 }
 
 // Editing is allowed on any profile, built-in included — only deletion is
@@ -3884,4 +3956,228 @@ export async function deletePaymentProfile(id: string): Promise<boolean> {
   if (!target || target.builtin) return false;
   writePaymentProfiles(rows.filter(p => p.id !== id));
   return true;
+}
+
+type StoredCallBooking = Booking & { callState?: CallState };
+export type CallingRecord = { booking: Booking; state: CallState };
+
+function isCallingManaged(state: CallState) {
+  return state.events.length > 0 || (state.lease?.expires ?? 0) > Date.now();
+}
+
+function localCallingRecord(row: StoredCallBooking): CallingRecord {
+  const { callState: raw, ...booking } = row;
+  const state = callState(raw);
+  return { booking: { ...booking, callingManaged: isCallingManaged(state) }, state };
+}
+
+export function callingRecordFromRow(row: Record<string, unknown>): CallingRecord {
+  return { booking: rowToBooking(row), state: callState(row.call_state) };
+}
+
+export async function listCallingRecords(): Promise<CallingRecord[]> {
+  if (!sql) return (readFile() as StoredCallBooking[])
+    .filter(row => !row.deletedAt && (['uncontacted', 'contacted', 'quote-booked'].includes(row.status) || (row.status === 'cold' && row.autoMovedFrom === 'uncontacted') || row.callState))
+    .map(localCallingRecord);
+  await ensureSchema();
+  const rows = await sql`SELECT * FROM bookings WHERE deleted_at IS NULL
+    AND (status IN ('uncontacted', 'contacted', 'quote-booked') OR (status = 'cold' AND auto_moved_from = 'uncontacted') OR call_state IS NOT NULL)`;
+  return (rows as Record<string, unknown>[]).map(callingRecordFromRow);
+}
+
+export type CallingPatch = Pick<Partial<Booking>, 'status' | 'scheduledAt' | 'scheduledEnd' | 'service' | 'quoteStaff'> & {
+  noteLine?: string;
+};
+
+// One compare-and-swap commits the activity, reservation and booking update.
+export async function saveCallingRecord(before: CallingRecord, state: CallState, patch: CallingPatch = {}): Promise<boolean> {
+  const b = before.booking;
+  if (!sql) {
+    const rows = readFile() as StoredCallBooking[];
+    const row = rows.find(item => item.id === b.id);
+    if (!row || row.deletedAt || row.status !== b.status || (row.scheduledAt ?? null) !== (b.scheduledAt ?? null) ||
+      JSON.stringify(callState(row.callState)) !== JSON.stringify(before.state)) return false;
+    if (patch.scheduledAt && patch.scheduledEnd && rows.some(item => item.id !== b.id && !item.deletedAt &&
+      item.scheduledAt && !['cold', 'cancelled'].includes(item.status) && (!item.quoteStaff || item.quoteStaff === patch.quoteStaff) &&
+      Date.parse(item.scheduledAt) < Date.parse(patch.scheduledEnd!) &&
+      (item.scheduledEnd ? Date.parse(item.scheduledEnd) : Date.parse(item.scheduledAt) + 3600000) > Date.parse(patch.scheduledAt!))) return false;
+    const { noteLine, ...fields } = patch;
+    Object.assign(row, fields, { callState: state });
+    if (fields.status) Object.assign(row, { autoMoved: false, autoMovedAt: null, autoMovedFrom: null });
+    if (fields.status === 'contacted' || fields.status === 'quote-booked') row.contactedAt ??= new Date().toISOString();
+    if (noteLine) row.adminNotes = [row.adminNotes, noteLine].filter(Boolean).join('\n');
+    if (Object.keys(patch).length) row.updatedAt = new Date().toISOString();
+    writeFile(rows);
+    if (patch.status || patch.scheduledAt) await bookingSmsTransition(b, row);
+    return true;
+  }
+  await ensureSchema();
+  const update = sql`
+    UPDATE bookings SET call_state = ${JSON.stringify(state)}::jsonb,
+      status = COALESCE(${patch.status ?? null}, status),
+      scheduled_at = COALESCE(${patch.scheduledAt ?? null}::timestamptz, scheduled_at),
+      scheduled_end = COALESCE(${patch.scheduledEnd ?? null}::timestamptz, scheduled_end),
+      service = COALESCE(${patch.service ?? null}, service),
+      contacted_at = CASE WHEN ${patch.status ?? ''} IN ('contacted', 'quote-booked') THEN COALESCE(contacted_at, now()) ELSE contacted_at END,
+      admin_notes = CASE WHEN ${!!patch.noteLine} THEN concat_ws(chr(10), NULLIF(admin_notes, ''), ${patch.noteLine ?? ''}) ELSE admin_notes END,
+      auto_moved = CASE WHEN ${!!patch.status} THEN false ELSE auto_moved END,
+      auto_moved_at = CASE WHEN ${!!patch.status} THEN NULL ELSE auto_moved_at END,
+      auto_moved_from = CASE WHEN ${!!patch.status} THEN NULL ELSE auto_moved_from END,
+      updated_at = CASE WHEN ${Object.keys(patch).length > 0} THEN now() ELSE updated_at END
+    WHERE id = ${b.id} AND deleted_at IS NULL AND status = ${b.status}
+      AND scheduled_at IS NOT DISTINCT FROM ${b.scheduledAt ?? null}::timestamptz
+      AND COALESCE(call_state, '{"events":[]}'::jsonb) = ${JSON.stringify(before.state)}::jsonb
+      AND (${patch.scheduledAt ?? null}::timestamptz IS NULL OR NOT EXISTS (
+        SELECT FROM bookings other WHERE other.id <> ${b.id} AND other.deleted_at IS NULL
+          AND other.status NOT IN ('cold', 'cancelled')
+          AND (other.call_state->>'quoteStaff' IS NULL OR other.call_state->>'quoteStaff' = ${patch.quoteStaff ?? null})
+          AND other.scheduled_at < ${patch.scheduledEnd ?? null}::timestamptz
+          AND COALESCE(other.scheduled_end, other.scheduled_at + interval '1 hour') > ${patch.scheduledAt ?? null}::timestamptz
+      ))
+    RETURNING id`;
+  if (patch.scheduledAt) {
+    const [, rows] = await sql.transaction([sql`SELECT pg_advisory_xact_lock(472391804)`, update]);
+    if (rows.length === 1) await bookingSmsTransition(b, { ...b, ...patch });
+    return rows.length === 1;
+  }
+  return (await update).length === 1;
+}
+
+const SMS_FILE = path.join(process.cwd(), 'data', 'sms.json');
+type LocalSms = { messages: SmsMessage[]; preferences: Record<string, SmsPreference> };
+function readSmsFile(): LocalSms {
+  if (!fs.existsSync(SMS_FILE)) return { messages: [], preferences: {} };
+  return JSON.parse(fs.readFileSync(SMS_FILE, 'utf8'));
+}
+function writeSmsFile(value: LocalSms) {
+  fs.mkdirSync(path.dirname(SMS_FILE), { recursive: true });
+  const temp = SMS_FILE + '.tmp';
+  fs.writeFileSync(temp, JSON.stringify(value, null, 2));
+  fs.renameSync(temp, SMS_FILE);
+}
+
+export async function getSmsPreference(phone: string): Promise<SmsPreference | null> {
+  if (!sql) return readSmsFile().preferences[phone] ?? null;
+  await ensureSchema();
+  const rows = await sql`SELECT preference FROM sms_preferences WHERE phone = ${phone}`;
+  return (rows[0]?.preference ?? null) as SmsPreference | null;
+}
+export async function setSmsPreference(phone: string, preference: SmsPreference, actor: string, explicit = false) {
+  if (!sql) {
+    const data = readSmsFile();
+    if (preference === 'opted-in' && data.preferences[phone] === 'opted-out' && !explicit) return false;
+    data.preferences[phone] = preference;
+    writeSmsFile(data);
+    return true;
+  }
+  await ensureSchema();
+  const rows = await sql`INSERT INTO sms_preferences (phone, preference, actor) VALUES (${phone}, ${preference}, ${actor})
+    ON CONFLICT (phone) DO UPDATE SET preference = EXCLUDED.preference, actor = EXCLUDED.actor, updated_at = now()
+    WHERE sms_preferences.preference <> 'opted-out' OR EXCLUDED.preference = 'opted-out' OR ${explicit}
+    RETURNING phone`;
+  return rows.length > 0;
+}
+export async function insertSms(message: SmsMessage): Promise<boolean> {
+  if (!sql) {
+    const data = readSmsFile();
+    if (data.messages.some(row => row.id === message.id || message.sid && message.sid === row.sid)) return false;
+    data.messages.push(message);
+    writeSmsFile(data);
+    return true;
+  }
+  await ensureSchema();
+  const rows = await sql`INSERT INTO sms_messages (id, phone, created_at, data)
+    VALUES (${message.id}, ${message.phone}, ${message.createdAt}, ${JSON.stringify(message)}::jsonb)
+    ON CONFLICT DO NOTHING RETURNING id`;
+  return rows.length > 0;
+}
+export async function getSms(id: string): Promise<SmsMessage | null> {
+  if (!sql) return readSmsFile().messages.find(message => message.id === id) ?? null;
+  await ensureSchema();
+  const rows = await sql`SELECT data FROM sms_messages WHERE id = ${id}`;
+  return (rows[0]?.data ?? null) as SmsMessage | null;
+}
+export async function changeSms(before: SmsMessage, patch: Partial<SmsMessage>): Promise<boolean> {
+  const next = { ...before, ...patch, updatedAt: new Date().toISOString() };
+  if (!sql) {
+    const data = readSmsFile();
+    const index = data.messages.findIndex(row => row.id === before.id && JSON.stringify(row) === JSON.stringify(before));
+    if (index < 0) return false;
+    data.messages[index] = next;
+    writeSmsFile(data);
+    return true;
+  }
+  await ensureSchema();
+  const rows = await sql`UPDATE sms_messages SET data = ${JSON.stringify(next)}::jsonb
+    WHERE id = ${before.id} AND data = ${JSON.stringify(before)}::jsonb RETURNING id`;
+  return rows.length > 0;
+}
+export async function listSms(phone: string, includeStaffAlerts = true, offset = 0, limit = 50): Promise<SmsMessage[]> {
+  if (!sql) return readSmsFile().messages.filter(row => row.phone === phone && (includeStaffAlerts || row.kind !== 'staff-alert')).reverse().slice(offset, offset + limit);
+  await ensureSchema();
+  const rows = await sql`SELECT data FROM sms_messages WHERE phone = ${phone}
+    AND (${includeStaffAlerts} OR data->>'kind' <> 'staff-alert') ORDER BY created_at DESC, id DESC LIMIT ${limit} OFFSET ${offset}`;
+  return rows.map(row => row.data as SmsMessage);
+}
+
+export async function listLatestCustomerSms(incomingOnly = false, phone?: string): Promise<SmsMessage[]> {
+  if (!sql) {
+    const latest = new Map<string, SmsMessage>();
+    for (const message of readSmsFile().messages) {
+      if (message.kind === 'staff-alert' || (incomingOnly && message.direction !== 'inbound') || (phone && phone !== message.phone)) continue;
+      const previous = latest.get(message.phone);
+      if (!previous || previous.createdAt <= message.createdAt) latest.set(message.phone, message);
+    }
+    return [...latest.values()];
+  }
+  await ensureSchema();
+  const rows = await sql`SELECT DISTINCT ON (phone) data FROM sms_messages
+    WHERE data->>'kind' <> 'staff-alert'
+      AND (NOT ${incomingOnly} OR data->>'direction' = 'inbound')
+      AND (${phone ?? null}::text IS NULL OR phone = ${phone ?? null})
+    ORDER BY phone, created_at DESC, id DESC`;
+  return rows.map(row => row.data as SmsMessage);
+}
+
+export async function hasSubmittedCustomerSms(phone: string): Promise<boolean> {
+  if (!sql) return readSmsFile().messages.some(row => row.phone === phone && row.direction === 'outbound' && row.kind !== 'staff-alert' && row.sid);
+  await ensureSchema();
+  const rows = await sql`SELECT 1 FROM sms_messages WHERE phone = ${phone}
+    AND data->>'direction' = 'outbound' AND data->>'kind' <> 'staff-alert' AND data->>'sid' IS NOT NULL LIMIT 1`;
+  return rows.length > 0;
+}
+export async function listSmsWork(kind: 'pending' | 'invoice' | 'accepted'): Promise<SmsMessage[]> {
+  const now = new Date().toISOString();
+  if (!sql) return readSmsFile().messages.filter(row => kind === 'pending'
+    ? row.status === 'pending' || (row.status === 'retry' && (row.retryAt ?? '') <= now)
+    : kind === 'invoice' ? row.kind === 'invoice' && ['sent', 'delivered'].includes(row.status)
+    : !!row.sid && ['queued', 'accepted', 'sending', 'sent'].includes(row.status)).slice(0, 100);
+  await ensureSchema();
+  const rows = kind === 'pending'
+    ? await sql`SELECT data FROM sms_messages WHERE data->>'status' = 'pending'
+        OR (data->>'status' = 'retry' AND data->>'retryAt' <= ${now}) ORDER BY created_at ASC LIMIT 100`
+    : kind === 'invoice'
+      ? await sql`SELECT DISTINCT ON (data->>'recordId') data FROM sms_messages WHERE data->>'kind' = 'invoice'
+          AND data->>'status' IN ('sent','delivered') ORDER BY data->>'recordId', created_at DESC`
+      : await sql`SELECT data FROM sms_messages WHERE data->>'sid' IS NOT NULL
+          AND data->>'status' IN ('queued','accepted','sending','sent') ORDER BY (data->>'updatedAt') ASC LIMIT 100`;
+  return rows.map(row => row.data as SmsMessage);
+}
+
+async function documentSmsTransition(kind: 'quote' | 'invoice', id: string) {
+  if (process.env.TWILIO_SMS_AUTOMATION !== 'true' || process.env.TWILIO_SMS_ENABLED !== 'true') return;
+  try { await (await import('./sms')).automaticSms(kind, id); }
+  catch { console.error('SMS document hook failed', kind); }
+}
+
+async function bookingSmsTransition(before: Booking | null, booking: Booking) {
+  if (process.env.TWILIO_SMS_AUTOMATION !== 'true' || process.env.TWILIO_SMS_ENABLED !== 'true') return;
+  try {
+    const confirmed = ['confirmed', 'quote-booked'].includes(booking.status) && booking.scheduledAt &&
+      (before?.status !== booking.status || before?.scheduledAt !== booking.scheduledAt);
+    if (confirmed) await (await import('./sms')).automaticSms('booking', booking.id);
+    if (booking.status === 'completed' && before?.status !== 'completed') {
+      await (await import('./sms')).completedBookingSms(booking.id);
+    }
+  } catch { console.error('SMS booking hook failed'); }
 }

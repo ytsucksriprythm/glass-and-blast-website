@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from 'next';
+import '../admin/crm.css';
 
 export const metadata: Metadata = {
   title: 'Glass & Blast Jobs',
@@ -13,11 +14,10 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: '#060D1A',
+  themeColor: '#10151e',
   viewportFit: 'cover',
   width: 'device-width',
   initialScale: 1,
-  maximumScale: 1,
 };
 
 export default function GuestLayout({ children }: { children: React.ReactNode }) {

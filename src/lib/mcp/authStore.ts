@@ -1,3 +1,4 @@
+import { isStaffProfile, type StaffProfile } from '../staff';
 // Storage for the connector's own OAuth state and audit trail: registered
 // clients, single-use authorization codes, refresh tokens, and the audit log
 // (which doubles as the rate-limit counter). Lives in mcp_* tables on the
@@ -48,6 +49,9 @@ export function ensureAuthTables(): Promise<void> {
         revoked_at    TIMESTAMPTZ,
         created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
       )`);
+      await db.query(`ALTER TABLE mcp_oauth_codes ADD COLUMN IF NOT EXISTS profile TEXT`);
+      await db.query(`ALTER TABLE mcp_oauth_refresh_tokens ADD COLUMN IF NOT EXISTS profile TEXT`);
+      await db.query(`ALTER TABLE mcp_oauth_refresh_tokens ADD COLUMN IF NOT EXISTS channel TEXT`);
       await db.query(`CREATE INDEX IF NOT EXISTS mcp_refresh_family_idx ON mcp_oauth_refresh_tokens (family_id)`);
       await db.query(`CREATE TABLE IF NOT EXISTS mcp_audit_log (
         id           BIGSERIAL PRIMARY KEY,
@@ -120,6 +124,7 @@ export async function getClient(clientId: string): Promise<OAuthClient | null> {
 // ─── Authorization codes (single use) ──────────────────────────────────────
 
 export interface CodeGrant {
+  profile?: StaffProfile;
   clientId: string;
   redirectUri: string;
   codeChallenge: string;
@@ -129,9 +134,9 @@ export interface CodeGrant {
 
 export async function saveCode(code: string, grant: CodeGrant, ttlSeconds: number): Promise<void> {
   await q(
-    `INSERT INTO mcp_oauth_codes (code_hash, client_id, redirect_uri, code_challenge, scope, resource, expires_at)
-     VALUES ($1, $2, $3, $4, $5, $6, now() + ($7 || ' seconds')::interval)`,
-    [sha256Hex(code), grant.clientId, grant.redirectUri, grant.codeChallenge, grant.scope, grant.resource, String(ttlSeconds)],
+    `INSERT INTO mcp_oauth_codes (code_hash, client_id, redirect_uri, code_challenge, scope, resource, expires_at, profile)
+     VALUES ($1, $2, $3, $4, $5, $6, now() + ($7 || ' seconds')::interval, $8)`,
+    [sha256Hex(code), grant.clientId, grant.redirectUri, grant.codeChallenge, grant.scope, grant.resource, String(ttlSeconds), grant.profile ?? null],
   );
 }
 
@@ -141,20 +146,22 @@ export async function consumeCode(code: string): Promise<CodeGrant | null> {
   const rows = await q(
     `UPDATE mcp_oauth_codes SET used_at = now()
      WHERE code_hash = $1 AND used_at IS NULL AND expires_at > now()
-     RETURNING client_id, redirect_uri, code_challenge, scope, resource`,
+     RETURNING client_id, redirect_uri, code_challenge, scope, resource, profile`,
     [sha256Hex(code)],
   );
   const r = rows[0];
   if (!r) return null;
   return {
     clientId: String(r.client_id), redirectUri: String(r.redirect_uri), codeChallenge: String(r.code_challenge),
-    scope: String(r.scope), resource: String(r.resource),
+    scope: String(r.scope), resource: String(r.resource), profile: isStaffProfile(r.profile) ? r.profile : undefined,
   };
 }
 
 // ─── Refresh tokens (rotating, family-revocable) ───────────────────────────
 
 export interface RefreshGrant {
+  profile?: StaffProfile;
+  channel?: "chatgpt" | "claude" | "connector";
   familyId: string;
   clientId: string;
   scope: string;
@@ -164,9 +171,9 @@ export interface RefreshGrant {
 
 export async function saveRefreshToken(token: string, g: RefreshGrant, ttlSeconds: number): Promise<void> {
   await q(
-    `INSERT INTO mcp_oauth_refresh_tokens (token_hash, family_id, client_id, scope, resource, token_version, expires_at)
-     VALUES ($1, $2, $3, $4, $5, $6, now() + ($7 || ' seconds')::interval)`,
-    [sha256Hex(token), g.familyId, g.clientId, g.scope, g.resource, g.tokenVersion, String(ttlSeconds)],
+    `INSERT INTO mcp_oauth_refresh_tokens (token_hash, family_id, client_id, scope, resource, token_version, expires_at, profile, channel)
+     VALUES ($1, $2, $3, $4, $5, $6, now() + ($7 || ' seconds')::interval, $8, $9)`,
+    [sha256Hex(token), g.familyId, g.clientId, g.scope, g.resource, g.tokenVersion, String(ttlSeconds), g.profile ?? null, g.channel ?? null],
   );
 }
 
@@ -181,7 +188,7 @@ export async function rotateRefreshToken(token: string): Promise<RotateResult> {
   const rows = await q(
     `UPDATE mcp_oauth_refresh_tokens SET rotated_at = now()
      WHERE token_hash = $1 AND rotated_at IS NULL AND revoked_at IS NULL AND expires_at > now()
-     RETURNING family_id, client_id, scope, resource, token_version`,
+     RETURNING family_id, client_id, scope, resource, token_version, profile, channel`,
     [hash],
   );
   if (rows[0]) {
@@ -189,6 +196,8 @@ export async function rotateRefreshToken(token: string): Promise<RotateResult> {
     return { ok: true, grant: {
       familyId: String(r.family_id), clientId: String(r.client_id), scope: String(r.scope),
       resource: String(r.resource), tokenVersion: String(r.token_version),
+      profile: isStaffProfile(r.profile) ? r.profile : undefined,
+      channel: r.channel === "chatgpt" || r.channel === "claude" || r.channel === "connector" ? r.channel : undefined,
     } };
   }
   const existing = await q(`SELECT family_id, rotated_at, revoked_at, expires_at FROM mcp_oauth_refresh_tokens WHERE token_hash = $1`, [hash]);

@@ -1,5 +1,9 @@
 'use client';
 
+import SmsPanel from '@/components/admin/SmsPanel';
+
+import AdminRecordShell from '@/components/admin/AdminRecordShell';
+
 // A customer's page: everything they've booked, and "New job" to book them in
 // again as a one-off. Not a plan — for that, "Make recurring customer" turns
 // them into a recurring profile (/admin/recurring/[id]). [id] is any of their
@@ -136,9 +140,9 @@ export default function CustomerPage() {
   const spent = bookings.filter(b => b.paid).reduce((s, b) => s + (b.quoteAmount ?? 0), 0);
 
   return (
-    <div className="min-h-[100svh] bg-navy-900">
+    <AdminRecordShell active="bookings">
       <header
-        className="sticky top-0 z-30 bg-navy-900/90 backdrop-blur border-b border-white/10 px-4 flex items-center justify-between"
+        className="crm-topbar sticky top-0 z-30 bg-navy-900/90 backdrop-blur border-b border-white/10 px-4 flex items-center justify-between"
         style={{ paddingTop: 'calc(env(safe-area-inset-top) + 0.85rem)', paddingBottom: '0.85rem' }}
       >
         <button onClick={goBack} className="inline-flex items-center gap-2 -ml-2 px-2 py-2 rounded-lg text-slate-300 hover:text-white active:bg-white/10 text-sm cursor-pointer transition-colors touch-manipulation">
@@ -204,6 +208,7 @@ export default function CustomerPage() {
               <Row icon={User} label="Last service">{serviceText(latest.service)}{latest.propertyType === 'commercial' ? ' · Commercial' : ''}</Row>
             </div>
 
+            <SmsPanel key={latest.id} kind="manual" recordId={latest.id} />
             <h2 className="font-display text-lg font-bold text-white mb-3">Jobs</h2>
             <ul className="space-y-2">
               {bookings.map(b => (
@@ -281,6 +286,6 @@ export default function CustomerPage() {
           </div>
         </div>
       )}
-    </div>
+    </AdminRecordShell>
   );
 }

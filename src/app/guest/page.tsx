@@ -217,7 +217,7 @@ export default function GuestDashboard() {
   return (
     <div className="min-h-[100svh] bg-navy-900">
       <header
-        className="sticky top-0 z-30 bg-navy-900/90 backdrop-blur border-b border-white/10 px-4 flex items-center justify-between gap-3"
+        className="crm-topbar sticky top-0 z-30 bg-navy-900/90 backdrop-blur border-b border-white/10 px-4 flex items-center justify-between gap-3"
         style={{ paddingTop: 'calc(env(safe-area-inset-top) + 0.85rem)', paddingBottom: '0.85rem' }}
       >
         <div className="min-w-0">

@@ -34,6 +34,7 @@ export interface InvoiceClient {
 }
 
 export interface Invoice {
+  createdBy?: string | null;
   id: string;              // INV-timestamp
   number: string;          // e.g. GB1044
   seq: number;             // 1044 (numeric, for tracking / next-number)

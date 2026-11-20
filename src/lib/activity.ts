@@ -40,6 +40,7 @@ export const ACTIVITY_TYPE_LABEL: Record<string, string> = {
   'booking.auto_moved_leads': 'Auto-moved back to Leads (unscheduled)',
   'booking.sort_reset': 'Manual sort order cleared',
   'booking.contacted': 'Lead marked contacted',
+  'booking.call': 'Call List activity',
   'invoice.created': 'Invoice created',
   'invoice.deleted': 'Invoice deleted',
   'invoice.status_changed': 'Invoice status changed',

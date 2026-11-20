@@ -1,7 +1,9 @@
+import { staffLabel } from '@/lib/staff';
 import { NextRequest, NextResponse } from 'next/server';
-import { getInvoices, createInvoice, getSettings, logActivity } from '@/lib/db';
+import { getInvoices, createInvoice, getSettings, getBusinessProfiles, getPaymentProfiles, logActivity } from '@/lib/db';
 import { getActiveContext } from '@/lib/auth';
-import { BUSINESS_DEFAULTS, PAYMENT_DEFAULTS, type InvoiceInput } from '@/lib/invoice';
+import { documentBusinessDefaults, documentPaymentDefaults } from '@/lib/documentDefaults';
+import { type InvoiceInput } from '@/lib/invoice';
 
 export const dynamic = 'force-dynamic';
 
@@ -25,18 +27,23 @@ export async function POST(req: NextRequest) {
     const isTaxInvoice = !!b.isTaxInvoice;
     // Tax invoices always show the address; otherwise use whatever the
     // client sent, falling back to the Settings default if it omitted it.
+    const settings = await getSettings();
+    const staff = ctx.role === "admin" ? ctx.profile : null;
+    const [businessProfiles, paymentProfiles] = staff ? await Promise.all([getBusinessProfiles(), getPaymentProfiles()]) : [[], []];
+    const business = documentBusinessDefaults(staff, businessProfiles, !staff || settings.autofillBusinessInfo);
+    const payment = documentPaymentDefaults(staff, paymentProfiles, !staff || settings.autofillPaymentDetails);
     const showFromAddress = isTaxInvoice
       ? true
-      : (typeof b.showFromAddress === 'boolean' ? b.showFromAddress : (await getSettings()).defaultShowAddressOnInvoice);
+      : (typeof b.showFromAddress === 'boolean' ? b.showFromAddress : settings.defaultShowAddressOnInvoice);
     const input: InvoiceInput = {
       isTaxInvoice,
       status: b.status === 'sent' || b.status === 'paid' ? b.status : 'draft',
-      fromName: b.fromName ?? BUSINESS_DEFAULTS.fromName,
-      fromTradingAs: b.fromTradingAs ?? BUSINESS_DEFAULTS.fromTradingAs,
-      fromAbn: b.fromAbn ?? BUSINESS_DEFAULTS.fromAbn,
-      fromAddress: b.fromAddress ?? BUSINESS_DEFAULTS.fromAddress,
-      fromEmail: b.fromEmail ?? BUSINESS_DEFAULTS.fromEmail,
-      fromPhone: b.fromPhone ?? BUSINESS_DEFAULTS.fromPhone,
+      fromName: b.fromName ?? business.fromName,
+      fromTradingAs: b.fromTradingAs ?? business.fromTradingAs,
+      fromAbn: b.fromAbn ?? business.fromAbn,
+      fromAddress: b.fromAddress ?? business.fromAddress,
+      fromEmail: b.fromEmail ?? business.fromEmail,
+      fromPhone: b.fromPhone ?? business.fromPhone,
       showFromAddress,
       billToName: b.billToName ?? '',
       billToLines: b.billToLines ?? '',
@@ -58,16 +65,17 @@ export async function POST(req: NextRequest) {
         amount: Number(it.amount) || 0,
       })),
       notes: b.notes ?? '',
-      payAccountName: b.payAccountName ?? PAYMENT_DEFAULTS.payAccountName,
-      payBsb: b.payBsb ?? PAYMENT_DEFAULTS.payBsb,
-      payAccountNumber: b.payAccountNumber ?? PAYMENT_DEFAULTS.payAccountNumber,
+      payAccountName: b.payAccountName ?? payment.payAccountName,
+      payBsb: b.payBsb ?? payment.payBsb,
+      payAccountNumber: b.payAccountNumber ?? payment.payAccountNumber,
       bookingId: b.bookingId ?? null,
       bookingIds: Array.isArray(b.bookingIds) ? b.bookingIds.filter((x: unknown) => typeof x === 'string' && x) : [],
       // An invoice a guest creates belongs to them; admin invoices are unowned.
       ownerGuestId: ctx.role === 'guest' ? ctx.guestId : null,
     };
-    const invoice = await createInvoice(input);
-    logActivity('invoice.created', `Invoice ${invoice.number} created for ${invoice.billToName || 'no recipient'}`, { invoiceId: invoice.id, total: invoice.total }, ctx.role === 'guest' ? `guest:${ctx.guestId}` : 'admin');
+    const actor = ctx.role === "admin" ? staffLabel(ctx.profile) : "Guest";
+    const invoice = await createInvoice(input, actor);
+    logActivity('invoice.created', `Invoice ${invoice.number} created for ${invoice.billToName || 'no recipient'}`, { invoiceId: invoice.id, total: invoice.total }, ctx.role === 'guest' ? `guest:${ctx.guestId}` : actor);
     return NextResponse.json(invoice, { status: 201 });
   } catch (err) {
     console.error('Invoice create error:', err);

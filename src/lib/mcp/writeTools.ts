@@ -1,3 +1,9 @@
+import { sendSms, SmsError } from '../sms';
+import { australianMobile } from '../smsTypes';
+import { sydneyLocalToIso } from './time';
+export { sydneyLocalToIso } from './time';
+import { CallingError, outcomeSchema, recordCall } from '../calling';
+import { staffLabel } from '../staff';
 // Write tools for the ChatGPT connector, registered only when
 // MCP_WRITES_ENABLED=true (see config.ts). Unlike the read tools these go
 // through src/lib/db.ts on the app's normal (owner) connection: the same
@@ -23,7 +29,7 @@ import { normalizeDocNumber } from './records';
 import { isIsoDate, toSydney, sydneyToday } from './time';
 import {
   addBooking, updateBooking, getBookingById, getBookingsInRange, logActivity,
-  createQuote, getQuotes, getQuoteById, updateQuote, getSettings,
+  createQuote, getQuotes, getQuoteById, updateQuote, getSettings, getBusinessProfiles, getPaymentProfiles,
   createInvoice, getInvoices, getInvoiceById, updateInvoice,
   getRecurringJobs, createProfileFromBooking, createJobForProfile, generateNextVisit,
   type Booking, type BookingStatus, type ServiceType,
@@ -34,7 +40,8 @@ import {
   QUOTE_SERVICE_OPTIONS, QUOTE_EXTRA_OPTIONS, resolvePackageFields, packagePercentsFromSettings,
   type QuoteInput, type Quote,
 } from '@/lib/quote';
-import { BUSINESS_DEFAULTS, PAYMENT_DEFAULTS, paymentDueTermsDays, type InvoiceInput, type Invoice } from '@/lib/invoice';
+import { documentBusinessDefaults, documentPaymentDefaults } from '../documentDefaults';
+import { paymentDueTermsDays, type InvoiceInput, type Invoice } from '@/lib/invoice';
 import { presetDiscount } from '@/lib/recurring';
 
 const writeAnnotations = (confirm: boolean) =>
@@ -54,22 +61,6 @@ const LEAD_SOURCES = ['called-us', 'we-called', 'door-to-door', 'in-person', 're
 const QUOTE_ITEM_KEYS = [...QUOTE_SERVICE_OPTIONS.map(o => o.key), ...QUOTE_EXTRA_OPTIONS.map(o => o.key)] as [string, ...string[]];
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
-
-// Sydney local wall time → UTC ISO. Tries both possible offsets (AEST +10,
-// AEDT +11) and keeps the one that renders back to the same wall time, so a
-// time skipped by the daylight-saving change is rejected instead of shifted.
-export function sydneyLocalToIso(local: string): string | null {
-  const [d, t] = local.split('T');
-  if (!isIsoDate(d)) return null;
-  const [hh, mm] = t.split(':').map(Number);
-  if (hh > 23 || mm > 59) return null;
-  for (const off of [11, 10]) {
-    const iso = new Date(Date.UTC(+d.slice(0, 4), +d.slice(5, 7) - 1, +d.slice(8, 10), hh - off, mm)).toISOString();
-    const back = toSydney(iso);
-    if (back && back.date === d && back.time === t) return iso;
-  }
-  return null;
-}
 
 const bookingView = (b: Booking) => ({
   ...b,
@@ -101,8 +92,9 @@ export function registerWriteTools(server: McpServer, cfg: McpConfig, caller: Ca
   // Who made the change, for the activity log and note stamps: the owner via
   // ChatGPT/Claude, or the Atlas phone assistant (Vapi machine login).
   const isOwner = caller.scopes.includes(MCP_SCOPE);
-  const actor = isOwner ? 'chatgpt' : 'atlas';
-  const via = isOwner ? 'ChatGPT' : 'Atlas';
+  const actor = isOwner && caller.profile ? staffLabel(caller.profile, caller.channel ?? 'connector') : 'atlas';
+  const createdBy = isOwner ? actor : 'Atlas';
+  const via = !isOwner ? 'Atlas' : caller.channel === 'claude' ? 'Claude' : caller.channel === 'connector' ? 'Connector' : 'ChatGPT';
 
   // ── Retry protection ─────────────────────────────────────────────────────
   // create_* tools take an optional requestId. Retrying a timed-out call with
@@ -172,7 +164,7 @@ export function registerWriteTools(server: McpServer, cfg: McpConfig, caller: Ca
     // Owner tokens: every write tool (MCP_WRITES_ENABLED). Vapi tokens: only
     // the ones their scopes allow (quotes.write → create/update quote).
     if (!canUseWriteTool(caller.scopes, name, cfg.writesEnabled)) return;
-    server.registerTool(name, { title, description, inputSchema, annotations: { title, ...writeAnnotations(cfg.writesConfirm) } },
+    server.registerTool(name, { title, description, inputSchema, annotations: { title, ...writeAnnotations(cfg.writesConfirm || name === 'send_customer_sms'), openWorldHint: name === 'send_customer_sms' } },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (async (args: any): Promise<CallToolResult> => {
         const started = Date.now();
@@ -182,6 +174,9 @@ export function registerWriteTools(server: McpServer, cfg: McpConfig, caller: Ca
           if (recent >= cfg.toolCallsPer10Min) {
             await audit({ ...base, event: 'rate_limited', ok: false });
             return { content: [{ type: 'text', text: `Rate limit reached (${cfg.toolCallsPer10Min} tool calls per 10 minutes). Wait a few minutes and continue.` }], isError: true };
+          }
+          if (isOwner && !caller.profile) {
+            return { isError: true, content: [{ type: "text", text: "Ask the user which CRM profile to use: Liam or Lincoln. This connection has no profile. Have them reconnect and select that profile before retrying the write." }] };
           }
           const result = await handler(args) as Record<string, unknown>;
           const failed = !!result && typeof result === 'object' && 'error' in result;
@@ -199,6 +194,54 @@ export function registerWriteTools(server: McpServer, cfg: McpConfig, caller: Ca
   }
 
   // ── Bookings ─────────────────────────────────────────────────────────────
+
+
+  if (isOwner) tool('send_customer_sms', 'Send a customer SMS',
+    'Send one free-form SMS, quote link, invoice link, confirmed appointment, or overdue reminder. For manual messages give the exact Australian mobile or booking ID, the message text, and a UUID requestId. For templates give the exact record ID. Use list_sms_conversations to resolve names and ask if recipients are ambiguous. Get explicit permission for the recipient and message before calling. SMS consent and live sending are required. Template first sends are deduplicated. An explicit template resend requires resend=true and a new UUID. Reuse the UUID on retries.',
+    {
+      kind: z.enum(['quote', 'invoice', 'booking', 'reminder', 'manual']),
+      recordId: id.optional(),
+      phone: z.string().trim().min(1).max(32).optional(),
+      text: z.string().trim().min(1).max(500).optional(),
+      resend: z.boolean().default(false),
+      requestId: z.string().uuid().optional(),
+    },
+    async ({ kind, recordId, phone, text, resend, requestId }) => {
+      if (resend && !requestId) return { error: 'An explicit resend needs a requestId UUID.' };
+      if (kind === 'manual' && (!text || !requestId || Boolean(phone) === Boolean(recordId))) {
+        return { error: 'A manual SMS needs text, a requestId UUID, and either a phone number or a booking ID.' };
+      }
+      if (kind !== 'manual' && (!recordId || phone || text)) return { error: 'A template SMS needs its record ID.' };
+      const mobile = phone ? australianMobile(phone) : null;
+      if (phone && !mobile) return { error: 'Enter a valid Australian mobile number.' };
+      try {
+        const message = await sendSms({ kind, recordId: mobile ? 'phone:' + mobile : recordId!, text,
+          requestId: kind === 'manual' || resend ? requestId : undefined }, actor);
+        if (!message) return { error: 'The message was skipped.' };
+        return { id: message.id, phone: message.phone, recordId: message.recordId, status: message.status, deliveryError: message.error };
+      } catch (error) {
+        if (error instanceof SmsError) return { error: error.message };
+        throw error;
+      }
+    });
+
+  if (isOwner) tool('record_calling_action', 'Record a Call List action',
+    'Update an exact booking ID in Call List. Record answered or no-answer only when the user confirms what happened. Use callback with a future Canberra time, quote with time/service/assigned staff, note to append to CRM notes (set amends to the original event ID to correct it), assign to set a caller, or not-interested/do-not-call to exclude. Reopen requires an explicit request, especially for do-not-call. Ask for missing details. Reuse requestId on retry.',
+    { ...outcomeSchema.shape, nextAt: z.string().max(40).optional() },
+    async ({ nextAt, ...input }) => {
+      if (!caller.profile) return { error: 'Ask whether the user uses Liam or Lincoln, then have them reconnect with that profile.' };
+      const iso = nextAt && (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(nextAt) ? sydneyLocalToIso(nextAt) : nextAt);
+      if (nextAt && !iso) return { error: 'Choose a valid Canberra date and time.' };
+      try {
+        return { event: await recordCall({ staff: caller.profile, session: 'mcp:' + caller.clientId, channel: caller.channel ?? 'connector' }, {
+          ...input, nextAt: iso || undefined,
+          recordAttempt: input.recordAttempt ?? ['answered', 'no-answer'].includes(input.outcome),
+        }, false) };
+      } catch (error) {
+        if (error instanceof CallingError || error instanceof z.ZodError) return { error: error instanceof z.ZodError ? error.issues[0]?.message : error.message };
+        throw error;
+      }
+    });
 
   tool('create_booking', 'Add a booking (customer / lead / job)',
     'Adds a new booking, exactly like "Add booking" in the admin. Use for a new customer, lead or job. Optionally put it straight on the calendar with scheduledStart (Sydney local time). Check search_everything first so you don\'t create a duplicate of an existing customer.',
@@ -241,7 +284,7 @@ export function registerWriteTools(server: McpServer, cfg: McpConfig, caller: Ca
         status: (a.status ?? (scheduledAt ? 'confirmed' : 'uncontacted')) as BookingStatus,
         source: 'manual', scheduledAt, scheduledEnd,
         leadSource: a.leadSource ?? null,
-      });
+      }, createdBy);
       await logActivity('booking.created', `${booking.name} added via ${via} (${booking.service || 'no service'})`, { bookingId: booking.id }, actor);
       // Report what's actually in the database, not what we meant to save.
       const saved = await getBookingById(booking.id);
@@ -353,6 +396,7 @@ export function registerWriteTools(server: McpServer, cfg: McpConfig, caller: Ca
       const items = a.items ?? [];
       const keys = items.map(i => i.key);
       const settings = await getSettings();
+      const business = documentBusinessDefaults(caller.profile, caller.profile ? await getBusinessProfiles() : [], !isOwner || settings.autofillBusinessInfo);
       const quoteDate = sydneyToday();
       const input: QuoteInput = {
         bookingId: booking.id,
@@ -368,7 +412,7 @@ export function registerWriteTools(server: McpServer, cfg: McpConfig, caller: Ca
         propertyType: booking.propertyType,
         billToName: booking.name,
         billToAddress: [booking.address, booking.suburb].filter(Boolean).join(', '),
-        ...BUSINESS_DEFAULTS,
+        ...business,
         showFromAddress: settings.defaultShowAddressOnQuote,
         quoteDate,
         validUntil: addDays(quoteDate, a.validDays ?? QUOTE_VALID_DAYS),
@@ -395,7 +439,7 @@ export function registerWriteTools(server: McpServer, cfg: McpConfig, caller: Ca
       };
       return once('create_quote', a.requestId, async () => {
         // syncBooking:false — applyQuoteToBooking below decides what the booking gets.
-        const quote = await createQuote(input, { syncBooking: false });
+        const quote = await createQuote(input, { syncBooking: false, createdBy });
         const saved = await getQuoteById(quote.id);
         if (!saved) return { error: `Quote ${quote.number} could not be read back after saving — check list_quotes before retrying.` };
         const bookingChanges = await applyQuoteToBooking(saved);
@@ -462,11 +506,13 @@ export function registerWriteTools(server: McpServer, cfg: McpConfig, caller: Ca
       if (!items.length) return { error: 'Give at least one line item (the booking has no price to invoice from).' };
       const invoiceDate = a.invoiceDate ?? sydneyToday();
       const settings = await getSettings();
+      const business = documentBusinessDefaults(caller.profile, caller.profile ? await getBusinessProfiles() : [], !isOwner || settings.autofillBusinessInfo);
+      const payment = documentPaymentDefaults(caller.profile, caller.profile ? await getPaymentProfiles() : [], !isOwner || settings.autofillPaymentDetails);
       const isTaxInvoice = !!a.isTaxInvoice;
       const input: InvoiceInput = {
         isTaxInvoice,
         status: a.status ?? 'draft',
-        ...BUSINESS_DEFAULTS,
+        ...business,
         showFromAddress: isTaxInvoice ? true : settings.defaultShowAddressOnInvoice,
         billToName: a.billToName ?? booking?.name ?? '',
         billToLines: a.billToLines ?? (booking ? [booking.address, booking.suburb].filter(Boolean).join(', ') : ''),
@@ -480,9 +526,7 @@ export function registerWriteTools(server: McpServer, cfg: McpConfig, caller: Ca
           date: 'date' in it ? it.date ?? '' : '', amount: it.amount,
         })),
         notes: a.notes ?? '',
-        payAccountName: PAYMENT_DEFAULTS.payAccountName,
-        payBsb: PAYMENT_DEFAULTS.payBsb,
-        payAccountNumber: PAYMENT_DEFAULTS.payAccountNumber,
+        ...payment,
         bookingId: booking?.id ?? null,
         bookingIds: booking ? [booking.id] : [],
         ownerGuestId: null,
@@ -492,7 +536,7 @@ export function registerWriteTools(server: McpServer, cfg: McpConfig, caller: Ca
         return inv ? { created: true, invoice: inv, customerLink: link(`/invoice/${inv.token}`) } : null;
       };
       return once('create_invoice', a.requestId, async () => {
-        const invoice = await createInvoice(input);
+        const invoice = await createInvoice(input, createdBy);
         const saved = await getInvoiceById(invoice.id);
         if (!saved) return { error: `Invoice ${invoice.number} could not be read back after saving — check list_invoices before retrying.` };
         await logActivity('invoice.created', `Invoice ${saved.number} created via ${via} for ${saved.billToName || 'no recipient'}`, { invoiceId: saved.id, total: saved.total }, actor);
@@ -555,7 +599,7 @@ export function registerWriteTools(server: McpServer, cfg: McpConfig, caller: Ca
         customIntervalUnit: a.customIntervalUnit ?? 'weeks',
         discount: a.discount ?? presetDiscount(a.frequency),
         visitPrice: a.visitPrice ?? (booking?.quoteAmount && booking.quoteAmount > 0 ? booking.quoteAmount : null),
-      });
+      }, createdBy);
       if (!result) return { error: `No booking with id ${a.bookingId}.` };
       await logActivity('recurring.created', `${result.job.name} made a recurring customer via ${via}`, { recurringId: result.job.id, bookingId: a.bookingId }, actor);
       return {
@@ -579,7 +623,7 @@ export function registerWriteTools(server: McpServer, cfg: McpConfig, caller: Ca
       if (!profile) return { error: `No recurring customer ${a.profileId}. Use list_recurring_plans.` };
       const scheduledAt = a.startTime ? sydneyLocalToIso(`${a.date}T${a.startTime}`) : null;
       if (a.startTime && !scheduledAt) return { error: 'That start time isn\'t a valid Sydney time.' };
-      const result = await createJobForProfile(profile.id, { date: a.date, scheduledAt, price: a.price ?? profile.visitPrice, notes: a.notes });
+      const result = await createJobForProfile(profile.id, { date: a.date, scheduledAt, price: a.price ?? profile.visitPrice, notes: a.notes }, createdBy);
       if (!result) return { error: 'Recurring customer not found.' };
       await logActivity('booking.created', `${result.booking.name} recurring job added via ${via} for ${a.date}`, { bookingId: result.booking.id, recurringId: profile.id }, actor);
       return { created: true, booking: bookingView(result.booking), nextVisitDue: result.job.nextDate };
@@ -589,7 +633,7 @@ export function registerWriteTools(server: McpServer, cfg: McpConfig, caller: Ca
     'Books the next due visit for a recurring customer profile (RJ-…) on its due date at the default start time, confirmed and on the calendar, and moves the plan on one cycle — same as "Book next visit" in the admin.',
     { profileId: id },
     async ({ profileId }) => {
-      const result = await generateNextVisit(profileId);
+      const result = await generateNextVisit(profileId, createdBy);
       if (!result) return { error: `No recurring customer ${profileId}.` };
       await logActivity('booking.created', `${result.booking.name} next recurring visit booked via ${via}`, { bookingId: result.booking.id, recurringId: profileId }, actor);
       return { created: true, booking: bookingView(result.booking), nextVisitDue: result.job.nextDate };

@@ -40,7 +40,7 @@ export function normalizeTimestamp(v: unknown): string | null {
 export function toRecord(row: Row, omit: string[] = []): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [col, raw] of Object.entries(row)) {
-    if (omit.includes(col)) continue;
+    if (col === 'call_state' || omit.includes(col)) continue;
     const key = camel(col);
     if (raw === null || raw === undefined) { out[key] = null; continue; }
     if (isTimestampCol(col)) { out[key] = normalizeTimestamp(raw); continue; }

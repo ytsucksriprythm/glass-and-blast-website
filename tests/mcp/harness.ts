@@ -181,11 +181,11 @@ export async function getTx(clientId: string, challenge: string): Promise<string
   return m[1].replace(/&amp;/g, '&');
 }
 
-export async function fullLogin(): Promise<{ accessToken: string; refreshToken: string; clientId: string }> {
+export async function fullLogin(profile: "liam" | "lincoln" = "liam"): Promise<{ accessToken: string; refreshToken: string; clientId: string }> {
   const clientId = await registerClient();
   const verifier = randomToken(48);
   const tx = await getTx(clientId, pkceS256(verifier));
-  const res = await oauth.authorizePost(req('/api/oauth/authorize', { method: 'POST', form: { tx, password: OWNER_PASSWORD, decision: 'approve' }, headers: { 'x-forwarded-for': '198.51.100.10' } }));
+  const res = await oauth.authorizePost(req('/api/oauth/authorize', { method: 'POST', form: { tx, password: OWNER_PASSWORD, decision: 'approve', profile }, headers: { 'x-forwarded-for': '198.51.100.10' } }));
   const loc = new URL(res.headers.get('location')!);
   const code = loc.searchParams.get('code')!;
   const tok = await oauth.token(req('/api/oauth/token', { method: 'POST', form: { grant_type: 'authorization_code', code, code_verifier: verifier, client_id: clientId, redirect_uri: REDIRECT, resource: RESOURCE } }));

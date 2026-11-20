@@ -1,6 +1,7 @@
+import { staffLabel } from '@/lib/staff';
 import { NextRequest, NextResponse } from 'next/server';
 import { getCustomerBookings, createJobForCustomer, getRecurringJobs } from '@/lib/db';
-import { isAdminAuthenticated } from '@/lib/auth';
+import { getStaffProfile, isAdminAuthenticated } from '@/lib/auth';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,7 +19,8 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
 
 // POST { date, scheduledAt, price, notes } → a one-off job for this customer.
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  if (!await isAdminAuthenticated()) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  const profile = await getStaffProfile();
+  if (!profile) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   const { id } = await params;
   const body = await req.json().catch(() => ({}));
   if (typeof body.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(body.date)) {
@@ -30,7 +32,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     price: typeof body.price === 'number' && Number.isFinite(body.price) ? body.price : null,
     service: typeof body.service === 'string' ? body.service : undefined,
     notes: typeof body.notes === 'string' ? body.notes : undefined,
-  });
+  }, staffLabel(profile));
   if (!booking) return NextResponse.json({ error: 'Not found' }, { status: 404 });
   return NextResponse.json(booking, { status: 201 });
 }

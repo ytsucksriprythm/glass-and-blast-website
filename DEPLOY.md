@@ -65,3 +65,22 @@ You need SMTP credentials so the site can send as your domain address.
 - `SMTP_HOST=smtp.zoho.com.au`, `SMTP_PORT=465`, `SMTP_USER=info@glassandblast.com.au`, `SMTP_PASS=` mailbox/app password.
 
 Either way, `EMAIL_FROM` and `EMAIL_REPLY_TO` stay set to `info@glassandblast.com.au`.
+# Twilio CRM SMS
+
+Set these server-side variables in Vercel Production. Use the numeric Australian sender for two-way SMS.
+
+| Variable | Value |
+| --- | --- |
+| `TWILIO_ACCOUNT_SID` | Twilio account SID |
+| `TWILIO_AUTH_TOKEN` | Current Twilio auth token, stored as a sensitive secret |
+| `TWILIO_SMS_FROM` | The SMS-capable Australian Twilio number in E.164 format |
+| `TWILIO_SMS_PUBLIC_URL` | `https://glassandblast.com.au`, used for message links and signature validation |
+| `TWILIO_SMS_ENABLED` | `true` to allow individual CRM and MCP sends after deployment |
+| `TWILIO_SMS_AUTOMATION` | `true` to enable approval, completion, booking and overdue triggers |
+| `TWILIO_SMS_STAFF_ALERT_RECIPIENTS` | Comma-separated Australian mobile numbers for inbound SMS staff alerts |
+| `MCP_WRITES_ENABLED` | `true` to expose the CRM connector's write tools, including staff SMS sends |
+| `CRON_SECRET` | Existing Vercel cron secret |
+
+The Twilio number already has an inbound webhook. Preserve its routing by having the existing handler validate the original Twilio signature and sign a new request for `POST https://glassandblast.com.au/api/webhooks/twilio/incoming`, or explicitly switch the Twilio SMS webhook to that endpoint if its previous handler is no longer in use. Outbound requests attach the signed status callback URL automatically.
+
+On the first CRM send without recorded consent, staff confirm that the customer has already agreed to service texts. For a number receiving its first customer SMS, the CRM submits a one-time welcome and opt-out notice before submitting the requested message. A customer opt-out blocks dispatch, including reminders. A customer can opt back in by texting START. Automation only handles new qualifying CRM actions. The daily SMS cron sends up to two reminders for an invoice previously sent by SMS, starting three and seven days after the due date and stopping when the invoice is paid.

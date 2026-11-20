@@ -1,6 +1,7 @@
+import { isStaffProfile } from '@/lib/staff';
 import { NextRequest, NextResponse } from 'next/server';
 import {
-  checkPassword, createSessionToken, getSessionCookieConfig, getClearCookieConfig,
+  checkPassword, getAdminSession, createSessionToken, getSessionCookieConfig, getClearCookieConfig,
   createGuestToken, getGuestCookieConfig, getClearGuestCookieConfig, verifyPasswordHash,
 } from '@/lib/auth';
 import { getGuests } from '@/lib/db';
@@ -9,12 +10,32 @@ import { getGuests } from '@/lib/db';
 // active guest's password grants that guest's session. Logging in as one role
 // always clears the other cookie, so you can never hold a guest session that
 // silently carries admin rights (or vice versa).
+export async function GET() {
+  const session = await getAdminSession();
+  const role = session?.profile === 'pending' ? 'choose-profile' : session ? 'admin' : null;
+  return NextResponse.json({ role }, { headers: { 'Cache-Control': 'no-store' } });
+}
+
 export async function POST(req: NextRequest) {
-  const { password, remember = true } = await req.json();
+  const { password, remember = true, profile, switchProfile } = await req.json().catch(() => ({}));
+  if (profile !== undefined) {
+    const session = await getAdminSession();
+    const canChoose = session?.profile === 'pending' && switchProfile !== true;
+    const canSwitch = switchProfile === true && isStaffProfile(session?.profile) &&
+      req.headers.get('content-type')?.split(';')[0].trim().toLowerCase() === 'application/json';
+    if (!session || !isStaffProfile(profile) || (!canChoose && !canSwitch)) {
+      return NextResponse.json({ error: 'Enter your password again.' }, { status: 401 });
+    }
+    const response = NextResponse.json({ success: true, role: "admin", profile });
+    const cookie = getSessionCookieConfig(createSessionToken(profile, session.remember), session.remember);
+    response.cookies.set(cookie.name, cookie.value, cookie);
+    return response;
+  }
+  if (typeof password !== "string") return NextResponse.json({ error: "Invalid password" }, { status: 401 });
 
   if (checkPassword(password)) {
-    const res = NextResponse.json({ success: true, role: 'admin' });
-    const admin = getSessionCookieConfig(createSessionToken(), remember);
+    const res = NextResponse.json({ success: true, role: 'choose-profile' });
+    const admin = { ...getSessionCookieConfig(createSessionToken("pending", remember), remember), maxAge: 300 };
     res.cookies.set(admin.name, admin.value, admin);
     const clearGuest = getClearGuestCookieConfig();
     res.cookies.set(clearGuest.name, clearGuest.value, { maxAge: 0, path: '/' });

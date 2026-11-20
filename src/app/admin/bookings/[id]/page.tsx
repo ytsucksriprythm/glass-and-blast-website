@@ -1,5 +1,17 @@
 'use client';
 
+import { buildConfirmationText, serviceText } from '@/lib/bookingConfirmation';
+
+import DocumentDialog from '@/components/admin/DocumentDialog';
+import DocumentSmsDialog, { type DocumentSmsTarget } from '@/components/admin/DocumentSmsDialog';
+import InvoiceEditor from '@/components/InvoiceEditor';
+import { bookingToInvoicePrefill } from '@/lib/invoicePrefill';
+
+import SmsPanel from '@/components/admin/SmsPanel';
+import { australianMobile, smsPhone } from '@/lib/smsTypes';
+
+import AdminRecordShell from '@/components/admin/AdminRecordShell';
+
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
@@ -11,11 +23,17 @@ import {
 } from 'lucide-react';
 import type { Booking, BookingStatus, BookingPhoto, PhotoType } from '@/lib/db';
 import type { Invoice } from '@/lib/invoice';
-import { type Quote, money as quoteMoney, buildQuoteText } from '@/lib/quote';
+import { type Quote, money as quoteMoney } from '@/lib/quote';
 import { quoteShareMessage, quoteShareClipboardText } from '@/lib/quoteShare';
 import { AddressLink } from '@/components/AddressLink';
 import { FlagButton, FlagModal } from '@/components/admin/JobFlag';
 import QuoteModal from '@/components/QuoteModal';
+import { STAFF_PROFILES } from '@/lib/staff';
+import { AdminMobileNav, AdminMoreSheet, adminNavItems, useMoreSheet } from '@/components/admin/AdminNav';
+import { readStaffPreference, useStaffProfile, writeStaffPreference } from '@/components/admin/StaffSession';
+import CreatedBy from '@/components/admin/CreatedBy';
+import ScheduleBookingSheet from '@/components/admin/ScheduleBookingSheet';
+import { customerHref } from '@/components/admin/CustomerName';
 import CustomerName from '@/components/admin/CustomerName';
 import PlanPicker, { DEFAULT_PLAN, planPayload, type PlanValue } from '@/components/admin/PlanPicker';
 import { profileHref } from '@/lib/recurring';
@@ -41,14 +59,6 @@ const fromLocalInput = (v: string) => (v ? new Date(v).toISOString() : null);
 const INVOICE_STATUS_LABEL: Record<string, string> = { draft: 'Draft', sent: 'Sent', paid: 'Paid', cancelled: 'Cancelled' };
 const QUOTE_STATUS_LABEL: Record<string, string> = { draft: 'Draft', sent: 'Sent' };
 
-const SERVICE_LABELS: Record<string, string> = {
-  'window-washing': 'Window Washing',
-  'pressure-washing': 'Pressure Washing',
-  'both': 'Both Services',
-  'flyscreen-repair': 'Flyscreen Repair',
-  'solar-panel-cleaning': 'Solar Panel Cleaning',
-  'other': 'Other',
-};
 const SERVICE_OPTIONS = [
   { v: 'window-washing', l: 'Window Washing' },
   { v: 'pressure-washing', l: 'Pressure Washing' },
@@ -59,7 +69,6 @@ const SERVICE_OPTIONS = [
 const STATUS_KEYS: BookingStatus[] = ['uncontacted', 'contacted', 'quote-booked', 'quoted', 'confirmed', 'completed', 'cancelled', 'cold'];
 const STATUS_LABEL: Record<string, string> = { uncontacted: 'Uncontacted', contacted: 'Contacted', 'quote-booked': 'Quote Booked', quoted: 'Quoted', confirmed: 'Confirmed', completed: 'Completed', cancelled: 'Cancelled', cold: 'Cold Lead' };
 
-const serviceText = (s: string) => (s ?? '').split(',').filter(Boolean).map(x => SERVICE_LABELS[x] ?? x).join(' + ') || '-';
 const money = (n?: number | null) => typeof n === 'number' ? `$${n.toLocaleString('en-AU', { maximumFractionDigits: 0 })}` : '';
 
 // Editable form: quoteAmount held as a string for the input; service is a CSV string;
@@ -76,7 +85,7 @@ const toForm = (b: Booking): EditForm => ({
 
 const longDate = (iso: string) => new Date(iso).toLocaleDateString('en-AU', { day: 'numeric', month: 'long', year: 'numeric' });
 
-function Row({ icon: Icon, label, children, action }: { icon: React.FC<{ className?: string }>; label: string; children: React.ReactNode; action?: React.ReactNode }) {
+function Row({ icon: Icon, label, children }: { icon: React.FC<{ className?: string }>; label: string; children: React.ReactNode }) {
   return (
     <div className="flex items-start gap-3 py-3 border-b border-white/5 last:border-0">
       <Icon className="w-4 h-4 text-sky-400 mt-0.5 flex-shrink-0" />
@@ -84,36 +93,8 @@ function Row({ icon: Icon, label, children, action }: { icon: React.FC<{ classNa
         <div className="text-slate-500 text-xs">{label}</div>
         <div className="text-white text-sm mt-0.5 break-words">{children}</div>
       </div>
-      {action && <div className="flex-shrink-0 self-center">{action}</div>}
     </div>
   );
-}
-
-// Plain-text booking confirmation for pasting into an SMS / email.
-// Laid out as a document (labelled fields), not a sentence.
-function buildConfirmationText(b: Booking): string {
-  const d = new Date(b.scheduledAt as string);
-  const date = d.toLocaleDateString('en-AU', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
-  const time = d.toLocaleTimeString('en-AU', { hour: 'numeric', minute: '2-digit' }).toUpperCase();
-  const address = [b.address, b.suburb].filter(Boolean).join(', ');
-  const rule = '━━━━━━━━━━━━━━━━━━';
-  const lines = [
-    'GLASS & BLAST',
-    'BOOKING CONFIRMATION',
-    rule,
-    `Ref: ${b.id.replace(/^BK-/, '').slice(-6)}`,
-    b.name ? `Client: ${b.name}` : '',
-    `Date: ${date}`,
-    `Time: ${time}`,
-    address ? `Address: ${address}` : '',
-    `Service: ${serviceText(b.service)}${b.propertyType === 'commercial' ? ' (Commercial)' : ''}`,
-    typeof b.quoteAmount === 'number' && b.quoteAmount > 0 ? `Price: ${money(b.quoteAmount)}` : '',
-    b.paid ? 'Payment: Received' : '',
-    rule,
-    'Status: CONFIRMED',
-    '0466 050 834 | glassandblast.com.au',
-  ];
-  return lines.filter(Boolean).join('\n');
 }
 
 async function copyConfirmation(b: Booking) {
@@ -245,6 +226,9 @@ export default function BookingView() {
   const [edit, setEdit] = useState(false);
   const [form, setForm] = useState<EditForm | null>(null);
   const [saving, setSaving] = useState(false);
+  const profile = useStaffProfile();
+  const moreSheet = useMoreSheet();
+  const navItems = adminNavItems();
   const [from, setFrom] = useState<string | null>(null);
 
   // Guest assignment ("Send to")
@@ -254,10 +238,16 @@ export default function BookingView() {
 
   // Linked invoices (linkage lives on the invoice; the booking derives them)
   const [invoices, setInvoices] = useState<Invoice[]>([]);
-  const [showLink, setShowLink] = useState(false);
+  const [showInvoice, setShowInvoice] = useState(false);
+  const [smsTarget, setSmsTarget] = useState<DocumentSmsTarget | null>(null);
 
   // Quotes — generating one also drives this booking's quoteAmount/status (see syncQuoteAmountToBooking in db.ts)
   const [quotes, setQuotes] = useState<Quote[]>([]);
+
+  const [showPhotos, setShowPhotos] = useState(false);
+  const [showSchedule, setShowSchedule] = useState(false);
+  const [updatingStatus, setUpdatingStatus] = useState(false);
+  const [actionError, setActionError] = useState('');
   const [showQuoteModal, setShowQuoteModal] = useState(false);
   const [editingQuote, setEditingQuote] = useState<Quote | null>(null);
 
@@ -332,15 +322,31 @@ export default function BookingView() {
     refreshBooking();
   };
   const shareQuote = async (q: Quote) => {
-    const url = `${window.location.origin}/quote/${q.token}`;
-    const title = `Quote ${q.number} · ${q.fromTradingAs}`;
-    const nav = navigator as Navigator & { share?: (d: ShareData) => Promise<void> };
-    if (nav.share) { try { await nav.share({ title, text: quoteShareMessage(q), url }); } catch { /* dismissed */ } }
-    else { try { await navigator.clipboard.writeText(quoteShareClipboardText(q, url)); toast.success('Quote link copied'); } catch { toast.error('Copy failed'); } }
-  };
-  const copyQuote = async (q: Quote) => {
-    try { await navigator.clipboard.writeText(buildQuoteText(q)); toast.success('Quote text copied'); }
-    catch { toast.error('Copy failed'); }
+    const url = window.location.origin + '/quote/' + q.token;
+    try {
+      if (navigator.share) {
+        await navigator.share({ title: 'Quote ' + q.number, text: quoteShareMessage(q), url });
+        toast.success('Quote link shared');
+      } else {
+        await navigator.clipboard.writeText(quoteShareClipboardText(q, url));
+        toast.success('Quote link copied');
+      }
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === 'AbortError')) toast.error('Could not share quote. Try copying the link.');
+      return;
+    }
+    if (q.status === 'sent') return;
+    try {
+      const response = await fetch('/api/admin/quotes/' + q.id, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'sent' }),
+      });
+      if (!response.ok) throw new Error();
+      onQuoteSaved(await response.json());
+    } catch {
+      toast.error('The link was shared, but the quote could not be marked sent.');
+    }
   };
 
   // Remember the page we were opened from (passed as ?from=…) so Back returns
@@ -351,7 +357,18 @@ export default function BookingView() {
     if (f && f.startsWith('/admin')) setFrom(f); // same-app paths only
   }, []);
 
+  useEffect(() => {
+    if (state === "ok" && from?.startsWith("/admin/dashboard?") && new URL(from, window.location.origin).searchParams.get("tab") === "bookings") {
+      writeStaffPreference(profile, "open-booking", window.location.pathname + window.location.search);
+    }
+    if (state === "notfound") {
+      const remembered = readStaffPreference(profile, "open-booking");
+      if (remembered?.split("?")[0] === window.location.pathname) writeStaffPreference(profile, "open-booking", null);
+    }
+  }, [state, from, profile]);
+
   const goBack = () => {
+    if (readStaffPreference(profile, "open-booking")?.split("?")[0] === window.location.pathname) writeStaffPreference(profile, "open-booking", null);
     if (from) router.push(from);
     else if (window.history.length > 1) router.back();
     else router.push('/admin/dashboard');
@@ -361,7 +378,7 @@ export default function BookingView() {
     (async () => {
       try {
         const res = await fetch(`/api/admin/bookings/${id}`);
-        if (res.status === 401) { router.push('/admin'); return; }
+        if (res.status === 401) { router.replace('/admin?booking=' + encodeURIComponent(id)); return; }
         if (res.status === 404) { setState('notfound'); return; }
         const data: Booking = await res.json();
         setB(data); setForm(toForm(data)); setState('ok');
@@ -403,8 +420,7 @@ export default function BookingView() {
     finally { setSending(false); }
   };
 
-  const linkedInvoices = b ? invoices.filter(inv => inv.bookingIds.includes(b.id)) : [];
-  const unlinkedInvoices = b ? invoices.filter(inv => !inv.bookingIds.includes(b.id)) : [];
+  const linkedInvoices = b ? invoices.filter(inv => (inv.bookingIds?.includes(b.id) || inv.bookingId === b.id)) : [];
 
   // Add/remove this booking from an invoice's linked set (edits the invoice —
   // the single source of truth for linkage).
@@ -419,7 +435,6 @@ export default function BookingView() {
       });
       if (!res.ok) throw new Error();
       await loadInvoices();
-      setShowLink(false);
       toast.success(link ? `Linked invoice ${inv.number}` : `Unlinked ${inv.number}`);
     } catch { toast.error('Could not update link'); }
   };
@@ -436,7 +451,8 @@ export default function BookingView() {
   // out of "Leads to call back" on the dashboard (contactedAt auto-stamps
   // server-side — see withContactedAt in db.ts).
   const markContacted = async () => {
-    if (!b) return;
+    if (!b || updatingStatus) return;
+    setUpdatingStatus(true);
     try {
       const res = await fetch(`/api/admin/bookings/${b.id}`, {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
@@ -446,7 +462,30 @@ export default function BookingView() {
       const updated: Booking = await res.json();
       setB(updated); setForm(toForm(updated));
       toast.success('Marked as contacted');
-    } catch { toast.error('Could not update'); }
+    } catch { toast.error('Could not update'); } finally { setUpdatingStatus(false); }
+  };
+
+
+  const completeJob = async () => {
+    if (!b || updatingStatus) return;
+    setUpdatingStatus(true);
+    setActionError('');
+    try {
+      const response = await fetch('/api/admin/bookings/' + b.id, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'completed' }),
+      });
+      if (!response.ok) throw new Error();
+      const updated: Booking = await response.json();
+      setB(updated);
+      setForm(toForm(updated));
+      toast.success('Job completed');
+    } catch {
+      setActionError('Could not complete the job. Try again.');
+    } finally {
+      setUpdatingStatus(false);
+    }
   };
 
   const flagSave = async (note: string) => {
@@ -533,12 +572,54 @@ export default function BookingView() {
     finally { setSaving(false); }
   };
 
+
+  const activeInvoice = linkedInvoices.find(inv => inv.status === 'sent' || inv.status === 'draft') ?? linkedInvoices.find(inv => inv.status === 'paid');
+  const latestQuote = quotes[0];
+  const acceptedQuote = quotes.find(quote => quote.acceptedAt);
+  const invoiceHref = b && activeInvoice
+    ? '/admin/invoices/' + activeInvoice.id + '?from=' + encodeURIComponent('/admin/bookings/' + b.id + (from ? '?from=' + encodeURIComponent(from) : ''))
+    : '';
+  const createQuote = () => { setEditingQuote(null); setShowQuoteModal(true); };
+  const actionClass = 'flex min-h-11 flex-1 items-center justify-center rounded-lg bg-sky-500 px-4 py-2 font-semibold text-navy-900 disabled:opacity-50';
+  const secondaryClass = 'flex min-h-11 shrink-0 items-center justify-center rounded-lg border border-white/15 px-3 text-sm font-semibold text-sky-300';
+  let primaryAction: React.ReactNode = null;
+  let secondaryAction: React.ReactNode = null;
+  if (b && !['cancelled', 'cold'].includes(b.status)) {
+    const upcoming = Boolean(b.scheduledAt && Date.parse(b.scheduledAt) > Date.now());
+    const textConfirmation = upcoming && australianMobile(b.phone ?? '') &&
+      (b.status === 'confirmed' || (b.status === 'quote-booked' && !acceptedQuote));
+    if (b.status === 'completed') {
+      if (activeInvoice) primaryAction = <Link className={actionClass} href={invoiceHref}>{activeInvoice.status === 'paid' ? 'View invoice' : 'View invoice / record payment'}</Link>;
+      else if (!b.paid) primaryAction = <button className={actionClass} onClick={() => setShowInvoice(true)}>Create invoice</button>;
+    } else if (b.status === 'confirmed' && b.scheduledAt) {
+      primaryAction = upcoming && b.address
+        ? <AddressLink className={actionClass} address={[b.address, b.suburb].filter(Boolean).join(', ')} label="Directions" />
+        : !upcoming ? <button className={actionClass} disabled={updatingStatus} onClick={completeJob}>{updatingStatus ? 'Saving…' : 'Complete job'}</button> : null;
+    } else if ((b.status === 'confirmed' && !b.scheduledAt) || acceptedQuote) {
+      primaryAction = <button className={actionClass} onClick={() => setShowSchedule(true)}>Schedule job</button>;
+    } else if (latestQuote && !acceptedQuote) {
+      primaryAction = <button className={actionClass} onClick={() => shareQuote(latestQuote)}>Share quote</button>;
+    } else if (!b.scheduledAt) {
+      primaryAction = <button className={actionClass} onClick={() => setShowSchedule(true)}>Schedule quote visit</button>;
+      if (b.phone) secondaryAction = <a className={secondaryClass} href={'tel:' + b.phone}>Call</a>;
+    } else {
+      primaryAction = <button className={actionClass} onClick={createQuote}>Create quote</button>;
+    }
+    if (textConfirmation) {
+      primaryAction = <button className={actionClass} onClick={() => setSmsTarget({ kind: 'booking', id: b.id })}>Text confirmation</button>;
+      secondaryAction = b.status === 'confirmed' && b.address
+        ? <AddressLink className={secondaryClass} address={[b.address, b.suburb].filter(Boolean).join(', ')} label="Directions" />
+        : b.status === 'quote-booked' ? <button className={secondaryClass} onClick={createQuote}>Create quote</button> : null;
+    }
+  }
+
   const selectedServices = form?.service ? form.service.split(',') : [];
+  const hasActiveTeamMembers = guests.some(guest => guest.active);
 
   return (
-    <div className="min-h-[100svh] bg-navy-900">
+    <AdminRecordShell active="bookings">
       <header
-        className="sticky top-0 z-30 bg-navy-900/90 backdrop-blur border-b border-white/10 px-4 flex items-center justify-between"
+        className="crm-topbar sticky top-0 z-30 bg-navy-900/90 backdrop-blur border-b border-white/10 px-4 flex items-center justify-between"
         style={{ paddingTop: 'calc(env(safe-area-inset-top) + 0.85rem)', paddingBottom: '0.85rem' }}
       >
         {edit ? (
@@ -546,7 +627,7 @@ export default function BookingView() {
             <X className="w-5 h-5" /> Cancel
           </button>
         ) : (
-          <button onClick={goBack} className="inline-flex items-center gap-2 -ml-2 px-2 py-2 rounded-lg text-slate-300 hover:text-white active:bg-white/10 text-sm cursor-pointer transition-colors touch-manipulation">
+          <button onClick={goBack} className="inline-flex min-h-11 items-center gap-2 -ml-2 px-2 py-2 rounded-lg text-slate-300 hover:text-white active:bg-white/10 text-sm cursor-pointer transition-colors touch-manipulation">
             <ArrowLeft className="w-5 h-5" /> Back
           </button>
         )}
@@ -559,11 +640,11 @@ export default function BookingView() {
               <Edit3 className="w-4 h-4" /> Edit
             </button>
           )}
-          {!edit && <Link href="/admin/dashboard" className="text-slate-500 text-sm hover:text-sky-400">Dashboard</Link>}
+          {!edit && <Link href="/admin/dashboard" className="inline-flex items-center text-sm text-slate-300 hover:text-sky-400 lg:hidden">Dashboard</Link>}
         </div>
       </header>
 
-      <main className="max-w-xl mx-auto px-4 py-6 pb-28">
+      <main className="mx-auto max-w-3xl px-4 py-6 pb-44 sm:px-6">
         {state === 'loading' && (
           <div className="space-y-3">{[0, 1, 2, 3].map(i => <div key={i} className="h-14 bg-white/5 rounded-lg animate-pulse" />)}</div>
         )}
@@ -582,6 +663,7 @@ export default function BookingView() {
                 <h1 className="font-display text-2xl font-bold text-white break-words">
                   <CustomerName name={b.name} bookingId={b.id} recurringId={b.recurringId} from={`/admin/bookings/${b.id}${from ? `?from=${encodeURIComponent(from)}` : ''}`} iconClassName="w-5 h-5" />
                 </h1>
+                <CreatedBy name={b.createdBy} />
                 <div className="text-slate-500 text-xs mt-1">
                   {b.recurringId && <span className="text-amber-300/80 font-semibold">Recurring customer · </span>}
                   {b.source === 'manual' ? 'Added manually' : b.source === 'facebook-lead-ad' ? 'Facebook lead ad' : 'From website'} · {new Date(b.createdAt).toLocaleDateString('en-AU')}
@@ -607,23 +689,27 @@ export default function BookingView() {
             )}
 
             {b.source === 'website' && b.status === 'uncontacted' && (
-              <button onClick={markContacted} className="mb-5 w-full inline-flex items-center justify-center gap-2 px-4 py-3.5 rounded-lg border border-emerald-400/30 bg-emerald-400/10 text-emerald-300 hover:bg-emerald-400/15 text-base font-semibold transition-colors cursor-pointer">
+              <button onClick={markContacted} disabled={updatingStatus} className="mb-5 w-full inline-flex items-center justify-center gap-2 px-4 py-3.5 rounded-lg border border-emerald-400/30 bg-emerald-400/10 text-emerald-300 hover:bg-emerald-400/15 text-base font-semibold transition-colors cursor-pointer">
                 <Check className="w-5 h-5" /> Mark as Contacted
               </button>
             )}
 
-            <div className="mb-5 grid grid-cols-2 gap-3">
+            <div className={`mb-5 grid gap-3 ${hasActiveTeamMembers ? 'grid-cols-2' : 'grid-cols-1'}`}>
               {/* Opens the calendar in scheduling mode: pick a day and the slot is
                   filled in from this booking, on this same record. */}
-              <button onClick={() => router.push(`/admin/calendar?schedule=${b.id}`)} className="inline-flex items-center justify-center gap-2 px-4 py-3 rounded-lg border border-sky-400/30 bg-sky-400/10 text-sky-300 hover:bg-sky-400/15 text-sm font-semibold transition-colors cursor-pointer">
+              <button onClick={() => setShowSchedule(true)} className="inline-flex items-center justify-center gap-2 px-4 py-3 rounded-lg border border-sky-400/30 bg-sky-400/10 text-sky-300 hover:bg-sky-400/15 text-sm font-semibold transition-colors cursor-pointer">
                 <CalendarClock className="w-4 h-4" /> {b.scheduledAt ? 'Reschedule' : 'Add to calendar'}
               </button>
-              <button onClick={() => setShowSend(true)} className="inline-flex items-center justify-center gap-2 px-4 py-3 rounded-lg border border-sky-400/30 bg-sky-400/10 text-sky-300 hover:bg-sky-400/15 text-sm font-semibold transition-colors cursor-pointer touch-manipulation">
-                <Send className="w-4 h-4" /> Send to
-              </button>
+              {hasActiveTeamMembers && <button onClick={() => setShowSend(true)} className="inline-flex items-center justify-center gap-2 px-4 py-3 rounded-lg border border-sky-400/30 bg-sky-400/10 text-sky-300 hover:bg-sky-400/15 text-sm font-semibold transition-colors cursor-pointer touch-manipulation">
+                <Send className="w-4 h-4" /> Assign to team member
+              </button>}
             </div>
 
-            <div className="rounded-lg border border-white/10 bg-navy-800 px-4">
+            {b.status === "confirmed" && b.scheduledAt && Date.parse(b.scheduledAt) > Date.now() && (
+              <button type="button" onClick={completeJob} disabled={updatingStatus} className="mb-3 min-h-11 rounded-lg border border-white/15 px-3 text-sm font-semibold text-sky-300">Complete job</button>
+            )}
+            <div className="crm-panel px-4">
+              {b.quoteStaff && <Row icon={CalendarClock} label="Quote appointment assigned to">{STAFF_PROFILES[b.quoteStaff]}</Row>}
               {b.phone && <Row icon={Phone} label="Phone"><a href={`tel:${b.phone}`} className="text-sky-400">{b.phone}</a></Row>}
               {b.email && <Row icon={Mail} label="Email"><a href={`mailto:${b.email}`} className="text-sky-400 break-all">{b.email}</a></Row>}
               {b.attributionSource && <Row icon={Compass} label="Found us via">{b.attributionSource}</Row>}
@@ -633,17 +719,22 @@ export default function BookingView() {
               <Row
                 icon={CalendarClock}
                 label="Calendar"
-                action={b.scheduledAt ? (
-                  <button onClick={() => copyConfirmation(b)} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-sky-400/30 bg-sky-400/10 text-sky-300 hover:bg-sky-400/15 text-xs font-semibold transition-colors cursor-pointer touch-manipulation" title="Copy booking confirmation">
-                    <Copy className="w-3.5 h-3.5" /> Confirmation
-                  </button>
-                ) : undefined}
               >
                 {b.scheduledAt
                   ? <span className="text-sky-300">Scheduled: {scheduledLabel(b.scheduledAt)}</span>
                   : b.status === 'confirmed'
                     ? <span className="text-amber-300">Not in calendar</span>
                     : <span className="text-slate-500">Not scheduled</span>}
+                {b.scheduledAt && (
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <button onClick={() => copyConfirmation(b)} className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-sky-400/30 bg-sky-400/10 px-3 text-xs font-semibold text-sky-300">
+                      <Copy className="size-3.5" /> Copy confirmation
+                    </button>
+                    <button onClick={() => setSmsTarget({ kind: 'booking', id: b.id })} className="min-h-11 rounded-lg border border-sky-400/30 bg-sky-400/10 px-3 text-xs font-semibold text-sky-300">
+                      Send via SMS
+                    </button>
+                  </div>
+                )}
               </Row>
               <Row icon={Send} label="Assigned to">
                 {b.assignedGuestId ? (
@@ -657,7 +748,7 @@ export default function BookingView() {
               </Row>
               <Row icon={DollarSign} label="Quote">{typeof b.quoteAmount === 'number' && b.quoteAmount > 0 ? money(b.quoteAmount) : 'No quote yet'}</Row>
               <Row icon={Wallet} label="Payment">
-                <span className={b.paid ? 'text-emerald-400' : 'text-red-300'}>{b.paid ? 'Paid' : 'Not paid'}</span>
+                <span className={b.paid ? 'text-emerald-400' : 'text-red-300'}>{b.paid ? 'Payment confirmed' : 'Not paid'}</span>
                 {b.paid && <span className="text-slate-500"> · {b.paidAt ? longDate(b.paidAt) : 'date not set'}</span>}
               </Row>
               {!b.paid && b.customerMarkedPaidAt && (
@@ -693,7 +784,11 @@ export default function BookingView() {
               </div>
             )}
 
-            <PhotoGallery bookingId={b.id} />
+            <SmsPanel key={b.id} kind="manual" recordId={b.id} />
+            {b.phone && smsPhone(b.phone) && <Link href={'/admin/messages?' + new URLSearchParams({ phone: b.phone })}
+              className="mb-3 inline-flex min-h-11 items-center rounded-lg border border-white/10 px-3 text-sm font-semibold text-sky-300">
+              Open in Messages
+            </Link>}
 
             {/* Quotes — generating one drives this booking's quoteAmount/status */}
             <div className="mt-4 rounded-lg border border-white/10 bg-navy-800 p-4">
@@ -709,14 +804,15 @@ export default function BookingView() {
                 <div className="space-y-2">
                   {quotes.map(q => (
                     <div key={q.id} className="rounded-lg border border-white/10 px-3 py-2">
-                      <div className="flex items-center gap-2">
-                        <button onClick={() => { setEditingQuote(q); setShowQuoteModal(true); }} className="min-w-0 flex-1 text-left cursor-pointer">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button onClick={() => { setEditingQuote(q); setShowQuoteModal(true); }} className="min-w-0 flex-1 basis-24 text-left cursor-pointer">
                           <div className="text-white text-sm font-medium">{q.number} · {quoteMoney(q.amount)}</div>
+                          <CreatedBy name={q.createdBy} />
                           <div className="text-slate-500 text-xs">
                             {q.acceptedAt ? <span className="text-emerald-400 font-semibold">Accepted</span> : (QUOTE_STATUS_LABEL[q.status] ?? q.status)} · {new Date(q.quoteDate).toLocaleDateString('en-AU')}
                           </div>
                         </button>
-                        <button onClick={() => copyQuote(q)} title="Copy quote text" className="p-2 rounded-lg border border-white/10 text-slate-300 hover:border-sky-400/40 cursor-pointer"><Copy className="w-4 h-4" /></button>
+                        <button onClick={() => setSmsTarget({ kind: "quote", id: q.id, draft: q.status === "draft" })} aria-label="Send quote via SMS" className="min-h-11 rounded-lg border border-white/10 px-3 text-xs font-semibold text-sky-300">Send via SMS</button>
                         <button onClick={() => shareQuote(q)} title="Share quote link" className="p-2 rounded-lg border border-white/10 text-slate-300 hover:border-sky-400/40 cursor-pointer"><ShareIcon className="w-4 h-4" /></button>
                         <a href={`/quote/${q.token}`} target="_blank" rel="noopener noreferrer" title="Open" className="p-2 rounded-lg border border-white/10 text-sky-300 hover:border-sky-400/40 cursor-pointer"><ExternalLink className="w-4 h-4" /></a>
                       </div>
@@ -729,9 +825,9 @@ export default function BookingView() {
             {/* Linked invoices — payment status flows from invoice → booking */}
             <div className="mt-4 rounded-lg border border-white/10 bg-navy-800 p-4">
               <div className="flex items-center justify-between mb-3">
-                <div className="text-slate-500 text-xs flex items-center gap-1.5"><Link2 className="w-3.5 h-3.5" /> Linked invoices</div>
-                <button onClick={() => { setShowLink(true); loadInvoices(); }} className="inline-flex items-center gap-1 text-sky-400 hover:text-sky-300 text-xs font-semibold cursor-pointer">
-                  <Plus className="w-3.5 h-3.5" /> Link invoice
+                <div className="text-slate-500 text-xs flex items-center gap-1.5"><Link2 className="w-3.5 h-3.5" /> Invoices</div>
+                <button onClick={() => setShowInvoice(true)} className="inline-flex items-center gap-1 text-sky-400 hover:text-sky-300 text-xs font-semibold cursor-pointer">
+                  <Plus className="w-3.5 h-3.5" /> Create invoice
                 </button>
               </div>
               {linkedInvoices.length === 0 ? (
@@ -739,8 +835,8 @@ export default function BookingView() {
               ) : (
                 <div className="space-y-2">
                   {linkedInvoices.map(inv => (
-                    <div key={inv.id} className="flex items-center gap-2 rounded-lg border border-white/10 px-3 py-2">
-                      <div className="min-w-0 flex-1">
+                    <div key={inv.id} className="flex flex-wrap items-center gap-2 rounded-lg border border-white/10 px-3 py-2">
+                      <div className="min-w-0 flex-1 basis-24">
                         <div className="text-white text-sm font-medium">{inv.number} · {money(inv.total)}</div>
                         <div className="text-slate-500 text-xs">
                           {INVOICE_STATUS_LABEL[inv.status] ?? inv.status}
@@ -748,7 +844,8 @@ export default function BookingView() {
                           {inv.status === 'paid' ? ' · Paid' : ''}
                         </div>
                       </div>
-                      <Link href={`/admin/invoices/${inv.id}?from=/admin/bookings/${b.id}`} title="View invoice" className="p-2 rounded-lg border border-white/10 text-sky-300 hover:border-sky-400/40 cursor-pointer"><ExternalLink className="w-4 h-4" /></Link>
+                      <Link href={"/admin/invoices/" + inv.id + "?from=" + encodeURIComponent("/admin/bookings/" + b.id + (from ? "?from=" + encodeURIComponent(from) : ""))} title="View invoice" className="p-2 rounded-lg border border-white/10 text-sky-300 hover:border-sky-400/40 cursor-pointer"><ExternalLink className="w-4 h-4" /></Link>
+                      <button onClick={() => setSmsTarget({ kind: "invoice", id: inv.id, draft: inv.status === "draft" })} aria-label="Send invoice via SMS" className="min-h-11 rounded-lg border border-white/10 px-3 text-xs font-semibold text-sky-300">Send via SMS</button>
                       <button onClick={() => toggleInvoiceLink(inv, false)} title="Unlink" className="p-2 rounded-lg border border-white/10 text-red-400 hover:border-red-400/40 cursor-pointer"><X className="w-4 h-4" /></button>
                     </div>
                   ))}
@@ -779,13 +876,11 @@ export default function BookingView() {
               )}
             </div>
 
-            <Link
-              href={`/admin/invoices/new?fromBooking=${b.id}`}
-              className="mt-4 w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-lg border border-white/10 bg-white/[0.03] text-slate-300 hover:text-white hover:border-sky-400/40 text-sm font-semibold transition-colors cursor-pointer"
-            >
-              <FileText className="w-4 h-4 text-sky-400" /> Create an invoice from this booking
-            </Link>
-
+            <Link href={customerHref(b.id, "/admin/bookings/" + b.id + (from ? "?from=" + encodeURIComponent(from) : ""))} className="mt-3 flex min-h-11 items-center justify-center rounded-lg border border-white/10 px-4 text-sky-300">Customer history</Link>
+            <details onToggle={event => { if (event.currentTarget.open) setShowPhotos(true); }} className="mt-4 rounded-xl border border-white/10 p-3">
+              <summary className="min-h-11 cursor-pointer py-3 font-semibold text-white">Job photos</summary>
+              {showPhotos && <PhotoGallery bookingId={b.id} />}
+            </details>
             {b.recurringId ? (
               <Link
                 href={profileHref(b.recurringId, `/admin/bookings/${b.id}`)}
@@ -894,9 +989,9 @@ export default function BookingView() {
             <div><FieldLabel>Customer note</FieldLabel><textarea className="form-input resize-none" rows={2} value={form.notes} onChange={e => set('notes', e.target.value)} /></div>
             <div><FieldLabel>Private note (only you see this)</FieldLabel><textarea className="form-input resize-none" rows={3} value={form.adminNotes ?? ''} onChange={e => set('adminNotes', e.target.value)} /></div>
 
-            <div className="flex gap-3 pt-1">
+            <div className="sticky bottom-0 z-20 flex gap-3 border-t border-white/10 bg-navy-900 py-3" style={{ paddingBottom: "calc(0.75rem + env(safe-area-inset-bottom))" }}>
               <button onClick={cancel} className="px-5 py-3 rounded-lg border border-white/10 text-slate-300 text-sm hover:text-white transition-colors cursor-pointer">Cancel</button>
-              <button onClick={save} disabled={saving || !form.name} className="flex-1 py-3 bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-white font-semibold rounded-lg transition-colors cursor-pointer flex items-center justify-center gap-2">
+              <button onClick={save} disabled={saving || !form.name} className="flex-1 min-h-11 py-3 bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-white font-semibold rounded-lg transition-colors cursor-pointer flex items-center justify-center gap-2">
                 {saving ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <Check className="w-4 h-4" />} Save changes
               </button>
             </div>
@@ -980,6 +1075,19 @@ export default function BookingView() {
       )}
 
       {/* ── Quote maker ───────────────────────────────────────────── */}
+      {state === "ok" && !edit && primaryAction && (
+        <div className="crm-action-dock fixed inset-x-0 bottom-[calc(3.8125rem+env(safe-area-inset-bottom))] z-30 border-t border-white/10 bg-navy-900 px-4 pt-3 lg:hidden" style={{ paddingBottom: "0.75rem" }}>
+          {actionError && <p role="alert" className="mx-auto mb-2 max-w-xl text-sm text-red-300">{actionError}</p>}
+          <div className="mx-auto flex max-w-xl gap-2">{secondaryAction}{primaryAction}</div>
+        </div>
+      )}
+      {!edit && <><AdminMobileNav active="bookings" items={navItems} onMore={moreSheet.show} /><AdminMoreSheet open={moreSheet.open} onClose={moreSheet.hide} active="bookings" items={navItems} /></>}
+      {showSchedule && b && <ScheduleBookingSheet booking={b} defaultKind={acceptedQuote ? "job" : undefined} onClose={() => setShowSchedule(false)} onChanged={updated => {
+        setB(updated);
+        setForm(toForm(updated));
+        setShowSchedule(false);
+        toast.success(updated.scheduledAt ? "Appointment saved" : "Appointment unscheduled");
+      }} />}
       {showQuoteModal && b && (
         <QuoteModal
           bookingId={b.id}
@@ -1000,36 +1108,14 @@ export default function BookingView() {
         />
       )}
 
-      {/* ── Link an existing invoice ──────────────────────────────── */}
-      {showLink && b && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 sm:p-4" onClick={() => setShowLink(false)}>
-          <div className="bg-navy-800 border border-white/10 rounded-t-2xl sm:rounded-2xl w-full sm:max-w-sm max-h-[80svh] flex flex-col" onClick={e => e.stopPropagation()}>
-            <div className="p-4 border-b border-white/10 flex items-center justify-between">
-              <h3 className="text-white font-semibold flex items-center gap-2"><Link2 className="w-4 h-4 text-sky-400" /> Link an invoice</h3>
-              <button onClick={() => setShowLink(false)} className="text-slate-400 hover:text-white cursor-pointer"><X className="w-5 h-5" /></button>
-            </div>
-            <div className="overflow-y-auto p-2" style={{ paddingBottom: 'calc(0.5rem + env(safe-area-inset-bottom))' }}>
-              {unlinkedInvoices.length === 0 ? (
-                <div className="p-6 text-center text-slate-500 text-sm">
-                  No other invoices to link.
-                  <Link href={`/admin/invoices/new?fromBooking=${b.id}`} className="block mt-2 text-sky-400 hover:text-sky-300">Create one from this booking</Link>
-                </div>
-              ) : (
-                unlinkedInvoices.map(inv => (
-                  <button key={inv.id} onClick={() => toggleInvoiceLink(inv, true)} className="w-full flex items-center gap-3 p-3 rounded-lg text-left cursor-pointer hover:bg-white/5 text-white">
-                    <FileText className="w-4 h-4 text-sky-400 flex-shrink-0" />
-                    <span className="flex-1 min-w-0">
-                      <span className="block text-sm font-medium">{inv.number} · {money(inv.total)}</span>
-                      <span className="block text-slate-500 text-xs truncate">{inv.billToName || 'No bill-to'} · {INVOICE_STATUS_LABEL[inv.status] ?? inv.status}</span>
-                    </span>
-                    <Plus className="w-4 h-4 flex-shrink-0 text-sky-400" />
-                  </button>
-                ))
-              )}
-            </div>
-          </div>
-        </div>
+      {showInvoice && b && (
+        <DocumentDialog wide title="Create invoice" onClose={() => setShowInvoice(false)}>
+          <InvoiceEditor initial={null} prefill={bookingToInvoicePrefill(b, quotes)}
+            onChanged={() => { void loadInvoices(); void refreshBooking(); }}
+            onDeleted={() => { setShowInvoice(false); void loadInvoices(); void refreshBooking(); }} />
+        </DocumentDialog>
       )}
-    </div>
+      {smsTarget && <DocumentSmsDialog target={smsTarget} onClose={() => setSmsTarget(null)} onQuoteApproved={onQuoteSaved} onInvoiceApproved={() => { void loadInvoices(); void refreshBooking(); }} />}
+    </AdminRecordShell>
   );
 }

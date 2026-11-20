@@ -1,0 +1,218 @@
+html:has(.admin-shell),
+body:has(.admin-shell) {
+  background: #10151e;
+}
+
+.admin-shell {
+  --crm-level-900: 16 21 30;
+  --crm-level-800: 24 32 44;
+  --crm-level-700: 32 43 59;
+  --crm-level-600: 43 58 77;
+  --crm-level-500: 56 75 98;
+  --crm-accent-300: 166 221 255;
+  --crm-accent-400: 137 207 254;
+  --crm-accent-500: 115 195 250;
+  --crm-accent-600: 73 160 220;
+  --crm-text: #eef4fb;
+  --crm-muted: #a6b5c7;
+  --crm-line: #334156;
+  --crm-radius: 0.875rem;
+  --crm-panel: rgb(var(--crm-level-800));
+  --crm-accent: rgb(var(--crm-accent-500));
+  --background: 219 30% 9%;
+  --foreground: 212 62% 96%;
+  --card: 216 29% 13%;
+  --border: 216 25% 27%;
+  --ring: 204 93% 72%;
+  --radius: var(--crm-radius);
+  color-scheme: dark;
+}
+
+.admin-shell :where(h1, h2, h3) { letter-spacing: -0.025em; }
+.admin-shell :where(button, a, summary, input, textarea, select):focus-visible {
+  outline: 2px solid var(--crm-accent);
+  outline-offset: 3px;
+}
+.admin-shell :where(.text-slate-500, .text-slate-600):not(:where(.invoice-sheet *, .quote-sheet *, .light-form *)) {
+  color: var(--crm-muted);
+}
+
+.admin-shell .glass,
+.admin-shell .crm-panel {
+  background: var(--crm-panel);
+  border: 1px solid var(--crm-line);
+  border-radius: var(--crm-radius);
+}
+
+.admin-shell .crm-topbar {
+  min-height: 4.25rem;
+  border-bottom: 1px solid var(--crm-line);
+  background: rgb(var(--crm-level-900));
+  backdrop-filter: none;
+}
+.admin-shell .crm-topbar h1 { font-size: clamp(1.25rem, 2.25vw, 1.625rem); line-height: 1.2; }
+.admin-shell .crm-topbar :where(button, a) { min-height: 2.75rem; }
+
+.admin-shell .form-input:not(:where(.light-form *, .invoice-sheet *, .quote-sheet *)) {
+  min-height: 2.75rem;
+  border-color: var(--crm-line);
+  border-radius: 0.625rem;
+  background: rgb(var(--crm-level-900));
+  color: var(--crm-text);
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+.admin-shell .form-input::placeholder { color: #899ab0; }
+.admin-shell .form-input:focus {
+  border-color: var(--crm-accent);
+  box-shadow: 0 0 0 2px rgb(var(--crm-accent-400) / 0.18);
+}
+.admin-shell .form-input option { background: var(--crm-panel); }
+.admin-shell :is(button, a).bg-sky-500:not(:where(.invoice-sheet *, .quote-sheet *, .light-form *)) {
+  color: #0e2030;
+}
+
+.admin-shell .crm-sidebar {
+  position: sticky;
+  top: 0;
+  height: 100dvh;
+  overflow-y: auto;
+  align-self: start;
+  border-color: var(--crm-line);
+  background: var(--crm-panel);
+}
+.admin-shell .admin-sidebar-link {
+  border: 1px solid transparent;
+  border-radius: 0.625rem;
+  min-height: 2.75rem;
+  font-size: 0.875rem;
+  font-weight: 550;
+  transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.admin-shell .admin-sidebar-link.active {
+  color: rgb(var(--crm-accent-300));
+  background: rgb(var(--crm-accent-500) / 0.12);
+  border-color: rgb(var(--crm-accent-500) / 0.22);
+}
+.admin-shell .crm-nav-label {
+  color: var(--crm-muted);
+  padding: 0.5rem 0.75rem 0.3rem;
+  font-size: 0.6875rem;
+  font-weight: 650;
+}
+.admin-shell .crm-mobile-nav {
+  background: var(--crm-panel);
+  border-color: var(--crm-line);
+}
+.admin-shell .crm-mobile-item {
+  display: flex;
+  min-height: 3.8125rem;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.2rem;
+  color: var(--crm-muted);
+}
+.admin-shell .crm-mobile-icon {
+  display: grid;
+  width: 2.75rem;
+  height: 1.75rem;
+  place-items: center;
+  border-radius: 0.5rem;
+}
+.admin-shell .crm-mobile-item[data-selected='true'] { color: rgb(var(--crm-accent-300)); }
+.admin-shell .crm-mobile-item[data-selected='true'] .crm-mobile-icon {
+  background: rgb(var(--crm-accent-500) / 0.16);
+}
+.admin-shell .crm-more-sheet {
+  background: var(--crm-panel);
+  border-color: var(--crm-line);
+  box-shadow: 0 -16px 56px rgb(0 0 0 / 0.34);
+}
+.admin-shell .crm-sheet-close {
+  display: grid;
+  min-height: 2.75rem;
+  min-width: 2.75rem;
+  place-items: center;
+  border: 1px solid var(--crm-line);
+  border-radius: 0.625rem;
+}
+
+.admin-shell .crm-kpi {
+  padding: 0.875rem 1rem;
+  background: var(--crm-panel);
+  border: 1px solid var(--crm-line);
+  border-radius: var(--crm-radius);
+}
+.admin-shell .crm-kpi strong {
+  font-size: clamp(1.625rem, 3vw, 2rem);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.04em;
+}
+.admin-shell .crm-queue-row + .crm-queue-row { border-top: 1px solid var(--crm-line); }
+.admin-shell .crm-queue-row { padding: 1rem; }
+.admin-shell .crm-queue-row details > summary,
+.admin-shell .crm-count-row { color: var(--crm-muted); }
+.admin-shell .crm-count-row + .crm-count-row { border-top: 1px solid var(--crm-line); }
+.admin-shell .crm-count-row span {
+  display: inline-grid;
+  min-width: 1.75rem;
+  min-height: 1.625rem;
+  place-items: center;
+  border-radius: 0.4rem;
+  background: rgb(var(--crm-level-700));
+  color: var(--crm-text);
+  font-variant-numeric: tabular-nums;
+}
+.admin-shell .crm-action-dock {
+  border-color: var(--crm-line);
+  background: rgb(var(--crm-level-900));
+}
+
+.admin-shell .badge-uncontacted {
+  color: #fcd88c;
+  background: rgb(237 174 67 / 0.13);
+  border-color: rgb(237 174 67 / 0.28);
+}
+.admin-shell .badge-contacted {
+  color: #91e1d3;
+  background: rgb(54 189 163 / 0.13);
+  border-color: rgb(54 189 163 / 0.28);
+}
+
+.admin-shell .crm-login {
+  background: radial-gradient(ellipse at 50% 0%, #24364c, transparent 64%), rgb(var(--crm-level-900));
+}
+.admin-shell .crm-login .crm-panel { box-shadow: 0 24px 72px rgb(0 0 0 / 0.23); }
+.admin-shell .crm-profile-option {
+  display: flex;
+  min-height: 3.5rem;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  border: 1px solid var(--crm-line);
+  border-radius: 0.625rem;
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+  font-weight: 650;
+}
+.admin-shell .crm-profile-option:hover {
+  border-color: var(--crm-accent);
+  background: rgb(var(--crm-level-700));
+}
+.admin-shell .crm-profile-avatar {
+  display: grid;
+  height: 2.25rem;
+  width: 2.25rem;
+  place-items: center;
+  border-radius: 0.5rem;
+  background: rgb(var(--crm-accent-400) / 0.14);
+  color: rgb(var(--crm-accent-300));
+}
+.admin-shell .crm-profile-option:disabled { opacity: 0.5; }
+
+.admin-shell :is(.invoice-sheet, .quote-sheet) { color-scheme: light; }
+
+@media (max-width: 639px) {
+  .admin-shell .form-input { font-size: 1rem; }
+}

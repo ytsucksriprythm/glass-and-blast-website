@@ -1,3 +1,4 @@
+import { isStaffProfile, type StaffProfile } from './staff';
 import { createHmac, timingSafeEqual } from 'crypto';
 import { cookies } from 'next/headers';
 
@@ -22,28 +23,35 @@ function sign(value: string): string {
   return createHmac('sha256', SECRET).update(value).digest('hex');
 }
 
-export function createSessionToken(): string {
-  const payload = `admin:${Date.now()}`;
-  const sig = sign(payload);
-  return Buffer.from(`${payload}:${sig}`).toString('base64');
+export function createSessionToken(profile: StaffProfile | 'pending', remember = true): string {
+  const ttl = profile === 'pending' ? 300 : remember ? SESSION_MAX_AGE : SHORT_MAX_AGE;
+  const payload = ['admin', profile, Math.floor(Date.now() / 1000) + ttl, remember ? 'remember' : 'short'].join(':');
+  return Buffer.from(payload + ':' + sign(payload)).toString('base64');
 }
 
-export function verifySessionToken(token: string): boolean {
-  if (!SECRET) return false;
+function verifyAdminToken(token: string): { profile: StaffProfile | 'pending'; remember: boolean } | null {
+  if (!SECRET) return null;
   try {
     const decoded = Buffer.from(token, 'base64').toString('utf-8');
-    const lastColon = decoded.lastIndexOf(':');
-    const payload = decoded.slice(0, lastColon);
-    const sig = decoded.slice(lastColon + 1);
-    const expected = sign(payload);
-    if (sig !== expected) return false;
-    // Check token not older than the session window
-    const parts = payload.split(':');
-    const ts = parseInt(parts[1]);
-    return Date.now() - ts < SESSION_MAX_AGE * 1000;
-  } catch {
-    return false;
-  }
+    const [role, profile, expires, mode, signature, extra] = decoded.split(':');
+    if (extra !== undefined || role !== 'admin' || (!isStaffProfile(profile) && profile !== 'pending')) return null;
+    const expiry = Number(expires);
+    if (!Number.isFinite(expiry) || expiry <= Date.now() / 1000 || !signature || !['remember', 'short'].includes(mode)) return null;
+    const expected = Buffer.from(sign([role, profile, expires, mode].join(':')));
+    const received = Buffer.from(signature);
+    if (expected.length !== received.length || !timingSafeEqual(expected, received)) return null;
+    return { profile, remember: mode === 'remember' };
+  } catch { return null; }
+}
+
+export async function getAdminSession() {
+  const token = (await cookies()).get(COOKIE_NAME)?.value;
+  return token ? verifyAdminToken(token) : null;
+}
+
+export async function getStaffProfile(): Promise<StaffProfile | null> {
+  const profile = (await getAdminSession())?.profile;
+  return isStaffProfile(profile) ? profile : null;
 }
 
 export function checkPassword(password: string): boolean {
@@ -56,10 +64,7 @@ export function checkPassword(password: string): boolean {
 }
 
 export async function isAdminAuthenticated(): Promise<boolean> {
-  const cookieStore = await cookies();
-  const token = cookieStore.get(COOKIE_NAME)?.value;
-  if (!token) return false;
-  return verifySessionToken(token);
+  return (await getStaffProfile()) !== null;
 }
 
 export function getSessionCookieConfig(token: string, remember = true) {
@@ -121,7 +126,7 @@ export async function getGuestId(): Promise<string | null> {
   return token ? verifyGuestToken(token) : null;
 }
 
-export type ActiveContext = { role: 'admin' } | { role: 'guest'; guestId: string } | null;
+export type ActiveContext = { role: 'admin'; profile: StaffProfile } | { role: 'guest'; guestId: string } | null;
 
 // The dashboard/data context the current request is acting in. A live guest
 // cookie always wins (so an impersonating admin sees the guest's world); else
@@ -129,7 +134,8 @@ export type ActiveContext = { role: 'admin' } | { role: 'guest'; guestId: string
 export async function getActiveContext(): Promise<ActiveContext> {
   const guestId = await getGuestId();
   if (guestId) return { role: 'guest', guestId };
-  if (await isAdminAuthenticated()) return { role: 'admin' };
+  const profile = await getStaffProfile();
+  if (profile) return { role: 'admin', profile };
   return null;
 }
 

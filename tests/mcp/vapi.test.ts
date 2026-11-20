@@ -7,6 +7,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'fs';
+import { rm } from 'node:fs/promises';
 import os from 'os';
 import path from 'path';
 import { createHash } from 'crypto';
@@ -36,9 +37,13 @@ before(async () => {
   const db = await import('../../src/lib/db');
   bookingId = (await db.addBooking({ name: 'Atlas Caller', email: '', phone: '0400 222 333', service: 'window-washing', propertyType: 'residential', address: '5 Phone St', suburb: 'Ainslie', preferredDate: '', preferredTime: '', notes: '' } as any)).id;
 });
-after(() => {
+after(async context => {
   process.chdir(repoCwd);
-  fs.rmSync(tmp, { recursive: true, force: true });
+  try { await rm(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
+  catch (error) {
+    if (!['EPERM', 'EBUSY'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+    if ('diagnostic' in context) context.diagnostic('Windows retained a handle on the temporary fixture directory.');
+  }
 });
 
 const tokenReq = (form: Record<string, string>, headers: Record<string, string> = {}) =>
@@ -147,11 +152,12 @@ test('the client-credentials secret can only be guessed 10 times per IP per 15 m
   assert.equal((await tokenReq({ client_id: CLIENT_ID, client_secret: SECRET }, ip)).status, 429, 'locked even with the right secret');
 });
 
-test('full-access Vapi token (business.all, the default) gets exactly the owner tools — invoices, quotes, bookings, everything', async () => {
+test('full-access Vapi token gets business tools while staff SMS tools require a signed-in owner', async () => {
   const atlasFull = (await machineToken()).body.access_token;
   const ownerTok = (await h.fullLogin()).accessToken;
   const atlasNames = await toolNames(atlasFull);
-  assert.deepEqual(atlasNames, await toolNames(ownerTok));
+  assert.deepEqual(atlasNames, (await toolNames(ownerTok)).filter(name =>
+    !['record_calling_action', 'list_sms_conversations', 'get_customer_sms_history', 'send_customer_sms'].includes(name)));
   for (const n of ['get_invoice', 'list_invoices', 'create_invoice', 'update_invoice_status', 'create_booking', 'schedule_booking', 'update_booking', 'list_payments', 'get_report', 'make_recurring_customer']) {
     assert.ok(atlasNames.includes(n), n);
   }

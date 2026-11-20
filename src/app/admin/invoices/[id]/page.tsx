@@ -1,5 +1,7 @@
 'use client';
 
+import AdminRecordShell from '@/components/admin/AdminRecordShell';
+
 import { use, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ArrowLeft, ShieldAlert } from 'lucide-react';
@@ -9,10 +11,13 @@ import InvoiceEditor from '@/components/InvoiceEditor';
 export default function EditInvoicePage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const router = useRouter();
+  const [returnHref, setReturnHref] = useState('/admin/invoices');
   const [invoice, setInvoice] = useState<Invoice | null>(null);
   const [state, setState] = useState<'loading' | 'ready' | 'notfound' | 'denied'>('loading');
 
   useEffect(() => {
+    const from = new URLSearchParams(window.location.search).get('from');
+    if (from && /^\/admin\/(?:bookings\/[^/?#]+|invoices)(?:\?|$)/.test(from)) setReturnHref(from);
     (async () => {
       try {
         const res = await fetch(`/api/admin/invoices/${id}`);
@@ -26,15 +31,15 @@ export default function EditInvoicePage({ params }: { params: Promise<{ id: stri
   }, [id, router]);
 
   return (
-    <div className="min-h-[100svh] bg-navy-900">
+    <AdminRecordShell active="invoices">
       <header
-        className="sticky top-0 z-30 bg-navy-900/90 backdrop-blur border-b border-white/10 px-4 flex items-center justify-between"
+        className="crm-topbar sticky top-0 z-30 bg-navy-900/90 backdrop-blur border-b border-white/10 px-4 flex items-center justify-between"
         style={{ paddingTop: 'calc(env(safe-area-inset-top) + 0.85rem)', paddingBottom: '0.85rem' }}
       >
-        <button onClick={() => router.push('/admin/invoices')} className="inline-flex items-center gap-2 text-slate-300 hover:text-white text-sm cursor-pointer">
-          <ArrowLeft className="w-5 h-5" /> Invoices
+        <button onClick={() => router.push(returnHref)} className="inline-flex items-center gap-2 text-slate-300 hover:text-white text-sm cursor-pointer">
+          <ArrowLeft className="w-5 h-5" /> {returnHref.startsWith("/admin/bookings/") ? "Booking" : "Invoices"}
         </button>
-        <span className="text-white font-semibold text-sm">{invoice ? invoice.number : 'Invoice'}</span>
+        <h1 className="font-bold text-white">{invoice ? invoice.number : 'Invoice'}</h1>
       </header>
       <main className="px-4 py-6 pb-28">
         {state === 'loading' && <div className="max-w-6xl mx-auto h-64 bg-white/5 rounded-xl animate-pulse" />}
@@ -46,13 +51,13 @@ export default function EditInvoicePage({ params }: { params: Promise<{ id: stri
             </span>
             <h2 className="font-display text-xl font-bold text-white mt-4">Access denied</h2>
             <p className="text-slate-500 text-sm mt-2">This invoice belongs to someone else. You can only open invoices you created.</p>
-            <button onClick={() => router.push('/admin/invoices')} className="mt-5 inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-white text-sm font-semibold cursor-pointer">
+            <button onClick={() => router.push(returnHref)} className="mt-5 inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-white text-sm font-semibold cursor-pointer">
               Back to my invoices
             </button>
           </div>
         )}
         {state === 'ready' && invoice && <InvoiceEditor initial={invoice} />}
       </main>
-    </div>
+    </AdminRecordShell>
   );
 }

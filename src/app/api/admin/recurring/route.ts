@@ -1,6 +1,7 @@
+import { staffLabel } from '@/lib/staff';
 import { NextRequest, NextResponse } from 'next/server';
 import { getRecurringJobs, addRecurringJob, createProfileFromBooking, type RecurringFrequency, type IntervalUnit } from '@/lib/db';
-import { isAdminAuthenticated } from '@/lib/auth';
+import { getStaffProfile, isAdminAuthenticated } from '@/lib/auth';
 import { ensureAllPortals } from '@/lib/portal';
 
 export const dynamic = 'force-dynamic';
@@ -35,14 +36,15 @@ export async function GET() {
 // POST { fromBookingId, frequency, ... } → "Make recurring customer" from a job.
 // POST { name, service, nextDate, frequency, ... } → a profile typed in by hand.
 export async function POST(req: NextRequest) {
-  if (!await isAdminAuthenticated()) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  const profile = await getStaffProfile();
+  if (!profile) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   try {
     const body = await req.json();
     const plan = parsePlan(body);
     if ('error' in plan) return NextResponse.json({ error: plan.error }, { status: 400 });
 
     if (typeof body.fromBookingId === 'string' && body.fromBookingId) {
-      const result = await createProfileFromBooking(body.fromBookingId, { ...plan, visitPrice: num(body.visitPrice) });
+      const result = await createProfileFromBooking(body.fromBookingId, { ...plan, visitPrice: num(body.visitPrice) }, staffLabel(profile));
       if (!result) return NextResponse.json({ error: 'Booking not found' }, { status: 404 });
       return NextResponse.json(result, { status: 201 });
     }
@@ -74,7 +76,7 @@ export async function POST(req: NextRequest) {
       visitPrice: num(body.visitPrice),
       billingCycle,
       customBillingCycle: billingCycle === 'custom' ? customBillingCycle : null,
-    });
+    }, staffLabel(profile));
     return NextResponse.json({ job, linked: 0 }, { status: 201 });
   } catch (err) {
     console.error('Recurring create error:', err);

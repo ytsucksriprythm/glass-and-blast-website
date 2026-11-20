@@ -6,8 +6,10 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'fs';
+import { rm } from 'node:fs/promises';
 import os from 'os';
 import path from 'path';
+import { signJwt, verifyJwt } from '../../src/lib/mcp/crypto';
 
 const repoCwd = process.cwd();
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-writes-'));
@@ -24,9 +26,13 @@ before(async () => {
   await h.seed();
   token = (await h.fullLogin()).accessToken;
 });
-after(() => {
+after(async context => {
   process.chdir(repoCwd);
-  fs.rmSync(tmp, { recursive: true, force: true });
+  try { await rm(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
+  catch (error) {
+    if (!['EPERM', 'EBUSY'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+    if ('diagnostic' in context) context.diagnostic('Windows retained a handle on the temporary fixture directory.');
+  }
 });
 
 async function call(name: string, args: Record<string, unknown> = {}) {
@@ -35,7 +41,41 @@ async function call(name: string, args: Record<string, unknown> = {}) {
   return { isError: !!r?.isError, text: r?.content?.[0]?.text as string, data: r?.structuredContent as any };
 }
 
+test('staff SMS tools read by number and validate manual sends without sending', async () => {
+  const db = await import('../../src/lib/db');
+  const phone = '+61400000111';
+  const now = new Date().toISOString();
+  await db.insertSms({ id: 'mcp-sms-test', kind: 'reply', recordId: null, phone, body: 'Test reply',
+    direction: 'inbound', status: 'received', actor: 'customer', createdAt: now, updatedAt: now });
+  const inbox = await call('list_sms_conversations', { query: '0400 000 111' });
+  assert.equal(inbox.data.conversations[0].latest.body, 'Test reply');
+  const history = await call('get_customer_sms_history', { phone, limit: 1 });
+  assert.equal(history.data.messages[0].body, 'Test reply');
+  assert.equal(history.data.nextOffset, null);
+  const input = { kind: 'manual', phone, text: 'Test outgoing message' };
+  assert.match((await call('send_customer_sms', input)).text, /requestId UUID/);
+  const previous = process.env.TWILIO_SMS_ENABLED;
+  process.env.TWILIO_SMS_ENABLED = 'false';
+  try {
+    const result = await call('send_customer_sms', { ...input, requestId: 'a4d315cc-32c1-4d88-8341-eda0cf637d54' });
+    assert.equal(result.isError, true);
+    assert.match(result.text, /SMS sending is disabled/);
+  } finally {
+    if (previous === undefined) delete process.env.TWILIO_SMS_ENABLED;
+    else process.env.TWILIO_SMS_ENABLED = previous;
+  }
+});
+
 const WRITE_TOOLS = ['create_booking', 'update_booking', 'schedule_booking', 'create_quote', 'update_quote', 'create_invoice', 'update_invoice_status', 'make_recurring_customer', 'create_recurring_job', 'book_next_recurring_visit'];
+
+test('a legacy owner connector asks for profile selection before writing', async () => {
+  const secret = process.env.MCP_TOKEN_SECRET!;
+  const claims = verifyJwt(token, secret)!;
+  const legacyToken = signJwt({ ...claims, profile: undefined }, secret);
+  const result = await h.callTool(legacyToken, 'create_booking', { name: 'Unassigned write' });
+  assert.equal(result.isError, true);
+  assert.match(result.text, /Ask the user which CRM profile to use: Liam or Lincoln/);
+});
 
 test('write tools are registered (and only when enabled), no delete tool', async () => {
   const tools = (await (await h.rpc(token, 'tools/list')).json()).result.tools as any[];
@@ -62,6 +102,7 @@ test('write tools skip ChatGPT\'s confirmation by default; MCP_WRITES_CONFIRM=tr
 test('full flow: booking → calendar → quote (single + packages) → invoice → paid → recurring', async () => {
   const created = await call('create_booking', { name: 'Zed Writer', phone: '0400 111 222', suburb: 'Ainslie', address: '1 Test St', services: ['window-washing'] });
   assert.equal(created.isError, false, created.text);
+  assert.equal(created.data.booking.createdBy, "Liam (chatgpt)");
   const id = created.data.booking.id as string;
   assert.equal(created.data.booking.status, 'uncontacted');
 
@@ -97,6 +138,7 @@ test('full flow: booking → calendar → quote (single + packages) → invoice 
   });
   assert.equal(q.isError, false, q.text);
   assert.equal(q.data.quote.amount, 350);
+  assert.equal(q.data.quote.createdBy, "Liam (chatgpt)");
   assert.match(q.data.customerLink, /\/quote\/qt_/);
 
   const pk = await call('create_quote', {
@@ -117,6 +159,7 @@ test('full flow: booking → calendar → quote (single + packages) → invoice 
   const inv = await call('create_invoice', { bookingId: id });
   assert.equal(inv.isError, false, inv.text);
   assert.equal(inv.data.invoice.billToName, 'Zed Writer');
+  assert.equal(inv.data.invoice.createdBy, 'Liam (chatgpt)');
   assert.deepEqual(inv.data.invoice.bookingIds, [id]);
   assert.ok(inv.data.invoice.total > 0);
 
@@ -163,4 +206,13 @@ test('writes stay off unless MCP_WRITES_ENABLED=true', async () => {
   const tools = (await (await h.rpc(t2, 'tools/list')).json()).result.tools as any[];
   assert.ok(!tools.some(t => t.name === 'create_booking'));
   h.configureEnv({ MCP_WRITES_ENABLED: 'true' });
+});
+
+test('the connector records an attributed callback against an existing booking', async () => {
+  const created = await call('create_booking', { name: 'Connector callback fixture', phone: '0400123456' });
+  const result = await call('record_calling_action', { bookingId: created.data.booking.id, outcome: 'callback', requestId: 'callback-fixture-001', nextAt: new Date(Date.now() + 86400000).toISOString(), notes: 'Call after lunch' });
+  assert.equal(result.isError, false, result.text);
+  assert.equal(result.data.event.staff, 'liam');
+  assert.equal(result.data.event.channel, 'chatgpt');
+  assert.equal(result.data.event.attempt, null);
 });

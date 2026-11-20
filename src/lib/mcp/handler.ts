@@ -1,3 +1,4 @@
+import { isStaffProfile } from '../staff';
 // HTTP entry point for the MCP endpoint (/api/mcp): authenticates the bearer
 // token, then hands the request to a fresh, stateless Streamable HTTP
 // transport + server (no session state survives between requests, which is
@@ -75,6 +76,8 @@ export async function handleMcp(req: Request): Promise<Response> {
   const server = buildMcpServer(cfg, {
     clientId: auth.claims.client_id, tokenId: auth.claims.jti, ip: clientIp(req),
     scopes: auth.claims.scope.split(' ').filter(Boolean),
+    profile: isStaffProfile(auth.claims.profile) ? auth.claims.profile : undefined,
+    channel: auth.claims.channel,
   });
   const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
   await server.connect(transport);

@@ -34,6 +34,8 @@ export const TABLE_COVERAGE: Record<string, TableCoverage> = {
 };
 
 export const EXCLUDED_TABLES: Record<string, string> = {
+  sms_messages: "Signed-in staff can search threads with list_sms_conversations and page through message bodies, replies and delivery status with get_customer_sms_history.",
+  sms_preferences: "Signed-in staff can read consent status through get_customer_sms_history.",
   vault_items: 'Settings → Vault is a store for secrets (API keys, webhook secrets, etc.). Excluded by design; the read-only role has no access.',
   invoice_counter: 'Internal numbering counter only; invoice numbers themselves are on each invoice.',
   quote_counter: 'Internal numbering counter only; quote numbers themselves are on each quote.',

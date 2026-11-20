@@ -1,8 +1,9 @@
+import { staffLabel } from '@/lib/staff';
 import { NextRequest, NextResponse } from 'next/server';
 import {
   getRecurringJobs, updateRecurringJob, deleteRecurringJob, generateNextVisit, createJobForProfile, getBookingsForRecurring,
 } from '@/lib/db';
-import { isAdminAuthenticated } from '@/lib/auth';
+import { getStaffProfile, isAdminAuthenticated } from '@/lib/auth';
 import { ensurePortal, regeneratePin, markRequestDone } from '@/lib/portal';
 
 export const dynamic = 'force-dynamic';
@@ -23,12 +24,13 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
 // POST { action: 'create-job', date, scheduledAt, price, notes } → a new job
 // for this customer on a date of your choosing, linked to the profile.
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  if (!await isAdminAuthenticated()) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  const profile = await getStaffProfile();
+  if (!profile) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   const { id } = await params;
   const body = await req.json().catch(() => ({}));
 
   if (body?.action === 'generate') {
-    const result = await generateNextVisit(id);
+    const result = await generateNextVisit(id, staffLabel(profile));
     if (!result) return NextResponse.json({ error: 'Not found' }, { status: 404 });
     return NextResponse.json({ success: true, booking: result.booking, job: result.job });
   }
@@ -45,7 +47,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       price,
       service: typeof body.service === 'string' ? body.service : undefined,
       notes: typeof body.notes === 'string' ? body.notes : undefined,
-    });
+    }, staffLabel(profile));
     if (!result) return NextResponse.json({ error: 'Not found' }, { status: 404 });
     return NextResponse.json({ success: true, booking: result.booking, job: result.job }, { status: 201 });
   }

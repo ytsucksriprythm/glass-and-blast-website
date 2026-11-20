@@ -1,8 +1,9 @@
+import { staffLabel } from '@/lib/staff';
 import { NextRequest, NextResponse } from 'next/server';
-import { getQuotes, getQuotesForBooking, createQuote, logActivity, getSettings } from '@/lib/db';
-import { isAdminAuthenticated } from '@/lib/auth';
+import { getQuotes, getQuotesForBooking, createQuote, logActivity, getSettings, getBusinessProfiles } from '@/lib/db';
+import { getStaffProfile, isAdminAuthenticated } from '@/lib/auth';
 import { addDays, DEFAULT_QUOTE_TERMS, DEFAULT_QUOTE_ASSUMPTIONS, DEFAULT_PAYMENT_DUE_TERMS, isPaymentDueTerms, QUOTE_VALID_DAYS, resolvePackageFields, packagePercentsFromSettings, type QuoteInput, type QuoteOtherLine } from '@/lib/quote';
-import { BUSINESS_DEFAULTS } from '@/lib/invoice';
+import { documentBusinessDefaults } from '@/lib/documentDefaults';
 
 export const dynamic = 'force-dynamic';
 
@@ -12,11 +13,15 @@ export async function GET(req: NextRequest) {
   if (!await isAdminAuthenticated()) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   const bookingId = req.nextUrl.searchParams.get('bookingId');
   const quotes = bookingId ? await getQuotesForBooking(bookingId) : await getQuotes();
+  if (req.nextUrl.searchParams.get("view") === "accepted-bookings") {
+    return NextResponse.json([...new Set(quotes.filter(quote => quote.acceptedAt).map(quote => quote.bookingId))]);
+  }
   return NextResponse.json(quotes);
 }
 
 export async function POST(req: NextRequest) {
-  if (!await isAdminAuthenticated()) return NextResponse.json({ error: 'Access denied' }, { status: 403 });
+  const profile = await getStaffProfile();
+  if (!profile) return NextResponse.json({ error: 'Access denied' }, { status: 403 });
   try {
     const b = await req.json();
     const bookingId = (b.bookingId ?? '').trim();
@@ -43,6 +48,7 @@ export async function POST(req: NextRequest) {
     }
 
     const settings = await getSettings();
+    const business = documentBusinessDefaults(profile, await getBusinessProfiles(), settings.autofillBusinessInfo);
     const quoteDate = b.quoteDate || new Date().toISOString().slice(0, 10);
     const input: QuoteInput = {
       bookingId,
@@ -55,12 +61,12 @@ export async function POST(req: NextRequest) {
       propertyType: b.propertyType === 'commercial' ? 'commercial' : 'residential',
       billToName: b.billToName ?? '',
       billToAddress: b.billToAddress ?? '',
-      fromName: b.fromName ?? BUSINESS_DEFAULTS.fromName,
-      fromTradingAs: b.fromTradingAs ?? BUSINESS_DEFAULTS.fromTradingAs,
-      fromAbn: b.fromAbn ?? BUSINESS_DEFAULTS.fromAbn,
-      fromAddress: b.fromAddress ?? BUSINESS_DEFAULTS.fromAddress,
-      fromEmail: b.fromEmail ?? BUSINESS_DEFAULTS.fromEmail,
-      fromPhone: b.fromPhone ?? BUSINESS_DEFAULTS.fromPhone,
+      fromName: b.fromName ?? business.fromName,
+      fromTradingAs: b.fromTradingAs ?? business.fromTradingAs,
+      fromAbn: b.fromAbn ?? business.fromAbn,
+      fromAddress: b.fromAddress ?? business.fromAddress,
+      fromEmail: b.fromEmail ?? business.fromEmail,
+      fromPhone: b.fromPhone ?? business.fromPhone,
       showFromAddress: typeof b.showFromAddress === 'boolean' ? b.showFromAddress : settings.defaultShowAddressOnQuote,
       quoteDate,
       validUntil: b.validUntil || addDays(quoteDate, QUOTE_VALID_DAYS),
@@ -74,8 +80,9 @@ export async function POST(req: NextRequest) {
     input.packagePrices = pkg.packagePrices;
     input.termsText = pkg.termsText;
     if (pkg.amount != null) input.amount = pkg.amount;
-    const quote = await createQuote(input);
-    await logActivity('quote.created', `Quote ${quote.number} created (${quote.amount ? `$${quote.amount}` : 'no amount'})`, { quoteId: quote.id, bookingId: quote.bookingId }, 'admin');
+    const actor = staffLabel(profile);
+    const quote = await createQuote(input, { createdBy: actor });
+    await logActivity('quote.created', `Quote ${quote.number} created (${quote.amount ? `$${quote.amount}` : 'no amount'})`, { quoteId: quote.id, bookingId: quote.bookingId }, actor);
     return NextResponse.json(quote, { status: 201 });
   } catch (err) {
     console.error('Quote create error:', err);

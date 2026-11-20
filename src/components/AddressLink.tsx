@@ -4,8 +4,9 @@ export function mapsUrl(address: string): string {
   return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address)}`;
 }
 
-export function AddressLink({ address, className = '', stop = false }: {
+export function AddressLink({ address, label, className = '', stop = false }: {
   address: string;
+  label?: string;
   className?: string;
   stop?: boolean; // stop click bubbling when the address sits inside a clickable row
 }) {
@@ -19,7 +20,7 @@ export function AddressLink({ address, className = '', stop = false }: {
       onClick={stop ? (e) => e.stopPropagation() : undefined}
       className={`hover:text-sky-400 hover:underline cursor-pointer ${className}`}
     >
-      {a}
+      {label ?? a}
     </a>
   );
 }

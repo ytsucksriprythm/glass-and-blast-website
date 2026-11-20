@@ -1,3 +1,4 @@
+import type { StaffProfile } from '../staff';
 // Small, dependency-free crypto helpers for the MCP connector: HS256 JWTs
 // for access tokens, HMAC-signed blobs (authorize-form state, pagination
 // cursors, short-lived file links), and scrypt password hashes.
@@ -35,6 +36,8 @@ function subkey(secret: string, purpose: string): Buffer {
 // ─── JWT (HS256 only) ────────────────────────────────────────────────────────
 
 export interface AccessTokenClaims {
+  profile?: StaffProfile;
+  channel?: "chatgpt" | "claude" | "connector";
   iss: string;
   aud: string;
   sub: string;

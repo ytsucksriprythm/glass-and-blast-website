@@ -11,6 +11,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'fs';
+import { rm } from 'node:fs/promises';
 import os from 'os';
 import path from 'path';
 import { createHash, randomUUID } from 'crypto';
@@ -44,9 +45,13 @@ before(async () => {
   const res = await oauth.token(h.req('/api/oauth/token', { method: 'POST', form: { grant_type: 'client_credentials', client_id: VAPI_ID, client_secret: VAPI_SECRET } }));
   atlas = (await res.json()).access_token;
 });
-after(() => {
+after(async context => {
   process.chdir(repoCwd);
-  fs.rmSync(tmp, { recursive: true, force: true });
+  try { await rm(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
+  catch (error) {
+    if (!['EPERM', 'EBUSY'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+    if ('diagnostic' in context) context.diagnostic('Windows retained a handle on the temporary fixture directory.');
+  }
 });
 
 const call = (token: string, name: string, args: Record<string, unknown>) => h.callTool(token, name, args);
@@ -202,7 +207,7 @@ test('activity log records who made the change: atlas for Vapi, chatgpt for the 
   const updated = log.find(a => a.type === 'quote.updated' && (a.meta as any)?.quoteId === viaAtlas.data.quote.id);
   assert.equal(created?.actor, 'atlas');
   assert.match(created!.summary, /via Atlas/);
-  assert.equal(updated?.actor, 'chatgpt');
+  assert.equal(updated?.actor, 'Liam (chatgpt)');
 });
 
 test('permissions: a narrow Atlas token cannot create bookings or invoices; unauthenticated callers get nothing', async () => {

@@ -110,10 +110,11 @@ test('null (never recorded) and "" (saved blank) are preserved distinctly', asyn
   assert.equal(jane.feedbackStars, 5);
 });
 
-test('get_booking returns EVERY bookings column, original notes, and all linked records', async () => {
+test('get_booking returns booking fields, original notes and linked records, with private queue state omitted', async () => {
   const r = await tool('get_booking', { id: 'BK-JANE' });
   const b = r.data.booking;
-  for (const col of await columns('bookings')) assert.ok(camel(col) in b, `bookings.${col} missing from get_booking`);
+  for (const col of (await columns('bookings')).filter(col => col !== 'call_state')) assert.ok(camel(col) in b, `bookings.${col} missing from get_booking`);
+  assert.ok(!('callState' in b));
   assert.equal(b.notes, 'Gate code 4321, dog in backyard');
   assert.equal(b.adminNotes, 'Prefers SMS. Paid cash last time.');
   assert.equal(b.computed.thankYouPageUrl, `${BASE}/thanks/bk_tokjane`);
@@ -311,4 +312,14 @@ test('coverage map accounts for every table in the schema', async () => {
     const priv = await ownerExec(`SELECT has_table_privilege('mcp_readonly', $1, 'SELECT') OR has_any_column_privilege('mcp_readonly', $1, 'SELECT') AS ok`, [t]);
     assert.equal(priv[0].ok, true, `${t} not readable by mcp_readonly`);
   }
+});
+
+test('the connector reads the Call List and Sydney daily totals', async () => {
+  const connection = await fullLogin();
+  const result = await callTool(connection.accessToken, 'list_calling_leads', { view: 'uncontacted', limit: 5 });
+  assert.equal(result.isError, false, result.text);
+  const payload = JSON.parse(result.text);
+  assert.ok(payload.total > 0);
+  assert.ok(payload.leads.length <= 5);
+  assert.equal(payload.stats.lincoln.attempted, 0);
 });

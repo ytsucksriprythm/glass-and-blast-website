@@ -1,3 +1,4 @@
+import { staffLabel } from '@/lib/staff';
 import { NextRequest, NextResponse } from 'next/server';
 import { getBookings, getBookingsForGuest, getStats, addBooking, logActivity } from '@/lib/db';
 import { getActiveContext } from '@/lib/auth';
@@ -17,6 +18,7 @@ export async function POST(req: NextRequest) {
       ? ctx.guestId
       : (typeof b.assignedGuestId === 'string' && b.assignedGuestId ? b.assignedGuestId : null);
 
+    const actor = ctx.role === "admin" ? staffLabel(ctx.profile) : "Guest";
     const booking = await addBooking({
       name: b.name,
       email: b.email ?? '',
@@ -38,8 +40,8 @@ export async function POST(req: NextRequest) {
       scheduledEnd: typeof b.scheduledEnd === 'string' && b.scheduledEnd ? b.scheduledEnd : null,
       // "How did we get this job?" — manual-add attribution for source analytics.
       leadSource: typeof b.leadSource === 'string' && b.leadSource ? b.leadSource : null,
-    });
-    logActivity('booking.created', `${booking.name} added manually (${booking.service || 'no service'})`, { bookingId: booking.id }, ctx.role === 'admin' ? 'admin' : `guest:${ctx.guestId}`).catch(() => {});
+    }, actor);
+    logActivity('booking.created', `${booking.name} added manually (${booking.service || 'no service'})`, { bookingId: booking.id }, ctx.role === 'admin' ? actor : `guest:${ctx.guestId}`).catch(() => {});
     return NextResponse.json({ success: true, booking }, { status: 201 });
   } catch {
     return NextResponse.json({ error: 'Failed to create booking' }, { status: 500 });

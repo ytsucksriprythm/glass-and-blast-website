@@ -98,7 +98,7 @@ That's your `MCP_DATABASE_URL`.
    - **Authentication:** OAuth. Leave the client ID and secret blank.
 3. Click **Create**. A **Glass & Blast sign-in page** opens.
    - Check it says the request is from `chatgpt.com`.
-   - Enter your connector password from step 1.
+   - Select Liam or Lincoln and enter your connector password from step 1.
    - Tap **Allow read-only access**.
 4. ChatGPT should now list 18 tools.
 5. Start a **new chat**, open the tools menu (**+** in the message box), and switch on **Glass & Blast**.
@@ -115,7 +115,7 @@ The same connector works in Claude (claude.ai, Claude Desktop and the Claude pho
 
 1. On claude.ai, go to **Settings → Connectors → Add custom connector**.
 2. **Name:** `Glass & Blast`. **URL:** `https://glassandblast.com.au/api/mcp`. Leave the advanced OAuth fields blank, then click **Add**.
-3. Click **Connect**. The same Glass & Blast sign-in page opens; check it says the request is from `claude.ai`, enter your connector password, and click **Allow access** (**Allow read-only access** if write tools are off).
+3. Click **Connect**. Select Liam or Lincoln when the Glass & Blast sign-in page opens; check it says the request is from `claude.ai`, enter your connector password, and click **Allow access** (**Allow read-only access** if write tools are off).
 4. In a chat, turn on **Glass & Blast** from the tools menu.
 
 Claude asks before using tools too, but unlike ChatGPT it lets you pick **Always allow** per tool, either in the prompt or under Settings → Connectors → Glass & Blast.
@@ -143,3 +143,5 @@ The connector shows up in Claude Desktop and the phone app automatically. Claude
 - **ChatGPT says it can't connect.** Make sure the URL ends in `/api/mcp` and starts with `https://`, and that the step 4 check works.
 
 More detail (architecture, coverage checklist, limitations): [mcp-chatgpt.md](mcp-chatgpt.md).
+
+Existing connections without a profile can still read the CRM. Reconnect and select your profile before making changes. New records show the name and connector used, for example **Liam (chatgpt)**.

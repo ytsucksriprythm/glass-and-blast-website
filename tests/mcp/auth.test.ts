@@ -9,7 +9,7 @@ import {
 } from './harness';
 import * as oauth from '../../src/lib/mcp/oauth';
 import { handleMcp } from '../../src/lib/mcp/handler';
-import { signJwt, pkceS256, randomToken } from '../../src/lib/mcp/crypto';
+import { signJwt, verifyJwt, pkceS256, randomToken } from '../../src/lib/mcp/crypto';
 
 before(async () => {
   configureEnv();
@@ -128,11 +128,11 @@ test('wrong password is rejected, and repeated failures lock out sign-in', async
     assert.equal(res.status, 200);
     assert.match(await res.text(), /Incorrect password/);
   }
-  const locked = await oauth.authorizePost(req('/api/oauth/authorize', { method: 'POST', form: { tx, password: OWNER_PASSWORD, decision: 'approve' }, headers: ip }));
+  const locked = await oauth.authorizePost(req('/api/oauth/authorize', { method: 'POST', form: { tx, password: OWNER_PASSWORD, decision: 'approve', profile: 'liam' }, headers: ip }));
   assert.match(await locked.text(), /Too many failed attempts/);
   assert.equal(locked.headers.get('location'), null, 'no code issued while locked');
   // tampered form state
-  const tampered = await oauth.authorizePost(req('/api/oauth/authorize', { method: 'POST', form: { tx: tx.slice(0, -2) + 'AA', password: OWNER_PASSWORD, decision: 'approve' } }));
+  const tampered = await oauth.authorizePost(req('/api/oauth/authorize', { method: 'POST', form: { tx: tx.slice(0, -2) + 'AA', password: OWNER_PASSWORD, decision: 'approve', profile: 'liam' } }));
   assert.match(await tampered.text(), /expired/);
   // deny
   const tx2 = await getTx(clientId, pkceS256(randomToken(48)));
@@ -145,7 +145,7 @@ test('sign-in form: Origin "null" / own origin accepted, foreign origin blocked;
   const page = await oauth.authorizeGet(req(authorizeUrl(clientId, pkceS256(randomToken(48)))));
   assert.equal(page.headers.get('referrer-policy'), 'same-origin', 'no-referrer makes browsers send Origin: null');
   const post = async (origin: string, ip: string) => oauth.authorizePost(req('/api/oauth/authorize', {
-    method: 'POST', form: { tx: await getTx(clientId, pkceS256(randomToken(48))), password: OWNER_PASSWORD, decision: 'approve' },
+    method: 'POST', form: { tx: await getTx(clientId, pkceS256(randomToken(48))), password: OWNER_PASSWORD, decision: 'approve', profile: 'liam' },
     headers: { origin, 'x-forwarded-for': ip },
   }));
   for (const [origin, ip] of [['null', '198.51.100.31'], [BASE, '198.51.100.32']]) {
@@ -161,7 +161,7 @@ test('token endpoint: PKCE verified, codes single-use, redirect/resource must ma
   const clientId = await registerClient();
   const verifier = randomToken(48);
   const tx = await getTx(clientId, pkceS256(verifier));
-  const res = await oauth.authorizePost(req('/api/oauth/authorize', { method: 'POST', form: { tx, password: OWNER_PASSWORD, decision: 'approve' }, headers: { 'x-forwarded-for': '198.51.100.20' } }));
+  const res = await oauth.authorizePost(req('/api/oauth/authorize', { method: 'POST', form: { tx, password: OWNER_PASSWORD, decision: 'approve', profile: 'liam' }, headers: { 'x-forwarded-for': '198.51.100.20' } }));
   const loc = new URL(res.headers.get('location')!);
   assert.equal(loc.origin + loc.pathname, REDIRECT);
   assert.equal(loc.searchParams.get('state'), 'st-1');
@@ -177,7 +177,7 @@ test('token endpoint: PKCE verified, codes single-use, redirect/resource must ma
 
   // Fresh code, wrong resource
   const tx2 = await getTx(clientId, pkceS256(verifier));
-  const code2 = new URL((await oauth.authorizePost(req('/api/oauth/authorize', { method: 'POST', form: { tx: tx2, password: OWNER_PASSWORD, decision: 'approve' }, headers: { 'x-forwarded-for': '198.51.100.21' } }))).headers.get('location')!).searchParams.get('code')!;
+  const code2 = new URL((await oauth.authorizePost(req('/api/oauth/authorize', { method: 'POST', form: { tx: tx2, password: OWNER_PASSWORD, decision: 'approve', profile: 'liam' }, headers: { 'x-forwarded-for': '198.51.100.21' } }))).headers.get('location')!).searchParams.get('code')!;
   const wrongRes = await tokenReq({ code: code2, code_verifier: verifier, resource: 'https://evil.example/api/mcp' });
   assert.equal(wrongRes.status, 400);
   assert.equal((await wrongRes.json()).error, 'invalid_target');
@@ -191,12 +191,24 @@ test('token endpoint: PKCE verified, codes single-use, redirect/resource must ma
   assert.equal(payload.scope, 'business.read');
 });
 
+test('connector authorization requires an explicit staff profile', async () => {
+  const clientId = await registerClient();
+  const tx = await getTx(clientId, pkceS256(randomToken(48)));
+  const response = await oauth.authorizePost(req('/api/oauth/authorize', { method: 'POST', form: { tx, password: OWNER_PASSWORD, decision: 'approve' } }));
+  assert.equal(response.headers.get('location'), null);
+  assert.match(await response.text(), /Choose Liam or Lincoln to connect/);
+});
+
 test('refresh tokens rotate; replaying an old one revokes the whole family', async () => {
-  const { refreshToken, clientId } = await fullLogin();
+  const { refreshToken, accessToken, clientId } = await fullLogin("lincoln");
+  assert.equal(verifyJwt(accessToken, secret())?.profile, "lincoln");
   const refresh = (rt: string) => oauth.token(req('/api/oauth/token', { method: 'POST', form: { grant_type: 'refresh_token', refresh_token: rt, client_id: clientId } }));
   const r1 = await refresh(refreshToken);
   assert.equal(r1.status, 200);
-  const rt2 = (await r1.json()).refresh_token;
+  const refreshed = await r1.json();
+  const rt2 = refreshed.refresh_token;
+  assert.equal(verifyJwt(refreshed.access_token, secret())?.profile, "lincoln");
+  assert.equal(verifyJwt(refreshed.access_token, secret())?.channel, "chatgpt");
   assert.notEqual(rt2, refreshToken);
   const replay = await refresh(refreshToken);
   assert.equal(replay.status, 400, 'old refresh token rejected');

@@ -2,18 +2,18 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import Link from 'next/link';
+import { STAFF_PROFILES } from '@/lib/staff';
+import { readStaffPreference, writeStaffPreference, useStaffProfile } from '@/components/admin/StaffSession';
 import toast from 'react-hot-toast';
 import {
   ChevronLeft, ChevronRight, Plus, X, Check, Calendar as CalIcon, Clock,
-  Trash2, ExternalLink, CalendarOff, ArrowLeft,
 } from 'lucide-react';
 import type { Booking, BookingStatus } from '@/lib/db';
 import { AdminSidebar, AdminMobileNav, AdminMoreSheet, useMoreSheet, adminNavItems } from '@/components/admin/AdminNav';
 import { AddressLink } from '@/components/AddressLink';
-import CustomerName from '@/components/admin/CustomerName';
+import ScheduleBookingSheet from '@/components/admin/ScheduleBookingSheet';
 
-type View = 'day' | 'week' | 'month';
+type View = 'agenda' | 'day' | 'week' | 'month';
 
 const STATUS_LABEL: Record<BookingStatus, string> = {
   uncontacted: 'Uncontacted', contacted: 'Contacted', 'quote-booked': 'Quote Booked', quoted: 'Quoted', confirmed: 'Confirmed', completed: 'Completed', cancelled: 'Cancelled', cold: 'Cold Lead',
@@ -34,16 +34,12 @@ const addDays = (d: Date, n: number) => { const x = new Date(d); x.setDate(x.get
 const mondayOf = (d: Date) => addDays(startOfDay(d), -((d.getDay() + 6) % 7));
 const sameDay = (a: Date, b: Date) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 const timeLabel = (iso: string) => new Date(iso).toLocaleTimeString('en-AU', { hour: 'numeric', minute: '2-digit' });
-const toLocalInput = (iso: string | null) => {
-  if (!iso) return '';
-  const d = new Date(iso);
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-};
 const fromLocalInput = (v: string) => (v ? new Date(v).toISOString() : null);
 const DOW = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
 // Visible [start, end) range for the current view/anchor.
 function rangeFor(view: View, anchor: Date): { start: Date; end: Date } {
+  if (view === 'agenda') return { start: startOfDay(anchor), end: addDays(startOfDay(anchor), 7) };
   if (view === 'day') return { start: startOfDay(anchor), end: addDays(startOfDay(anchor), 1) };
   if (view === 'week') { const s = mondayOf(anchor); return { start: s, end: addDays(s, 7) }; }
   // month grid: 6 weeks from the Monday on/before the 1st
@@ -54,8 +50,10 @@ function rangeFor(view: View, anchor: Date): { start: Date; end: Date } {
 
 export default function CalendarPage() {
   const router = useRouter();
-  const [view, setView] = useState<View>('month');
+  const profile = useStaffProfile();
+  const [view, setView] = useState<View>('agenda');
   const [anchor, setAnchor] = useState<Date>(startOfDay(new Date()));
+  const [initialized, setInitialized] = useState(false);
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [loading, setLoading] = useState(true);
   const [edit, setEdit] = useState<Booking | null>(null);
@@ -68,7 +66,15 @@ export default function CalendarPage() {
   // instead of creating a new job, so the two stay one record.
   const [scheduleFor, setScheduleFor] = useState<Booking | null>(null);
   useEffect(() => {
-    const id = new URLSearchParams(window.location.search).get('schedule');
+    const params = new URLSearchParams(window.location.search);
+    const view = params.get('view') ?? readStaffPreference(profile, 'calendar-view');
+    if (view === 'agenda' || view === 'day' || view === 'week' || view === 'month') setView(view);
+    else if (window.matchMedia('(min-width: 1024px)').matches) setView('month');
+    const date = new Date(params.get('date') ?? readStaffPreference(profile, 'calendar-date') ?? '');
+    if (!Number.isNaN(date.getTime())) setAnchor(startOfDay(date));
+    setInitialized(true);
+    const id = params.get('schedule');
+    if (id) setView('month');
     if (!id) return;
     (async () => {
       try {
@@ -76,7 +82,13 @@ export default function CalendarPage() {
         if (res.ok) setScheduleFor(await res.json());
       } catch { /* fall back to normal add */ }
     })();
-  }, []);
+  }, [profile]);
+  useEffect(() => {
+    if (!initialized || new URLSearchParams(window.location.search).has("schedule")) return;
+    writeStaffPreference(profile, "calendar-view", view);
+    writeStaffPreference(profile, "calendar-date", sameDay(anchor, new Date()) ? null : anchor.toISOString());
+  }, [initialized, profile, view, anchor]);
+
   const cancelScheduling = () => {
     setScheduleFor(null);
     window.history.replaceState({}, '', '/admin/calendar');
@@ -84,19 +96,23 @@ export default function CalendarPage() {
 
   const { start, end } = useMemo(() => rangeFor(view, anchor), [view, anchor]);
 
+  const [calendarError, setCalendarError] = useState(false);
   const load = useCallback(async () => {
     setLoading(true);
+    setCalendarError(false);
     try {
       const res = await fetch(`/api/admin/calendar?start=${encodeURIComponent(start.toISOString())}&end=${encodeURIComponent(end.toISOString())}`);
       if (res.status === 401) { router.push('/admin'); return; }
+      if (!res.ok) throw new Error();
       const data = await res.json();
       setBookings(Array.isArray(data?.bookings) ? data.bookings : []);
-    } catch { setBookings([]); }
+    } catch { setCalendarError(true); }
     finally { setLoading(false); }
   }, [start, end, router]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { if (initialized) void load(); }, [initialized, load]);
 
+  const agendaHasItems = bookings.some(b => b.scheduledAt && !["cancelled", "cold"].includes(b.status));
   const byDay = useCallback(
     (d: Date) => bookings
       .filter(b => b.scheduledAt && sameDay(new Date(b.scheduledAt), d))
@@ -106,30 +122,38 @@ export default function CalendarPage() {
 
   const step = (dir: number) => {
     if (view === 'day') setAnchor(a => addDays(a, dir));
-    else if (view === 'week') setAnchor(a => addDays(a, dir * 7));
+    else if (view === 'week' || view === 'agenda') setAnchor(a => addDays(a, dir * 7));
     else setAnchor(a => new Date(a.getFullYear(), a.getMonth() + dir, 1));
   };
 
-  const title = view === 'day'
+  const title = view === 'agenda'
+    ? anchor.toLocaleDateString('en-AU', { day: 'numeric', month: 'long', year: 'numeric' })
+    : view === 'day'
     ? anchor.toLocaleDateString('en-AU', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
     : view === 'week'
       ? `${mondayOf(anchor).toLocaleDateString('en-AU', { day: 'numeric', month: 'short' })} – ${addDays(mondayOf(anchor), 6).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' })}`
       : anchor.toLocaleDateString('en-AU', { month: 'long', year: 'numeric' });
+
+  const openDay = (date: Date) => {
+    setAnchor(date);
+    setView('day');
+  };
+  const openBooking = (booking: Booking) => {
+    const from = "/admin/calendar?" + new URLSearchParams({ view, date: anchor.toISOString() });
+    router.push("/admin/bookings/" + booking.id + "?from=" + encodeURIComponent(from));
+  };
 
   return (
     <div className="min-h-[100svh] bg-navy-900 flex">
       <AdminSidebar active="calendar" items={navItems} />
       <div className="flex-1 flex flex-col min-w-0">
       <header
-        className="sticky top-0 z-30 bg-navy-900/90 backdrop-blur border-b border-white/10 px-4 flex items-center justify-between gap-3"
+        className="crm-topbar sticky top-0 z-30 bg-navy-900/90 backdrop-blur border-b border-white/10 px-4 flex items-center justify-between gap-3"
         style={{ paddingTop: 'calc(env(safe-area-inset-top) + 0.85rem)', paddingBottom: '0.85rem' }}
       >
-        <Link href="/admin/dashboard" className="inline-flex items-center gap-2 -ml-2 px-2 py-2 rounded-lg text-slate-300 hover:text-white active:bg-white/10 text-sm cursor-pointer lg:hidden">
-          <ArrowLeft className="w-5 h-5" /> Dashboard
-        </Link>
-        <div className="text-white font-semibold flex items-center gap-2"><CalIcon className="w-5 h-5 text-sky-400" /> Calendar</div>
-        <button onClick={() => setAddFor(startOfDay(new Date()))} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-white text-sm font-semibold cursor-pointer">
-          <Plus className="w-4 h-4" /> Add
+        <h1 className="flex items-center gap-2 font-bold text-white"><CalIcon className="size-5 text-sky-400" /> Calendar</h1>
+        <button onClick={() => setAddFor(view === 'day' ? anchor : startOfDay(new Date()))} className="inline-flex min-h-11 items-center gap-1.5 px-3 py-1.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-white text-sm font-semibold cursor-pointer">
+          <Plus className="size-4" /> Add appointment
         </button>
       </header>
 
@@ -142,7 +166,7 @@ export default function CalendarPage() {
                 Scheduling: {scheduleFor.name}
               </div>
               <div className="text-slate-400 text-xs truncate">
-                Tap a day to set the time. Details are filled in from the booking.
+                Open a day, then tap Add on this day to set the time.
               </div>
             </div>
             <button onClick={cancelScheduling} className="flex-shrink-0 px-3 py-1.5 rounded-lg border border-white/15 text-slate-300 hover:text-white text-xs font-semibold cursor-pointer">Cancel</button>
@@ -150,35 +174,65 @@ export default function CalendarPage() {
         )}
 
         {/* Controls */}
-        <div className="flex items-center justify-between gap-3 mb-4">
+        <div className="crm-panel mb-5 flex flex-wrap items-center justify-between gap-3 p-3">
           <div className="flex items-center gap-1">
             <button onClick={() => step(-1)} aria-label="Previous period" className="h-11 w-11 flex items-center justify-center rounded-lg border border-white/10 text-slate-300 hover:text-white hover:border-sky-400/40 cursor-pointer transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/60"><ChevronLeft className="w-4 h-4" /></button>
             <button onClick={() => setAnchor(startOfDay(new Date()))} className="h-11 px-4 rounded-lg border border-white/10 text-slate-300 hover:text-white text-sm font-semibold cursor-pointer transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/60">Today</button>
             <button onClick={() => step(1)} aria-label="Next period" className="h-11 w-11 flex items-center justify-center rounded-lg border border-white/10 text-slate-300 hover:text-white hover:border-sky-400/40 cursor-pointer transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/60"><ChevronRight className="w-4 h-4" /></button>
           </div>
-          <div className="text-white font-semibold text-sm sm:text-base text-center flex-1 truncate">{title}</div>
-          <div className="flex items-center gap-1 rounded-lg border border-white/10 p-0.5" role="group" aria-label="Calendar view">
-            {(['day', 'week', 'month'] as View[]).map(v => (
-              <button key={v} onClick={() => setView(v)} aria-pressed={view === v} className={`px-3 py-2 rounded-md text-xs font-semibold capitalize cursor-pointer transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/60 ${view === v ? 'bg-sky-500 text-white' : 'text-slate-400 hover:text-white'}`}>{v}</button>
+          <div className="order-first w-full text-left text-sm font-semibold text-white sm:order-none sm:w-auto sm:flex-1 sm:text-center sm:text-base">{title}</div>
+          <div className="flex w-full items-center justify-between gap-1 rounded-lg border border-white/10 p-0.5 sm:w-auto" role="group" aria-label="Calendar view">
+            {(['agenda', 'day', 'week', 'month'] as View[]).map(v => (
+              <button key={v} onClick={() => setView(v)} aria-pressed={view === v} className={`min-h-11 px-2.5 py-2 rounded-md text-xs font-semibold capitalize cursor-pointer transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/60 ${view === v ? 'bg-sky-500 text-white' : 'text-slate-400 hover:text-white'}`}>{v}</button>
             ))}
           </div>
         </div>
 
+        {calendarError && <p role="alert" className="mb-4 text-red-300">Could not load the calendar. <button type="button" onClick={() => void load()} className="min-h-11 underline">Retry</button></p>}
         {loading && <div className="text-slate-500 text-sm text-center py-10">Loading…</div>}
 
-        {!loading && view === 'month' && (
-          <MonthGrid anchor={anchor} byDay={byDay} onOpen={setEdit} onAdd={setAddFor} />
+
+        {!loading && !calendarError && view === 'agenda' && (
+          <div className="space-y-5">
+            {Array.from({ length: 7 }, (_, offset) => addDays(anchor, offset)).map(day => {
+              const items = byDay(day).filter(b => !["cancelled", "cold"].includes(b.status));
+              const today = startOfDay(new Date());
+              if (!items.length && !sameDay(day, today) && !sameDay(day, addDays(today, 1))) return null;
+              const label = sameDay(day, today) ? 'Today' : sameDay(day, addDays(today, 1)) ? 'Tomorrow' :
+                day.toLocaleDateString('en-AU', { weekday: 'long', day: 'numeric', month: 'short' });
+              return (
+                <section key={day.toISOString()} className="space-y-2">
+                  <h2 className="font-semibold text-white">{label}</h2>
+                  {items.length ? items.map(booking => (
+                    <div key={booking.id} className="crm-panel flex flex-wrap items-center gap-2 p-3">
+                      <button onClick={() => openBooking(booking)} className="min-h-11 min-w-0 flex-1 text-left">
+                        <span className="block text-sm text-sky-300">{timeLabel(booking.scheduledAt!)} · {['uncontacted', 'contacted', 'quote-booked'].includes(booking.status) ? 'Quote visit' : 'Job'}</span>
+                        <span className="block font-semibold text-white">{booking.name}</span>
+                        <span className="block text-sm text-slate-300">{[booking.suburb, booking.quoteStaff ? STAFF_PROFILES[booking.quoteStaff] : null].filter(Boolean).join(" / ")}</span>
+                      </button>
+                      <button onClick={() => setEdit(booking)} className="min-h-11 rounded-lg border border-white/10 px-3 text-sm text-sky-300">Reschedule</button>
+                    </div>
+                  )) : <p className="text-sm text-slate-300">No appointments.</p>}
+                </section>
+              );
+            })}
+            {!agendaHasItems && !sameDay(anchor, startOfDay(new Date())) && <p className="text-slate-300">No appointments in this period.</p>}
+          </div>
         )}
-        {!loading && view === 'week' && (
-          <WeekView anchor={anchor} byDay={byDay} onOpen={setEdit} onAdd={setAddFor} />
+
+        {!loading && !calendarError && view === 'month' && (
+          <MonthGrid anchor={anchor} byDay={byDay} onOpen={openBooking} onDay={openDay} />
         )}
-        {!loading && view === 'day' && (
-          <DayView day={anchor} items={byDay(anchor)} onOpen={setEdit} onAdd={() => setAddFor(anchor)} />
+        {!loading && !calendarError && view === 'week' && (
+          <WeekView anchor={anchor} byDay={byDay} onOpen={openBooking} onAdd={setAddFor} onDay={openDay} />
+        )}
+        {!loading && !calendarError && view === 'day' && (
+          <DayView day={anchor} items={byDay(anchor)} onOpen={openBooking} onAdd={() => setAddFor(anchor)} />
         )}
       </main>
 
       {edit && (
-        <EditModal booking={edit} onClose={() => setEdit(null)} onChanged={() => { setEdit(null); load(); }} />
+        <ScheduleBookingSheet booking={edit} onClose={() => setEdit(null)} onChanged={() => { setEdit(null); load(); }} />
       )}
       {addFor && (
         <AddModal
@@ -203,14 +257,14 @@ export default function CalendarPage() {
 function Chip({ b, onClick }: { b: Booking; onClick: () => void }) {
   return (
     <button onClick={onClick} className={`w-full text-left px-1.5 py-1 rounded text-[11px] leading-tight truncate cursor-pointer badge-${b.status} hover:opacity-90`}>
-      {b.scheduledAt && <span className="font-semibold">{timeLabel(b.scheduledAt)} </span>}<CustomerName name={b.name} bookingId={b.id} recurringId={b.recurringId} />
+      {b.scheduledAt && <span className="font-semibold">{timeLabel(b.scheduledAt)} </span>}{b.name}
     </button>
   );
 }
 
 // ─── Month ──────────────────────────────────────────────────────────────────
-function MonthGrid({ anchor, byDay, onOpen, onAdd }: {
-  anchor: Date; byDay: (d: Date) => Booking[]; onOpen: (b: Booking) => void; onAdd: (d: Date) => void;
+function MonthGrid({ anchor, byDay, onOpen, onDay }: {
+  anchor: Date; byDay: (d: Date) => Booking[]; onOpen: (b: Booking) => void; onDay: (d: Date) => void;
 }) {
   const first = new Date(anchor.getFullYear(), anchor.getMonth(), 1);
   const gridStart = mondayOf(first);
@@ -229,10 +283,9 @@ function MonthGrid({ anchor, byDay, onOpen, onAdd }: {
             <div key={i} className={`min-h-[92px] border-t border-l border-white/5 p-1 ${i % 7 === 6 ? '' : ''} ${inMonth ? '' : 'bg-white/[0.015]'}`}>
               <div className="flex items-center justify-between mb-1">
                 <button
-                  onClick={() => onAdd(d)}
-                  aria-label={`Add booking on ${d.toLocaleDateString('en-AU', { weekday: 'long', day: 'numeric', month: 'long' })}`}
-                  title="Add booking on this day"
-                  className={`w-7 h-7 rounded-full text-xs font-semibold cursor-pointer transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/60 ${sameDay(d, today) ? 'bg-sky-500 text-white' : inMonth ? 'text-slate-300 hover:bg-white/10' : 'text-slate-600 hover:bg-white/10'}`}
+                  onClick={() => onDay(d)}
+                  aria-label={`View ${d.toLocaleDateString('en-AU', { weekday: 'long', day: 'numeric', month: 'long' })}`}
+                  className={`min-h-11 w-full rounded-lg text-xs font-semibold cursor-pointer transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/60 ${sameDay(d, today) ? 'bg-sky-500 text-white' : inMonth ? 'text-slate-300 hover:bg-white/10' : 'text-slate-500 hover:bg-white/10'}`}
                 >
                   {d.getDate()}
                 </button>
@@ -250,8 +303,8 @@ function MonthGrid({ anchor, byDay, onOpen, onAdd }: {
 }
 
 // ─── Week ───────────────────────────────────────────────────────────────────
-function WeekView({ anchor, byDay, onOpen, onAdd }: {
-  anchor: Date; byDay: (d: Date) => Booking[]; onOpen: (b: Booking) => void; onAdd: (d: Date) => void;
+function WeekView({ anchor, byDay, onOpen, onAdd, onDay }: {
+  anchor: Date; byDay: (d: Date) => Booking[]; onOpen: (b: Booking) => void; onAdd: (d: Date) => void; onDay: (d: Date) => void;
 }) {
   const start = mondayOf(anchor);
   const days = Array.from({ length: 7 }, (_, i) => addDays(start, i));
@@ -263,10 +316,10 @@ function WeekView({ anchor, byDay, onOpen, onAdd }: {
         return (
           <div key={i} className="rounded-xl border border-white/10 bg-navy-800 p-2 min-h-[120px]">
             <div className="flex items-center justify-between mb-2">
-              <div className={`text-xs font-semibold ${sameDay(d, today) ? 'text-sky-400' : 'text-slate-300'}`}>
+              <button onClick={() => onDay(d)} className={`min-h-11 flex-1 text-left text-xs font-semibold ${sameDay(d, today) ? 'text-sky-400' : 'text-slate-300'}`}>
                 {DOW[i]} {d.getDate()}
-              </div>
-              <button onClick={() => onAdd(d)} className="text-slate-500 hover:text-sky-400 cursor-pointer"><Plus className="w-3.5 h-3.5" /></button>
+              </button>
+              <button onClick={() => onAdd(d)} aria-label="Add booking on this day" className="grid min-h-11 min-w-11 place-items-center text-slate-400 hover:text-sky-400 cursor-pointer"><Plus className="w-3.5 h-3.5" /></button>
             </div>
             <div className="space-y-1">
               {items.length === 0 && <div className="text-[11px] text-slate-600">-</div>}
@@ -287,7 +340,7 @@ function DayView({ day, items, onOpen, onAdd }: {
     <div className="rounded-xl border border-white/10 bg-navy-800 p-4">
       <div className="flex items-center justify-between mb-3">
         <div className="text-white font-semibold">{items.length} job{items.length !== 1 ? 's' : ''}</div>
-        <button onClick={onAdd} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-sky-400/30 bg-sky-400/10 text-sky-300 text-sm font-semibold cursor-pointer"><Plus className="w-4 h-4" /> Add on this day</button>
+        <button onClick={onAdd} className="inline-flex min-h-11 items-center gap-1.5 px-3 py-1.5 rounded-lg border border-sky-400/30 bg-sky-400/10 text-sky-300 text-sm font-semibold cursor-pointer"><Plus className="w-4 h-4" /> Add on this day</button>
       </div>
       {items.length === 0 ? (
         <div className="text-slate-500 text-sm py-8 text-center">Nothing scheduled for {day.toLocaleDateString('en-AU', { day: 'numeric', month: 'long' })}.</div>
@@ -297,7 +350,7 @@ function DayView({ day, items, onOpen, onAdd }: {
             <button key={b.id} onClick={() => onOpen(b)} className="w-full flex items-center gap-3 p-3 rounded-lg border border-white/10 hover:border-sky-400/30 hover:bg-white/[0.03] text-left cursor-pointer">
               <div className="text-sky-300 text-sm font-semibold w-20 flex-shrink-0 inline-flex items-center gap-1"><Clock className="w-3.5 h-3.5" /> {b.scheduledAt ? timeLabel(b.scheduledAt) : ''}</div>
               <div className="min-w-0 flex-1">
-                <div className="text-white text-sm font-medium truncate"><CustomerName name={b.name} bookingId={b.id} recurringId={b.recurringId} /></div>
+                <div className="text-white text-sm font-medium truncate">{b.name}</div>
                 <div className="text-slate-500 text-xs truncate">{serviceText(b.service)}{(b.address || b.suburb) ? ` · ${[b.address, b.suburb].filter(Boolean).join(', ')}` : ''}</div>
               </div>
               <span className={`text-[10px] px-2 py-0.5 rounded font-semibold badge-${b.status}`}>{STATUS_LABEL[b.status]}</span>
@@ -310,71 +363,6 @@ function DayView({ day, items, onOpen, onAdd }: {
 }
 
 // ─── Edit / reschedule modal ────────────────────────────────────────────────
-function EditModal({ booking, onClose, onChanged }: {
-  booking: Booking; onClose: () => void; onChanged: () => void;
-}) {
-  const [when, setWhen] = useState(toLocalInput(booking.scheduledAt ?? null));
-  const [status, setStatus] = useState<BookingStatus>(booking.status);
-  const [busy, setBusy] = useState(false);
-
-  const patch = async (body: Record<string, unknown>, msg: string) => {
-    setBusy(true);
-    try {
-      const res = await fetch(`/api/admin/bookings/${booking.id}`, {
-        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-      });
-      if (!res.ok) throw new Error();
-      toast.success(msg);
-      onChanged();
-    } catch { toast.error('Update failed'); setBusy(false); }
-  };
-
-  const save = () => patch({ scheduledAt: fromLocalInput(when), status }, 'Rescheduled');
-  const removeFromCal = () => patch({ scheduledAt: null }, 'Removed from calendar');
-  const del = async () => {
-    if (!window.confirm(`Delete booking for ${booking.name}? This cannot be undone.`)) return;
-    setBusy(true);
-    try {
-      const res = await fetch(`/api/admin/bookings/${booking.id}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error();
-      toast.success('Booking deleted');
-      onChanged();
-    } catch { toast.error('Delete failed'); setBusy(false); }
-  };
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 sm:p-4" onClick={onClose}>
-      <div className="bg-navy-800 border border-white/10 rounded-t-2xl sm:rounded-2xl w-full sm:max-w-md" onClick={e => e.stopPropagation()}>
-        <div className="p-4 border-b border-white/10 flex items-center justify-between">
-          <h3 className="text-white font-semibold truncate">{booking.name}</h3>
-          <button onClick={onClose} className="text-slate-400 hover:text-white cursor-pointer"><X className="w-5 h-5" /></button>
-        </div>
-        <div className="p-4 space-y-4" style={{ paddingBottom: 'calc(1rem + env(safe-area-inset-bottom))' }}>
-          <div className="text-slate-400 text-sm">{serviceText(booking.service)}{(booking.address || booking.suburb) ? ` · ${[booking.address, booking.suburb].filter(Boolean).join(', ')}` : ''}</div>
-          <div>
-            <label className="block text-slate-400 text-xs font-medium mb-1.5">Scheduled date & time</label>
-            <input type="datetime-local" className="form-input" value={when} onChange={e => setWhen(e.target.value)} />
-          </div>
-          <div>
-            <label className="block text-slate-400 text-xs font-medium mb-1.5">Status</label>
-            <select className="form-input" value={status} onChange={e => setStatus(e.target.value as BookingStatus)}>
-              {STATUS_KEYS.map(s => <option key={s} value={s}>{STATUS_LABEL[s]}</option>)}
-            </select>
-          </div>
-          <div className="flex gap-2">
-            <button onClick={save} disabled={busy || !when} className="flex-1 py-3 rounded-lg bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-white font-semibold cursor-pointer inline-flex items-center justify-center gap-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/60"><Check className="w-4 h-4" /> Save</button>
-            <Link href={`/admin/bookings/${booking.id}?from=/admin/calendar`} aria-label="Open full booking" title="Open full booking" className="px-4 py-3 rounded-lg border border-white/10 text-slate-300 hover:text-white cursor-pointer inline-flex items-center gap-1.5 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/60"><ExternalLink className="w-4 h-4" /></Link>
-          </div>
-          <div className="flex gap-2 pt-1 border-t border-white/5">
-            <button onClick={removeFromCal} disabled={busy} className="flex-1 mt-3 py-2.5 rounded-lg border border-white/10 text-amber-300 hover:border-amber-400/40 text-sm font-semibold cursor-pointer inline-flex items-center justify-center gap-1.5 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/50"><CalendarOff className="w-4 h-4" /> Remove from calendar</button>
-            <button onClick={del} disabled={busy} aria-label="Delete booking" title="Delete booking" className="mt-3 px-4 py-2.5 rounded-lg border border-white/10 text-red-400 hover:border-red-400/40 cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400/50"><Trash2 className="w-4 h-4" /></button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // ─── Add / schedule modal ───────────────────────────────────────────────────
 // Two modes:
 //  • `booking` given (arrived from a booking page): the fields are pre-filled

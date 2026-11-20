@@ -1,5 +1,7 @@
 'use client';
 
+import CreatedBy from '@/components/admin/CreatedBy';
+
 // A recurring customer's profile: their details and plan, every job linked to
 // them, and "New job" to book the next one straight onto the profile.
 import { useCallback, useEffect, useState } from 'react';
@@ -201,7 +203,7 @@ export default function RecurringProfilePage() {
       <AdminSidebar active="recurring" items={navItems} />
       <div className="flex-1 flex flex-col min-w-0">
         <header
-          className="sticky top-0 z-30 bg-navy-900/90 backdrop-blur border-b border-white/10 px-4 flex items-center justify-between"
+          className="crm-topbar sticky top-0 z-30 bg-navy-900/90 backdrop-blur border-b border-white/10 px-4 flex items-center justify-between"
           style={{ paddingTop: 'calc(env(safe-area-inset-top) + 0.85rem)', paddingBottom: '0.85rem' }}
         >
           {edit ? (
@@ -238,6 +240,7 @@ export default function RecurringProfilePage() {
                 <h1 className="font-display text-2xl font-bold text-amber-300 break-words flex items-center gap-2">
                   <Repeat className="w-6 h-6 flex-shrink-0" /> {job.name}
                 </h1>
+                <CreatedBy name={job.createdBy} />
                 <div className="mt-2 flex flex-wrap gap-2">
                   <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-400/15 text-amber-200 border border-amber-400/25">{frequencyLabel(job)}</span>
                   {job.discount ? (
