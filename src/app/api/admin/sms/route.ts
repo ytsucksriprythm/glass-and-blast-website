@@ -2,7 +2,8 @@
 import { z } from 'zod';
 import { getActiveContext } from '@/lib/auth';
 import { staffLabel } from '@/lib/staff';
-import { getInvoiceById, getQuoteById, getSmsPreference, listLatestCustomerSms, listSms, logActivity, setSmsPreference, updateInvoice, updateQuote } from '@/lib/db';
+import { getInvoiceById, getQuoteById, getSmsPreference, listChatgptSmsReads, listLatestCustomerSms, listSms, listSmsReadStates, logActivity, markSmsRead, setSmsPreference, updateInvoice, updateQuote } from '@/lib/db';
+import { smsPhone } from '@/lib/smsTypes';
 import { resolveSmsTarget, sendSms, SmsError, smsEnabled } from '@/lib/sms';
 import type { Quote } from '@/lib/quote';
 import type { Invoice } from '@/lib/invoice';
@@ -27,9 +28,33 @@ export async function GET(request: Request) {
   if (!parsed.success) return NextResponse.json({ error: 'Invalid record.' }, { status: 400 });
   try {
     const { phone } = await resolveSmsTarget(parsed.data);
-    const [messages, preference, incoming] = await Promise.all([listSms(phone, false), getSmsPreference(phone),
-      parsed.data.kind === 'manual' ? listLatestCustomerSms(true, phone) : []]);
-    return NextResponse.json({ phone, messages, preference, lastIncomingId: incoming[0]?.id, enabled: smsEnabled() }, { headers: { 'Cache-Control': 'no-store' } });
+    const manual = parsed.data.kind === 'manual';
+    const thread = listSms(phone, false);
+    const [messages, preference, states, incoming, chatgptReads] = await Promise.all([
+      thread, getSmsPreference(phone),
+      manual ? listSmsReadStates(phone) : null,
+      manual ? listLatestCustomerSms(true, phone) : [],
+      manual ? thread.then(rows => listChatgptSmsReads(rows.filter(row => row.direction === 'inbound').map(row => row.id))) : {},
+    ]);
+    const latestIncoming = incoming[0];
+    return NextResponse.json({
+      phone, messages, preference, readState: states?.[phone] ?? {}, chatgptReads, enabled: smsEnabled(),
+      latestIncoming: latestIncoming && { id: latestIncoming.id, createdAt: latestIncoming.createdAt },
+    }, { headers: { 'Cache-Control': 'no-store' } });
+  } catch (error) { return failure(error); }
+}
+
+const readInput = z.object({ phone: z.string().max(32), messageId: z.string().min(1).max(120) });
+
+export async function PATCH(request: Request) {
+  const ctx = await getActiveContext();
+  if (ctx?.role !== 'admin') return NextResponse.json({ error: 'Access denied.' }, { status: 403 });
+  const parsed = readInput.safeParse(await request.json().catch(() => null));
+  const phone = parsed.success ? smsPhone(parsed.data.phone) : null;
+  if (!parsed.success || !phone) return NextResponse.json({ error: 'Invalid SMS receipt.' }, { status: 400 });
+  try {
+    await markSmsRead(phone, ctx.profile, parsed.data.messageId);
+    return new Response(null, { status: 204 });
   } catch (error) { return failure(error); }
 }
 

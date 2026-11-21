@@ -24,11 +24,11 @@ const tool = (name: string, args: Record<string, unknown> = {}) => callTool(toke
 const columns = async (table: string) =>
   (await ownerExec(`SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1 ORDER BY ordinal_position`, [table])).map(r => String(r.column_name));
 
-test('only read-only tools are registered, all annotated readOnlyHint', async () => {
+test('business edits are disabled and only SMS history records a receipt', async () => {
   const tools = (await (await rpc(token, 'tools/list')).json()).result.tools as any[];
   assert.ok(tools.length >= 18);
   for (const t of tools) {
-    assert.equal(t.annotations?.readOnlyHint, true, t.name);
+    assert.equal(t.annotations?.readOnlyHint, t.name !== 'get_customer_sms_history', t.name);
     assert.equal(t.annotations?.destructiveHint, false, t.name);
     assert.doesNotMatch(t.name, /^(create|update|delete|add|set|append|schedule|reschedule|import|refresh|write|send|mark)/, `${t.name} looks like a write tool`);
   }

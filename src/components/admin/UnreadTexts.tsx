@@ -3,12 +3,11 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { ChevronRight } from 'lucide-react';
-import type { SmsConversation } from '@/lib/smsTypes';
-import { readStaffPreference, useStaffProfile } from './StaffSession';
+import { SMS_READ_EVENT, type SmsConversation } from '@/lib/smsTypes';
+import { useStaffProfile } from './StaffSession';
 
 export default function UnreadTexts() {
   const profile = useStaffProfile();
-  const [incoming, setIncoming] = useState<SmsConversation[]>([]);
   const [unread, setUnread] = useState<SmsConversation[]>([]);
 
   useEffect(() => {
@@ -22,7 +21,7 @@ export default function UnreadTexts() {
         const response = await fetch('/api/admin/sms/inbox?incoming=1', { signal: controller.signal, cache: 'no-store' });
         if (response.ok) {
           const data: SmsConversation[] = await response.json();
-          if (!controller.signal.aborted) setIncoming(data);
+          if (!controller.signal.aborted) setUnread(data.filter(item => item.unread));
         }
       } catch { /* Try again on the next refresh. */ }
       finally { loading = false; }
@@ -30,23 +29,16 @@ export default function UnreadTexts() {
     void refresh();
     const timer = window.setInterval(refresh, 10000);
     document.addEventListener('visibilitychange', refresh);
+    window.addEventListener(SMS_READ_EVENT, refresh);
     return () => {
       controller.abort();
       window.clearInterval(timer);
       document.removeEventListener('visibilitychange', refresh);
+      window.removeEventListener(SMS_READ_EVENT, refresh);
     };
   }, [profile]);
 
-  useEffect(() => {
-    function updateUnread() {
-      setUnread(profile ? incoming.filter(item => item.latest && item.latest.id !== readStaffPreference(profile, 'sms-read:' + item.phone)) : []);
-    }
-    updateUnread();
-    window.addEventListener('storage', updateUnread);
-    return () => window.removeEventListener('storage', updateUnread);
-  }, [incoming, profile]);
-
-  if (!unread.length) return null;
+  if (!profile || !unread.length) return null;
   return <section aria-labelledby="today-unread-texts" className="crm-panel p-4 sm:p-5">
     <div className="flex items-center justify-between gap-2">
       <h2 id="today-unread-texts" className="text-lg font-semibold text-white">Unread texts</h2>

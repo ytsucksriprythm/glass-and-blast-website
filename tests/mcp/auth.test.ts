@@ -10,6 +10,8 @@ import {
 import * as oauth from '../../src/lib/mcp/oauth';
 import { handleMcp } from '../../src/lib/mcp/handler';
 import { signJwt, verifyJwt, pkceS256, randomToken } from '../../src/lib/mcp/crypto';
+import { approveBrowserRequest, listConnectorSignIns } from '../../src/lib/mcp/authStore';
+import { getMcpConfig } from '../../src/lib/mcp/config';
 
 before(async () => {
   configureEnv();
@@ -21,6 +23,39 @@ const secret = () => process.env.MCP_TOKEN_SECRET!;
 const now = () => Math.floor(Date.now() / 1000);
 const claims = (over: Record<string, unknown> = {}) => ({
   iss: BASE, aud: RESOURCE, sub: 'owner', client_id: 'x', scope: 'business.read', iat: now(), exp: now() + 600, jti: 'j', ver: '1', ...over,
+});
+
+test('CRM approval is scoped to one signed request, expires, and logs the connected profile', async () => {
+  const clientId = await registerClient();
+  const verifier = randomToken(48);
+  const tx = await getTx(clientId, pkceS256(verifier));
+  const otherTx = await getTx(clientId, pkceS256(verifier));
+  const cfg = getMcpConfig()!;
+  const pending = (await oauth.getBrowserApprovalRequest(cfg, tx))!;
+  const other = (await oauth.getBrowserApprovalRequest(cfg, otherTx))!;
+  assert.notEqual(pending.hash, other.hash);
+  assert.equal(pending.host, 'chatgpt.com');
+  const submit = (formTx: string) => oauth.authorizePost(req('/api/oauth/authorize', {
+    method: 'POST', form: { tx: formTx, decision: 'use-crm-approval', profile: 'liam' },
+  }));
+  assert.equal((await submit(tx)).headers.get('location'), null);
+  await approveBrowserRequest(other.hash, 'liam');
+  await ownerExec("UPDATE mcp_browser_approvals SET expires_at = now() - interval '1 second' WHERE request_hash = $1", [other.hash]);
+  const expiry = new Date(String(await approveBrowserRequest(pending.hash, 'lincoln'))).getTime();
+  assert.ok(expiry > Date.now() + 25000 && expiry <= Date.now() + 30000);
+  assert.equal((await submit(otherTx)).headers.get('location'), null);
+  const results = await Promise.all([submit(tx), submit(tx)]);
+  const locations = results.map(result => result.headers.get('location')).filter(Boolean);
+  assert.equal(locations.length, 1);
+  assert.equal(await approveBrowserRequest(pending.hash, 'liam'), null);
+  const code = new URL(locations[0]!).searchParams.get('code')!;
+  const response = await oauth.token(req('/api/oauth/token', { method: 'POST', form: {
+    grant_type: 'authorization_code', client_id: clientId, code, code_verifier: verifier, redirect_uri: REDIRECT, resource: RESOURCE,
+  } }));
+  assert.equal(response.status, 200);
+  assert.equal(verifyJwt((await response.json()).access_token, secret())?.profile, 'lincoln');
+  assert.ok((await listConnectorSignIns()).some(row => row.clientId === clientId &&
+    row.profile === 'lincoln' && row.channel === 'chatgpt' && row.method === 'crm-approval'));
 });
 
 test('metadata advertises OAuth 2.1 + PKCE S256 + resource binding', async () => {

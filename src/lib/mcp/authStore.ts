@@ -50,6 +50,13 @@ export function ensureAuthTables(): Promise<void> {
         created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
       )`);
       await db.query(`ALTER TABLE mcp_oauth_codes ADD COLUMN IF NOT EXISTS profile TEXT`);
+      await db.query(`ALTER TABLE mcp_oauth_codes ADD COLUMN IF NOT EXISTS login_method TEXT`);
+      await db.query(`CREATE TABLE IF NOT EXISTS mcp_browser_approvals (
+        request_hash TEXT PRIMARY KEY,
+        profile TEXT NOT NULL,
+        expires_at TIMESTAMPTZ NOT NULL,
+        used_at TIMESTAMPTZ
+      )`);
       await db.query(`ALTER TABLE mcp_oauth_refresh_tokens ADD COLUMN IF NOT EXISTS profile TEXT`);
       await db.query(`ALTER TABLE mcp_oauth_refresh_tokens ADD COLUMN IF NOT EXISTS channel TEXT`);
       await db.query(`CREATE INDEX IF NOT EXISTS mcp_refresh_family_idx ON mcp_oauth_refresh_tokens (family_id)`);
@@ -121,10 +128,35 @@ export async function getClient(clientId: string): Promise<OAuthClient | null> {
   };
 }
 
+export async function approveBrowserRequest(hash: string, profile: StaffProfile) {
+  const rows = await q(`INSERT INTO mcp_browser_approvals (request_hash, profile, expires_at)
+    VALUES ($1, $2, now() + interval '30 seconds')
+    ON CONFLICT (request_hash) DO UPDATE SET profile = EXCLUDED.profile, expires_at = EXCLUDED.expires_at
+    WHERE mcp_browser_approvals.used_at IS NULL RETURNING expires_at`, [hash, profile]);
+  return rows[0]?.expires_at ?? null;
+}
+
+export async function consumeBrowserApproval(hash: string): Promise<StaffProfile | null> {
+  const rows = await q(`UPDATE mcp_browser_approvals SET used_at = now()
+    WHERE request_hash = $1 AND used_at IS NULL AND expires_at > now() RETURNING profile`, [hash]);
+  const profile = rows[0]?.profile;
+  return isStaffProfile(profile) ? profile : null;
+}
+
+export async function listConnectorSignIns() {
+  return q(`SELECT a.id, a.created_at AS "createdAt", a.event, a.client_id AS "clientId",
+    c.client_name AS "clientName", a.detail::jsonb->>'profile' AS profile,
+    a.detail::jsonb->>'channel' AS channel, a.detail::jsonb->>'method' AS method
+    FROM mcp_audit_log a LEFT JOIN mcp_oauth_clients c USING (client_id)
+    WHERE a.event IN ('token_issued', 'machine_token_issued') AND a.ok
+    ORDER BY a.created_at DESC, a.id DESC LIMIT 30`);
+}
+
 // ─── Authorization codes (single use) ──────────────────────────────────────
 
 export interface CodeGrant {
   profile?: StaffProfile;
+  method?: 'password' | 'crm-approval';
   clientId: string;
   redirectUri: string;
   codeChallenge: string;
@@ -134,9 +166,9 @@ export interface CodeGrant {
 
 export async function saveCode(code: string, grant: CodeGrant, ttlSeconds: number): Promise<void> {
   await q(
-    `INSERT INTO mcp_oauth_codes (code_hash, client_id, redirect_uri, code_challenge, scope, resource, expires_at, profile)
-     VALUES ($1, $2, $3, $4, $5, $6, now() + ($7 || ' seconds')::interval, $8)`,
-    [sha256Hex(code), grant.clientId, grant.redirectUri, grant.codeChallenge, grant.scope, grant.resource, String(ttlSeconds), grant.profile ?? null],
+    `INSERT INTO mcp_oauth_codes (code_hash, client_id, redirect_uri, code_challenge, scope, resource, expires_at, profile, login_method)
+     VALUES ($1, $2, $3, $4, $5, $6, now() + ($7 || ' seconds')::interval, $8, $9)`,
+    [sha256Hex(code), grant.clientId, grant.redirectUri, grant.codeChallenge, grant.scope, grant.resource, String(ttlSeconds), grant.profile ?? null, grant.method ?? null],
   );
 }
 
@@ -146,7 +178,7 @@ export async function consumeCode(code: string): Promise<CodeGrant | null> {
   const rows = await q(
     `UPDATE mcp_oauth_codes SET used_at = now()
      WHERE code_hash = $1 AND used_at IS NULL AND expires_at > now()
-     RETURNING client_id, redirect_uri, code_challenge, scope, resource, profile`,
+     RETURNING client_id, redirect_uri, code_challenge, scope, resource, profile, login_method`,
     [sha256Hex(code)],
   );
   const r = rows[0];
@@ -154,6 +186,7 @@ export async function consumeCode(code: string): Promise<CodeGrant | null> {
   return {
     clientId: String(r.client_id), redirectUri: String(r.redirect_uri), codeChallenge: String(r.code_challenge),
     scope: String(r.scope), resource: String(r.resource), profile: isStaffProfile(r.profile) ? r.profile : undefined,
+    method: r.login_method === 'crm-approval' || r.login_method === 'password' ? r.login_method : undefined,
   };
 }
 
@@ -264,6 +297,7 @@ export async function countEvents(event: string, sinceSeconds: number, filter?: 
 export async function purgeExpired(): Promise<void> {
   try {
     await q(`DELETE FROM mcp_oauth_codes WHERE expires_at < now() - interval '1 day'`);
+    await q(`DELETE FROM mcp_browser_approvals WHERE expires_at < now() - interval '1 day'`);
     await q(`DELETE FROM mcp_oauth_refresh_tokens WHERE expires_at < now() - interval '7 days'`);
     await q(`DELETE FROM mcp_idempotency WHERE created_at < now() - interval '7 days'`);
   } catch { /* best effort */ }

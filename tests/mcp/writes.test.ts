@@ -49,9 +49,24 @@ test('staff SMS tools read by number and validate manual sends without sending',
     direction: 'inbound', status: 'received', actor: 'customer', createdAt: now, updatedAt: now });
   const inbox = await call('list_sms_conversations', { query: '0400 000 111' });
   assert.equal(inbox.data.conversations[0].latest.body, 'Test reply');
-  const history = await call('get_customer_sms_history', { phone, limit: 1 });
+  assert.deepEqual(await db.listChatgptSmsReads(['mcp-sms-test']), {});
+  await db.insertSms({ id: 'mcp-sms-older', kind: 'reply', recordId: null, phone, body: 'Older reply',
+    direction: 'inbound', status: 'received', actor: 'customer', createdAt: '2025-01-01T00:00:00.000Z', updatedAt: now });
+  const history = await call('get_customer_sms_history', { limit: 1 });
   assert.equal(history.data.messages[0].body, 'Test reply');
-  assert.equal(history.data.nextOffset, null);
+  assert.equal(history.data.nextOffset, 1);
+  assert.deepEqual(history.data.messages[0].readReceipts, [{ profile: 'liam', source: 'chatgpt' }]);
+  assert.deepEqual(await db.listChatgptSmsReads(['mcp-sms-older']), {});
+  const older = await call('get_customer_sms_history', { limit: 1, offset: history.data.nextOffset });
+  assert.equal(older.data.messages[0].id, 'mcp-sms-older');
+  assert.deepEqual(older.data.messages[0].readReceipts, [{ profile: 'liam', source: 'chatgpt' }]);
+  assert.equal((await call('list_sms_conversations', { query: phone })).data.conversations[0].unread, false);
+  assert.deepEqual((await db.listSmsReadStates(phone))[phone] ?? {}, {});
+  await db.markSmsRead(phone, 'lincoln', 'mcp-sms-test');
+  const updated = await call('get_customer_sms_history', { phone });
+  assert.deepEqual(updated.data.messages[0].readReceipts, [
+    { profile: 'liam', source: 'chatgpt' }, { profile: 'lincoln', source: 'crm' },
+  ]);
   const input = { kind: 'manual', phone, text: 'Test outgoing message' };
   assert.match((await call('send_customer_sms', input)).text, /requestId UUID/);
   const previous = process.env.TWILIO_SMS_ENABLED;

@@ -8,8 +8,7 @@ import { isStaffProfile, type StaffProfile } from '../staff';
 //   - RFC 9207 `iss` on the authorization response
 //   - rotating refresh tokens with reuse detection, RFC 7009 revocation
 //
-// There's exactly one authorized account: the business owner, who signs in on
-// the authorize page with the MCP owner password (MCP_OWNER_PASSWORD_HASH).
+// Staff sign in with the connector password or approve a single request from CRM Settings.
 // All handlers return plain Web `Response`s so they're callable from Next.js
 // route handlers and directly from tests.
 
@@ -24,7 +23,7 @@ import {
 } from './crypto';
 import {
   saveClient, getClient, saveCode, consumeCode, saveRefreshToken, rotateRefreshToken,
-  revokeRefreshTokenByValue, audit, countEvents, purgeExpired,
+  revokeRefreshTokenByValue, audit, countEvents, purgeExpired, consumeBrowserApproval,
 } from './authStore';
 
 const NO_STORE = { 'Cache-Control': 'no-store', Pragma: 'no-cache' };
@@ -215,18 +214,31 @@ label{display:block;font-size:14px;margin-bottom:6px}
 input[type=password],select{width:100%;box-sizing:border-box;padding:12px;border-radius:10px;border:1px solid #334155;background:#060D1A;color:#fff;font-size:16px}
 select{margin-bottom:12px}.row{display:flex;gap:10px;margin-top:18px}button{flex:1;padding:12px;border-radius:10px;border:0;font-weight:600;font-size:15px;cursor:pointer}
 .ok{background:#0ea5e9;color:#fff}.no{background:#1e293b;color:#cbd5e1}.err{color:#fca5a5;margin-bottom:12px}
-code{color:#7dd3fc}</style></head><body><main>${inner}</main></body></html>`, { status, headers: pageHeaders() });
+code,a{color:#7dd3fc}form p{margin-top:16px}</style></head><body><main>${inner}</main></body></html>`, { status, headers: pageHeaders() });
 }
 
 function errorPage(title: string, message: string): Response {
   return shell(title, `<h1>${esc(title)}</h1><p>${esc(message)}</p>`, 400);
 }
 
+export async function getBrowserApprovalRequest(cfg: McpConfig, request: string) {
+  if (!request || request.length > 8192) return null;
+  const tx = verifyBlob<AuthorizeParams & { exp: number }>('authorize-form', request, cfg.tokenSecret);
+  if (!tx || tx.exp <= Date.now() / 1000 || tx.resource !== cfg.resource) return null;
+  const client = await getClient(tx.clientId);
+  if (!client?.redirectUris.includes(tx.redirectUri)) return null;
+  return { clientName: client.clientName, host: new URL(tx.redirectUri).host, hash: browserApprovalHash(cfg, request) };
+}
+
+function browserApprovalHash(cfg: McpConfig, request: string) {
+  return sha256Hex(cfg.tokenVersion + ':' + request);
+}
+
 function consentPage(cfg: McpConfig, tx: string, clientName: string, redirectUri: string, error?: string): Response {
   const host = new URL(redirectUri).host;
   return shell('Connect to Glass & Blast', `
 <h1>Allow ${esc(clientName || 'this app')} to ${cfg.writesEnabled ? 'read and update' : 'read'} your business data?</h1>
-<p>Request from <code>${esc(host)}</code>. If you didn't just start connecting from ChatGPT, press Deny.</p>
+<p>Request from <code>${esc(host)}</code>. If you didn't start this connection, press Deny.</p>
 <ul><li>${cfg.writesEnabled ? 'Access' : 'Read-only access'} to all customers, leads, bookings, quotes, invoices, payments, recurring plans, notes, photos, activity history, settings and reports.</li>
 <li>${cfg.writesEnabled ? 'It can add and update bookings, calendar slots, quotes, invoices and recurring customers. It cannot delete anything.' : 'It cannot create, change or delete anything.'}</li><li>You can disconnect any time from ChatGPT or Claude, or revoke everything server-side.</li></ul>
 ${error ? `<p class="err">${esc(error)}</p>` : ''}
@@ -238,6 +250,8 @@ ${error ? `<p class="err">${esc(error)}</p>` : ''}
 <input id="pw" type="password" name="password" autocomplete="current-password" required autofocus>
 <div class="row"><button class="no" type="submit" name="decision" value="deny" formnovalidate>Deny</button>
 <button class="ok" type="submit" name="decision" value="approve">${cfg.writesEnabled ? 'Allow access' : 'Allow read-only access'}</button></div>
+<p><a target="_blank" rel="noopener noreferrer" href="${esc(cfg.baseUrl)}/admin/settings#mcp-access=${encodeURIComponent(tx)}">Open CRM Settings to approve without a password</a></p>
+<button class="ok" type="submit" name="decision" value="use-crm-approval" formnovalidate>Continue with CRM approval</button>
 </form>`);
 }
 
@@ -246,7 +260,9 @@ export async function authorizeGet(req: Request): Promise<Response> {
   if (!cfg) return notConfigured();
   const v = await validateAuthorizeParams(cfg, new URL(req.url).searchParams);
   if (!v.ok) return v.response;
-  const tx = signBlob('authorize-form', { ...v.params, exp: Math.floor(Date.now() / 1000) + AUTHORIZE_FORM_TTL_SECONDS }, cfg.tokenSecret);
+  const tx = signBlob('authorize-form', {
+    ...v.params, nonce: randomToken(16), exp: Math.floor(Date.now() / 1000) + AUTHORIZE_FORM_TTL_SECONDS,
+  }, cfg.tokenSecret);
   return consentPage(cfg, tx, v.clientName, v.params.redirectUri);
 }
 
@@ -271,9 +287,16 @@ export async function authorizePost(req: Request): Promise<Response> {
   if (!client || !client.redirectUris.includes(tx.redirectUri)) return errorPage('Unknown client', 'This connection request is no longer valid.');
 
   const ip = clientIp(req);
-  if (form?.get('decision') !== 'approve') {
+  const decision = form?.get('decision');
+  if (decision !== 'approve' && decision !== 'use-crm-approval') {
     await audit({ event: 'authorize_denied', ok: true, ip, clientId: tx.clientId });
     return redirectWith(tx.redirectUri, { error: 'access_denied', error_description: 'The owner denied access.', state: tx.state }, cfg);
+  }
+
+  if (decision === 'use-crm-approval') {
+    const profile = await consumeBrowserApproval(browserApprovalHash(cfg, txRaw));
+    if (!profile) return consentPage(cfg, txRaw, client.clientName, tx.redirectUri, 'Approve this connection in CRM Settings, then continue within 30 seconds.');
+    return finishAuthorization(cfg, tx, profile, ip, 'crm-approval');
   }
 
   const [ipFails, globalFails] = await Promise.all([
@@ -293,9 +316,13 @@ export async function authorizePost(req: Request): Promise<Response> {
 
   const profile = form?.get("profile");
   if (!isStaffProfile(profile)) return consentPage(cfg, txRaw, client.clientName, tx.redirectUri, "Choose Liam or Lincoln to connect.");
+  return finishAuthorization(cfg, tx, profile, ip, 'password');
+}
+
+async function finishAuthorization(cfg: McpConfig, tx: AuthorizeParams, profile: StaffProfile, ip: string, method: 'password' | 'crm-approval') {
   const code = randomToken(32);
-  await saveCode(code, { ...tx, profile }, AUTH_CODE_TTL_SECONDS);
-  await audit({ event: 'login_ok', ok: true, ip, clientId: tx.clientId });
+  await saveCode(code, { ...tx, profile, method }, AUTH_CODE_TTL_SECONDS);
+  await audit({ event: 'login_ok', ok: true, ip, clientId: tx.clientId, detail: { profile, method } });
   return redirectWith(tx.redirectUri, { code, state: tx.state }, cfg);
 }
 
@@ -378,10 +405,11 @@ export async function token(req: Request): Promise<Response> {
     if (grant.redirectUri !== (p.get('redirect_uri') ?? '')) return fail('redirect_mismatch');
     if (!/^[A-Za-z0-9._~-]{43,128}$/.test(verifier) || pkceS256(verifier) !== grant.codeChallenge) return fail('pkce_failed');
     if (grant.resource !== cfg.resource) return fail('resource_mismatch');
-    await audit({ event: 'token_issued', ok: true, ip, clientId: client.clientId });
     const host = new URL(grant.redirectUri).hostname;
     const channel = host === "chatgpt.com" ? "chatgpt" : host === "claude.ai" || host === "claude.com" ? "claude" : "connector";
-    return issueTokens(cfg, client.clientId, grant.scope, randomToken(12), grant.profile, channel);
+    const response = await issueTokens(cfg, client.clientId, grant.scope, randomToken(12), grant.profile, channel);
+    await audit({ event: 'token_issued', ok: true, ip, clientId: client.clientId, detail: { profile: grant.profile, channel, method: grant.method } });
+    return response;
   }
 
   if (grantType === 'refresh_token') {

@@ -7,7 +7,7 @@ import { ArrowLeft, CalendarClock, ChevronRight, MessageSquare, Search } from 'l
 import { AdminMobileNav, AdminMoreSheet, AdminSidebar, adminNavItems, useMoreSheet } from '@/components/admin/AdminNav';
 import SmsPanel from '@/components/admin/SmsPanel';
 import { useStaffProfile } from '@/components/admin/StaffSession';
-import { smsPhone, type SmsConversation } from '@/lib/smsTypes';
+import { smsPhone, smsReadLabel, SMS_READ_EVENT, type SmsConversation } from '@/lib/smsTypes';
 
 const nav = adminNavItems();
 const messagesPath = '/admin/messages';
@@ -50,10 +50,12 @@ function Messages() {
     void refresh();
     const timer = window.setInterval(refresh, 15000);
     document.addEventListener('visibilitychange', refresh);
+    window.addEventListener(SMS_READ_EVENT, refresh);
     return () => {
       controller.abort();
       window.clearInterval(timer);
       document.removeEventListener('visibilitychange', refresh);
+      window.removeEventListener(SMS_READ_EVENT, refresh);
     };
   }, [profile, router]);
 
@@ -96,10 +98,15 @@ function Messages() {
                     </span>
                     <div className="min-w-0 flex-1">
                       <div className="flex items-baseline justify-between gap-2">
-                        <span className="truncate font-semibold text-white">{item.jobs[0]?.name || item.phone}</span>
+                        <span className={'flex min-w-0 items-center gap-2 text-white ' + (item.unread ? 'font-bold' : 'font-medium')}>
+                          {item.unread && <><span className="sr-only">Unread </span><span aria-hidden="true" className="size-2 shrink-0 rounded-full bg-sky-400" /></>}
+                          <span className="truncate">{item.jobs[0]?.name || item.phone}</span>
+                        </span>
                         {item.latest && <time className="shrink-0 text-xs text-slate-300" dateTime={item.latest.createdAt}>{shortDate.format(new Date(item.latest.createdAt))}</time>}
                       </div>
-                      <p className="truncate text-sm text-slate-300">{item.latest ? (item.latest.direction === 'outbound' ? 'You: ' : '') + item.latest.body : item.phone}</p>
+                      <p className={'truncate text-sm ' + (item.unread ? 'font-semibold text-white' : 'text-slate-300')}>{item.latest ? (item.latest.direction === 'outbound' ? 'You: ' : '') + item.latest.body : item.phone}</p>
+                      {item.latestIncomingReceipts?.filter(receipt => receipt.source === 'chatgpt' || receipt.profile !== profile).map(receipt =>
+                        <p key={receipt.profile + receipt.source} className="truncate text-[11px] text-slate-400">{smsReadLabel(receipt)}</p>)}
                     </div>
                   </Link>
                 </li>

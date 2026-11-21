@@ -160,6 +160,14 @@ Per OpenAI's current docs ([Connect from ChatGPT](https://developers.openai.com/
 4. ChatGPT lists the 18 tools. In a new chat, enable the Glass & Blast app/connector from the composer's tools menu (Developer mode).
 5. **After any connector update:** open the connection, click **Refresh**, and start a new chat.
 
+For a password-free browser sign-in, start connecting from ChatGPT or Claude and open **CRM Settings** from the connector sign-in screen. Under **MCP access**, check the app and staff profile and click **Allow this connection for 30 seconds**. Return to the sign-in screen and choose **Continue with CRM approval** within that window. The approval can be used once. **Recent sign-ins** shows completed connections with the app, staff profile, time and sign-in method where recorded.
+
+### Customer texts
+
+Connect as Liam or Lincoln. Use `list_sms_conversations` to find a customer by name, number, address or booking ID, and `get_customer_sms_history` to read inbound and outbound messages, delivery status and CRM read receipts. Use `send_customer_sms` for free-form texts and existing templates when MCP writes and live SMS are enabled. Approve the exact recipient and message before sending. The CRM's SMS consent and opt-out rules apply.
+
+Opening a thread in the CRM marks it read for your profile. ChatGPT records incoming texts returned by the history tool as seen for the connected profile, including when summarizing. Leave the phone and record fields blank to page through all customer texts. The inbox clears the unread dot for the connected profile when ChatGPT sees the latest incoming text. Both profiles can see whether a text was read in the CRM or seen via ChatGPT.
+
 **Disconnecting / revoking.**
 - Remove the connection in ChatGPT.
 - To cut off every issued token at once, bump `MCP_TOKEN_VERSION`.

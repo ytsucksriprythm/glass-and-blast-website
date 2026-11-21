@@ -19,6 +19,136 @@ import { ACTIVITY_TYPE_LABEL, type ActivityEntry } from '@/lib/activity';
 import { APP_VERSION } from '@/lib/version';
 import { AdminSidebar, AdminMobileNav, AdminMoreSheet, useMoreSheet, adminNavItems } from '@/components/admin/AdminNav';
 import type { MediaItem } from '@/lib/media';
+import { STAFF_PROFILES, isStaffProfile } from '@/lib/staff';
+
+const connectorTime = new Intl.DateTimeFormat('en-AU', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Australia/Sydney' });
+
+type ConnectorSignIn = {
+  id: string; createdAt: string; clientName: string | null; clientId: string | null;
+  event: string; profile: string | null; channel: string | null; method: string | null;
+};
+
+function ConnectorAccess() {
+  const [request, setRequest] = useState('');
+  const [connection, setConnection] = useState<{ clientName: string; host: string; profile: keyof typeof STAFF_PROFILES } | null>(null);
+  const [signIns, setSignIns] = useState<ConnectorSignIn[] | null>(null);
+  const [logError, setLogError] = useState('');
+  const [error, setError] = useState('');
+  const [approving, setApproving] = useState(false);
+  const [expiresAt, setExpiresAt] = useState(0);
+  const [seconds, setSeconds] = useState(0);
+
+  useEffect(() => {
+    const prefix = '#mcp-access=';
+    if (!location.hash.startsWith(prefix)) return;
+    setRequest(location.hash.slice(prefix.length));
+    history.replaceState(history.state, '', location.pathname + location.search + '#mcp-access');
+    document.getElementById('mcp-access')?.scrollIntoView();
+  }, []);
+
+  useEffect(() => {
+    if (!request) return;
+    const controller = new AbortController();
+    async function inspect() {
+      try {
+        const response = await fetch('/api/admin/mcp-access', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: controller.signal,
+          body: JSON.stringify({ action: 'inspect', request }),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error_description ?? result.error);
+        if (!controller.signal.aborted) setConnection(result);
+      } catch (err) {
+        if (!controller.signal.aborted) setError(err instanceof Error ? err.message : 'Could not check the connection request.');
+      }
+    }
+    void inspect();
+    return () => controller.abort();
+  }, [request]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let loading = false;
+    async function refresh() {
+      if (document.hidden || loading) return;
+      loading = true;
+      try {
+        const response = await fetch('/api/admin/mcp-access', { cache: 'no-store', signal: controller.signal });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error_description ?? result.error);
+        if (!controller.signal.aborted) {
+          setSignIns(result.signIns);
+          setLogError('');
+        }
+      } catch (err) {
+        if (!controller.signal.aborted) setLogError(err instanceof Error ? err.message : 'Could not load sign-ins.');
+      } finally { loading = false; }
+    }
+    void refresh();
+    const timer = window.setInterval(refresh, 10000);
+    document.addEventListener('visibilitychange', refresh);
+    return () => {
+      controller.abort();
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', refresh);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!expiresAt) return;
+    const timer = window.setInterval(() => {
+      const remaining = Math.max(0, Math.ceil((expiresAt - Date.now()) / 1000));
+      setSeconds(remaining);
+      if (!remaining) window.clearInterval(timer);
+    }, 250);
+    return () => window.clearInterval(timer);
+  }, [expiresAt]);
+
+  async function approve() {
+    setApproving(true);
+    setError('');
+    try {
+      const response = await fetch('/api/admin/mcp-access', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'approve', request }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error_description ?? result.error);
+      const expiry = new Date(result.expiresAt).getTime();
+      setExpiresAt(expiry);
+      setSeconds(Math.max(0, Math.ceil((expiry - Date.now()) / 1000)));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not approve the connection.');
+    } finally { setApproving(false); }
+  }
+
+  return <Section title="MCP access" icon={KeyRound}>
+    {connection ? <div className="space-y-2">
+      <p className="text-sm text-slate-300">{connection.clientName || connection.host} requests access as <strong>{STAFF_PROFILES[connection.profile]}</strong> from {connection.host}.</p>
+      <button type="button" disabled={approving || seconds > 0} onClick={() => void approve()}
+        className="min-h-11 rounded-lg bg-sky-400 px-3 text-sm font-semibold text-navy-900 disabled:opacity-50">Allow this connection for 30 seconds</button>
+      {expiresAt > 0 && <p className="text-sm text-slate-300">{seconds > 0
+        ? 'Return to the sign-in tab and choose Continue with CRM approval. ' + seconds + 's left.'
+        : 'The approval window closed. Check Recent sign-ins or approve again if the request is still waiting.'}</p>}
+    </div> : <p className="text-sm text-slate-300">{request && !error ? 'Checking connection request…' :
+      'Start connecting from your agent app, then open CRM Settings from its sign-in screen to approve it.'}</p>}
+    {error && <p role="alert" className="text-sm text-red-300">{error}</p>}
+    <h3 className="text-sm font-semibold text-white">Recent sign-ins</h3>
+    {logError ? <p className="text-sm text-slate-300">{logError}</p> : !signIns ?
+      <p className="text-sm text-slate-300">Loading sign-ins…</p> : !signIns.length ?
+      <p className="text-sm text-slate-300">No connector sign-ins yet.</p> : <ul className="max-h-72 divide-y divide-white/10 overflow-auto">
+        {signIns.map(entry => <li key={entry.id} className="py-2 text-sm">
+          <p className="break-all font-medium text-white">{entry.event === 'machine_token_issued' ? 'Atlas (Vapi)' : entry.clientName || entry.clientId || 'Connector'}
+            {isStaffProfile(entry.profile) && ' · ' + STAFF_PROFILES[entry.profile]}</p>
+          <p className="text-xs text-slate-300">
+            <time dateTime={entry.createdAt}>{connectorTime.format(new Date(entry.createdAt))}</time>
+            {entry.channel === 'chatgpt' ? ' · ChatGPT' : entry.channel === 'claude' ? ' · Claude' : ''}
+            {entry.method === 'crm-approval' ? ' · CRM approval' : entry.method === 'password' ? ' · Password' : ''}
+          </p>
+        </li>)}
+      </ul>}
+  </Section>;
+}
 
 function Section({ title, icon: Icon, children }: { title: string; icon: React.ComponentType<{ className?: string }>; children: React.ReactNode }) {
   return (
@@ -1025,10 +1155,11 @@ export default function SettingsPage() {
               />
 
               <nav aria-label="Settings shortcuts" className="flex flex-wrap gap-2">
-                {[["Scheduling", "scheduling"], ["Payments", "card-payments-square"], ["Facebook leads", "facebook-lead-sync"], ["Guest logins", "guest-logins"], ["Deleted bookings", "deleted-bookings"]].map(([label, id]) => (
+                {[["Scheduling", "scheduling"], ["Payments", "card-payments-square"], ["Facebook leads", "facebook-lead-sync"], ["MCP access", "mcp-access"], ["Guest logins", "guest-logins"], ["Deleted bookings", "deleted-bookings"]].map(([label, id]) => (
                   <a key={id} href={"#" + id} className="inline-flex min-h-11 items-center rounded-lg border border-white/10 px-3 text-sm font-medium text-sky-300">{label}</a>
                 ))}
               </nav>
+              <ConnectorAccess />
               <Section title="Invoice & quote address display" icon={MapPin}>
                 <Toggle
                   label="Show business address on new invoices (default)"

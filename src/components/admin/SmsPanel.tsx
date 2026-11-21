@@ -3,14 +3,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { MessageSquare, Send } from 'lucide-react';
 import Link from 'next/link';
-import { australianMobile } from '@/lib/smsTypes';
-import type { SmsMessage, SmsPreference } from '@/lib/smsTypes';
+import { australianMobile, hasReadSms, smsReadLabel, smsReadReceipts, SMS_READ_EVENT, type SmsMessage, type SmsPreference, type SmsReadState } from '@/lib/smsTypes';
+import type { StaffProfile } from '@/lib/staff';
 import type { Quote } from '@/lib/quote';
 import type { Invoice } from '@/lib/invoice';
-import { useStaffProfile, writeStaffPreference } from './StaffSession';
+import { useStaffProfile } from './StaffSession';
 
 type Kind = 'quote' | 'invoice' | 'booking' | 'manual';
-type History = { phone: string; messages: SmsMessage[]; preference: SmsPreference | null; enabled: boolean; lastIncomingId?: string };
+type History = {
+  phone: string; messages: SmsMessage[]; preference: SmsPreference | null; enabled: boolean;
+  readState: SmsReadState; chatgptReads: Record<string, StaffProfile[]>; latestIncoming?: Pick<SmsMessage, 'id' | 'createdAt'>;
+};
 const unresolved = ['pending', 'retry', 'sending', 'queued', 'accepted', 'unknown'];
 const failures = ['failed', 'undelivered', 'unknown', 'canceled'];
 const control = 'min-h-11 rounded-lg border border-white/15 px-3 text-sm font-semibold text-sky-300 disabled:opacity-40';
@@ -35,13 +38,19 @@ export default function SmsPanel({ kind, recordId, needsApproval = false, onQuot
   const params = new URLSearchParams({ kind, recordId }).toString();
   const load = useCallback(async (signal?: AbortSignal) => {
     const response = await fetch('/api/admin/sms?' + params, { cache: 'no-store', signal });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error ?? 'Could not load SMS.');
+    if (!response.ok) throw new Error((await response.json()).error ?? 'Could not load SMS.');
+    const result: History = await response.json();
     if (!signal?.aborted) {
       setHistory(result);
       setLoadError('');
-      if (chat && !document.hidden && result.lastIncomingId) {
-        writeStaffPreference(profile, 'sms-read:' + result.phone, result.lastIncomingId);
+      const incoming = chat && (result.messages.find(message => message.direction === 'inbound') ?? result.latestIncoming);
+      if (profile && incoming && !document.hidden && !hasReadSms(result.readState[profile], incoming)) {
+        const receipt = await fetch('/api/admin/sms', {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' }, signal,
+          body: JSON.stringify({ phone: result.phone, messageId: incoming.id }),
+        });
+        if (!receipt.ok) throw new Error('Could not mark SMS as read.');
+        window.dispatchEvent(new Event(SMS_READ_EVENT));
       }
     }
   }, [chat, params, profile]);
@@ -141,6 +150,8 @@ export default function SmsPanel({ kind, recordId, needsApproval = false, onQuot
               <div className="mt-1 text-xs text-slate-300">
                 <time dateTime={message.createdAt}>{new Date(message.createdAt).toLocaleString('en-AU', { timeZone: 'Australia/Sydney', dateStyle: 'short', timeStyle: 'short' })}</time>
                 {!inbound && <span> · {message.status}</span>}
+                {inbound && smsReadReceipts(history.readState, history.chatgptReads[message.id], message).map(receipt =>
+                  <span key={receipt.profile + receipt.source} className="block text-[11px] text-slate-400">{smsReadLabel(receipt)}</span>)}
               </div>
               {conversation && message.recordId && conversation.jobIds.includes(message.recordId) &&
                 <Link className="inline-flex min-h-11 items-center text-xs font-semibold text-sky-300"

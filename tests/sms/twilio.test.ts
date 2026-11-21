@@ -45,6 +45,36 @@ test('signed Twilio callbacks, consent and outbox dedup work without customer se
     await sms.receiveSms({ ...form, Body: 'START', MessageSid: 'SM' + '3'.repeat(32) });
     assert.equal(await db.getSmsPreference(phone), 'opted-in');
 
+    await context.test('inbox read state is independent per profile and cannot move backwards', async () => {
+      const otherPhone = '+61400123457';
+      const inbound = (id: string, createdAt: string) => db.insertSms({
+        id, phone: otherPhone, kind: 'reply', recordId: null, body: id, direction: 'inbound',
+        status: 'received', actor: 'customer', createdAt, updatedAt: createdAt,
+      });
+      await inbound('receipt-1', '2026-11-21T00:00:00.000Z');
+      const conversation = async (profile: 'liam' | 'lincoln') =>
+        (await sms.listSmsConversations(false, profile)).find(row => row.phone === otherPhone);
+      assert.equal((await conversation('liam'))?.unread, true);
+      await db.markSmsRead(otherPhone, 'liam', 'receipt-1');
+      assert.equal((await conversation('liam'))?.unread, false);
+      assert.equal((await conversation('lincoln'))?.unread, true);
+      assert.deepEqual((await conversation('lincoln'))?.latestIncomingReceipts, [{ profile: 'liam', source: 'crm' }]);
+      await inbound('receipt-2', '2026-11-21T00:01:00.000Z');
+      assert.equal((await conversation('liam'))?.unread, true);
+      assert.deepEqual((await conversation('lincoln'))?.latestIncomingReceipts, []);
+      await db.markChatgptSmsRead(['receipt-2'], 'lincoln');
+      assert.equal((await conversation('lincoln'))?.unread, false);
+      assert.equal((await conversation('liam'))?.unread, true);
+      await db.markSmsRead(otherPhone, 'lincoln', 'receipt-2');
+      await db.markSmsRead(otherPhone, 'lincoln', 'receipt-1');
+      await db.markSmsRead(phone, 'liam', 'receipt-2');
+      assert.equal((await conversation('lincoln'))?.unread, false);
+      assert.deepEqual((await conversation('liam'))?.latestIncomingReceipts, [
+        { profile: 'lincoln', source: 'crm' }, { profile: 'lincoln', source: 'chatgpt' },
+      ]);
+      assert.equal((await db.listSmsReadStates(phone))[phone].liam, undefined);
+    });
+
     const id = 'a'.repeat(64);
     const at = new Date().toISOString();
     const fixture = { id, kind: 'booking', recordId: 'test', phone, body: 'Test', direction: 'outbound', status: 'sending', actor: 'Liam', createdAt: at, updatedAt: at } as const;
@@ -71,7 +101,7 @@ test('signed Twilio callbacks, consent and outbox dedup work without customer se
     await sms.receiveSms(reply, true);
     await sms.receiveSms(reply, true);
     assert.equal((await db.listSms(phone)).find(row => row.sid === reply.MessageSid)?.recordId, booking.id);
-    assert.deepEqual((await db.listLatestCustomerSms()).map(row => row.sid), [reply.MessageSid]);
+    assert.deepEqual((await db.listLatestCustomerSms()).filter(row => row.sid).map(row => row.sid), [reply.MessageSid]);
     assert.equal((await sms.resolveSmsTarget({ kind: 'manual', recordId: 'phone:' + phone }, true)).phone, phone);
     await assert.rejects(sms.resolveSmsTarget({ kind: 'manual', recordId: 'phone:+12025550123' }, true), /Australian mobiles/);
     for (const recipient of recipients) {

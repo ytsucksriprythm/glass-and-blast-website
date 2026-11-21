@@ -3,9 +3,10 @@ import { buildConfirmationText } from './bookingConfirmation';
 import twilio from 'twilio';
 import {
   changeSms, getBookingById, getBookings, getInvoiceById, getInvoicesForBooking, getQuoteById, getSms, getSmsPreference, hasSubmittedCustomerSms,
-  insertSms, listLatestCustomerSms, listPendingCustomerSms, listSms, listSmsWork, logActivity, setSmsPreference,
+  insertSms, listChatgptSmsReads, listLatestCustomerSms, listPendingCustomerSms, listSms, listSmsReadStates, listSmsWork, logActivity, setSmsPreference,
 } from './db';
-import { australianMobile, smsPhone, type SmsConversation, type SmsKind, type SmsMessage } from './smsTypes';
+import { australianMobile, smsPhone, smsReadReceipts, type SmsConversation, type SmsKind, type SmsMessage } from './smsTypes';
+import type { StaffProfile } from './staff';
 import { sydneyDay } from './callingTypes';
 
 export type SmsTarget = { kind: Exclude<SmsKind, 'reply' | 'staff-alert' | 'welcome'>; recordId: string };
@@ -348,8 +349,14 @@ export async function runSmsCron() {
   return { enabled: true, remindersChecked: due.length, checked: work.length };
 }
 
-export async function listSmsConversations(incomingOnly = false) {
-  const [bookings, messages] = await Promise.all([getBookings(), listLatestCustomerSms(incomingOnly)]);
+export async function listSmsConversations(incomingOnly = false, profile?: StaffProfile) {
+  const latest = listLatestCustomerSms(incomingOnly);
+  const latestIncoming = profile ? (incomingOnly ? latest : listLatestCustomerSms(true)) : Promise.resolve([]);
+  const [bookings, messages, incoming, states, chatgpt] = await Promise.all([
+    getBookings(), latest, latestIncoming,
+    profile ? listSmsReadStates() : null,
+    latestIncoming.then(rows => listChatgptSmsReads(rows.map(row => row.id))),
+  ]);
   const incomingPhones = new Set(incomingOnly ? messages.map(message => message.phone) : []);
   const conversations = new Map<string, SmsConversation>();
   for (const booking of bookings) {
@@ -366,6 +373,13 @@ export async function listSmsConversations(incomingOnly = false) {
     if (!smsPhone(phone)) continue;
     conversations.set(phone, { ...conversations.get(phone), phone, jobs: conversations.get(phone)?.jobs ?? [],
       latest: { id, body, direction, createdAt } });
+  }
+  if (profile) for (const message of incoming) {
+    const conversation = conversations.get(message.phone);
+    if (!conversation) continue;
+    const receipts = smsReadReceipts(states?.[message.phone], chatgpt[message.id], message);
+    conversation.unread = !receipts.some(receipt => receipt.profile === profile);
+    conversation.latestIncomingReceipts = receipts;
   }
   return [...conversations.values()].sort((a, b) =>
     (b.latest?.createdAt ?? '').localeCompare(a.latest?.createdAt ?? '') ||

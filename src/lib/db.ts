@@ -1,4 +1,4 @@
-import type { SmsMessage, SmsPreference } from './smsTypes';
+import { hasReadSms, type SmsMessage, type SmsPreference, type SmsReadState } from './smsTypes';
 import { callState, type CallState } from './callingTypes';
 import type { StaffProfile } from './staff';
 import fs from 'fs';
@@ -665,6 +665,16 @@ export async function ensureSchema(): Promise<void> {
         id TEXT PRIMARY KEY, phone TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL, data JSONB NOT NULL
       )`;
       await sql`CREATE INDEX IF NOT EXISTS sms_messages_phone_idx ON sms_messages (phone, created_at DESC)`;
+      await sql`CREATE TABLE IF NOT EXISTS sms_read_state (
+        phone TEXT NOT NULL, profile TEXT NOT NULL, message_id TEXT NOT NULL,
+        message_at TIMESTAMPTZ NOT NULL, read_at TIMESTAMPTZ NOT NULL,
+        PRIMARY KEY (phone, profile)
+      )`;
+      await sql`CREATE TABLE IF NOT EXISTS sms_chatgpt_reads (
+        message_id TEXT NOT NULL REFERENCES sms_messages(id) ON DELETE CASCADE,
+        profile TEXT NOT NULL, read_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (message_id, profile)
+      )`;
       await sql`CREATE UNIQUE INDEX IF NOT EXISTS sms_messages_sid_idx ON sms_messages ((data->>'sid')) WHERE data->>'sid' IS NOT NULL`;
       await sql`CREATE TABLE IF NOT EXISTS sms_preferences (
         phone TEXT PRIMARY KEY, preference TEXT NOT NULL, actor TEXT NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -4044,7 +4054,10 @@ export async function saveCallingRecord(before: CallingRecord, state: CallState,
 }
 
 const SMS_FILE = path.join(process.cwd(), 'data', 'sms.json');
-type LocalSms = { messages: SmsMessage[]; preferences: Record<string, SmsPreference> };
+type LocalSms = {
+  messages: SmsMessage[]; preferences: Record<string, SmsPreference>; readStates?: Record<string, SmsReadState>;
+  chatgptReads?: Record<string, StaffProfile[]>;
+};
 function readSmsFile(): LocalSms {
   if (!fs.existsSync(SMS_FILE)) return { messages: [], preferences: {} };
   return JSON.parse(fs.readFileSync(SMS_FILE, 'utf8'));
@@ -4112,10 +4125,88 @@ export async function changeSms(before: SmsMessage, patch: Partial<SmsMessage>):
     WHERE id = ${before.id} AND data = ${JSON.stringify(before)}::jsonb RETURNING id`;
   return rows.length > 0;
 }
-export async function listSms(phone: string, includeStaffAlerts = true, offset = 0, limit = 50): Promise<SmsMessage[]> {
-  if (!sql) return readSmsFile().messages.filter(row => row.phone === phone && (includeStaffAlerts || row.kind !== 'staff-alert')).reverse().slice(offset, offset + limit);
+export async function listSmsReadStates(phone?: string): Promise<Record<string, SmsReadState>> {
+  if (!sql) {
+    const states = readSmsFile().readStates ?? {};
+    return phone ? { [phone]: states[phone] ?? {} } : states;
+  }
   await ensureSchema();
-  const rows = await sql`SELECT data FROM sms_messages WHERE phone = ${phone}
+  const rows = await sql`SELECT * FROM sms_read_state WHERE (${phone ?? null}::text IS NULL OR phone = ${phone ?? null})`;
+  const states: Record<string, SmsReadState> = {};
+  for (const row of rows) {
+    const state = states[row.phone] ??= {};
+    state[row.profile as StaffProfile] = {
+      id: row.message_id, createdAt: new Date(row.message_at).toISOString(), readAt: new Date(row.read_at).toISOString(),
+    };
+  }
+  return states;
+}
+
+export async function markSmsRead(phone: string, profile: StaffProfile, id: string) {
+  const readAt = new Date().toISOString();
+  if (!sql) {
+    const data = readSmsFile();
+    const message = data.messages.find(row => row.id === id && row.phone === phone &&
+      row.direction === 'inbound' && row.kind !== 'staff-alert');
+    if (!message) return;
+    const states = data.readStates ??= {};
+    const state = states[phone] ??= {};
+    if (hasReadSms(state[profile], message)) return;
+    state[profile] = { id, createdAt: message.createdAt, readAt };
+    writeSmsFile(data);
+    return;
+  }
+  await ensureSchema();
+  await sql`INSERT INTO sms_read_state (phone, profile, message_id, message_at, read_at)
+    SELECT phone, ${profile}, id, created_at, ${readAt} FROM sms_messages
+    WHERE id = ${id} AND phone = ${phone} AND data->>'direction' = 'inbound' AND data->>'kind' <> 'staff-alert'
+    ON CONFLICT (phone, profile) DO UPDATE SET
+      message_id = EXCLUDED.message_id, message_at = EXCLUDED.message_at, read_at = EXCLUDED.read_at
+    WHERE (sms_read_state.message_at, sms_read_state.message_id) < (EXCLUDED.message_at, EXCLUDED.message_id)`;
+}
+
+export async function listChatgptSmsReads(ids: string[]): Promise<Record<string, StaffProfile[]>> {
+  if (!ids.length) return {};
+  const reads: Record<string, StaffProfile[]> = {};
+  if (!sql) {
+    const stored = readSmsFile().chatgptReads;
+    for (const id of ids) if (stored?.[id]) reads[id] = stored[id];
+    return reads;
+  }
+  await ensureSchema();
+  const rows = await sql`SELECT message_id, profile FROM sms_chatgpt_reads
+    WHERE message_id IN (SELECT jsonb_array_elements_text(${JSON.stringify(ids)}::jsonb))`;
+  for (const row of rows) (reads[row.message_id] ??= []).push(row.profile as StaffProfile);
+  return reads;
+}
+
+export async function markChatgptSmsRead(ids: string[], profile: StaffProfile) {
+  if (!ids.length) return;
+  if (!sql) {
+    const data = readSmsFile();
+    const reads = data.chatgptReads ??= {};
+    let changed = false;
+    for (const id of ids) {
+      const profiles = reads[id] ??= [];
+      if (profiles.includes(profile)) continue;
+      profiles.push(profile);
+      changed = true;
+    }
+    if (changed) writeSmsFile(data);
+    return;
+  }
+  await ensureSchema();
+  await sql`INSERT INTO sms_chatgpt_reads (message_id, profile)
+    SELECT id, ${profile} FROM sms_messages WHERE data->>'direction' = 'inbound' AND data->>'kind' <> 'staff-alert'
+      AND id IN (SELECT jsonb_array_elements_text(${JSON.stringify(ids)}::jsonb))
+    ON CONFLICT DO NOTHING`;
+}
+
+export async function listSms(phone: string | null, includeStaffAlerts = true, offset = 0, limit = 50): Promise<SmsMessage[]> {
+  if (!sql) return readSmsFile().messages.filter(row => (!phone || row.phone === phone) && (includeStaffAlerts || row.kind !== 'staff-alert'))
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id)).slice(offset, offset + limit);
+  await ensureSchema();
+  const rows = await sql`SELECT data FROM sms_messages WHERE (${phone}::text IS NULL OR phone = ${phone})
     AND (${includeStaffAlerts} OR data->>'kind' <> 'staff-alert') ORDER BY created_at DESC, id DESC LIMIT ${limit} OFFSET ${offset}`;
   return rows.map(row => row.data as SmsMessage);
 }
@@ -4126,7 +4217,7 @@ export async function listLatestCustomerSms(incomingOnly = false, phone?: string
     for (const message of readSmsFile().messages) {
       if (message.kind === 'staff-alert' || (incomingOnly && message.direction !== 'inbound') || (phone && phone !== message.phone)) continue;
       const previous = latest.get(message.phone);
-      if (!previous || previous.createdAt <= message.createdAt) latest.set(message.phone, message);
+      if (!hasReadSms(previous, message)) latest.set(message.phone, message);
     }
     return [...latest.values()];
   }
