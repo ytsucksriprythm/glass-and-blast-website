@@ -28,7 +28,6 @@ export type SmsMessage = {
   id: string; kind: SmsKind; recordId: string | null; phone: string; body: string;
   direction: 'inbound' | 'outbound'; status: string; sid?: string; error?: string;
   automatic?: boolean; actor: string; createdAt: string; updatedAt: string;
-  quoteRequestBookingId?: string;
   submittedAt?: string; retryAt?: string; attempts?: number;
 };
 export function smsMessageTime(message: SmsMessage): string {

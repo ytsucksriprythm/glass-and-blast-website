@@ -150,7 +150,6 @@ test('signed Twilio callbacks, consent and outbox dedup work without customer se
     }
 
     const newPhone = '+61499999999';
-    await db.setSmsPreference(newPhone, 'opted-in', 'Liam');
     const submitted: string[] = [];
     const provider = context.mock.method(twilio.RequestClient.prototype, 'request', async (options: { data: { Body: string } }) => {
       submitted.push(options.data.Body);
@@ -158,7 +157,14 @@ test('signed Twilio callbacks, consent and outbox dedup work without customer se
     });
     try {
       const target = { kind: 'manual', recordId: 'phone:' + newPhone } as const;
-      const first = await sms.sendSms({ ...target, text: 'First message', requestId: 'first' }, 'Liam');
+      const firstInput = { ...target, text: 'First message', requestId: 'first' };
+      const optedOutPhone = recipients[0];
+      await assert.rejects(sms.sendSms({
+        ...firstInput, recordId: 'phone:' + optedOutPhone,
+      }, 'Liam'), /customer must text START/);
+      assert.equal(submitted.length, 0);
+      const first = await sms.sendSms(firstInput, 'Liam');
+      assert.equal(await db.getSmsPreference(newPhone), null);
       const second = await sms.sendSms({ ...target, text: 'Second message', requestId: 'second' }, 'Liam');
       assert.equal(first?.status, 'pending');
       assert.equal(second?.status, 'pending');

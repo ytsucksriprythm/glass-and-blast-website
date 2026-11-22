@@ -90,8 +90,6 @@ export default function SmsPanel({ kind, recordId, needsApproval = false, onQuot
 
   const action = async (operation: 'send' | 'opt-out') => {
     if (!history || busy) return;
-    const confirmConsent = operation === 'send' && !history.preference;
-    if (confirmConsent && !confirm('Has this customer agreed to receive service SMS from Glass & Blast?')) return;
     if (operation === 'opt-out' && !confirm('Stop sending SMS to this number?')) return;
     setBusy(true);
     setError('');
@@ -108,7 +106,7 @@ export default function SmsPanel({ kind, recordId, needsApproval = false, onQuot
         retry.current = { payload: body, id: operation === 'send' && (chat || alreadySent) ? crypto.randomUUID() : undefined };
       }
       const response = await fetch('/api/admin/sms', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...payload, confirmConsent, requestId: retry.current.id }) });
+        body: JSON.stringify({ ...payload, requestId: retry.current.id }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? 'Could not send SMS.');
       retry.current = null;
@@ -134,7 +132,7 @@ export default function SmsPanel({ kind, recordId, needsApproval = false, onQuot
     {history && <>
       <div className="flex flex-wrap items-center justify-between gap-x-2">
         {!conversation && <p className="text-sm text-slate-300">{chat ? history.phone : 'To ' + history.phone}</p>}
-        {history.preference === 'opted-in' && chat && canReply && <button type="button" className="ml-auto min-h-11 text-xs text-slate-300 disabled:opacity-40" disabled={busy} onClick={() => void action('opt-out')}>Opt out</button>}
+        {history.preference !== 'opted-out' && chat && canReply && <button type="button" className="ml-auto min-h-11 text-xs text-slate-300 disabled:opacity-40" disabled={busy} onClick={() => void action('opt-out')}>Opt out</button>}
       </div>
       {!history.enabled && <p className="text-sm text-amber-200">SMS sending is disabled in this environment.</p>}
       {history.preference === 'opted-out' && <p className="text-sm text-amber-200">This number opted out of SMS.</p>}

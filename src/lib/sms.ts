@@ -37,11 +37,6 @@ function client() {
   return twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN, { timeout: 10000 });
 }
 
-async function isMetaQuoteRequest(bookingId: string, phone: string) {
-  const booking = await getBookingById(bookingId);
-  return booking?.source === 'facebook-lead-ad' && !booking.deletedAt && australianMobile(booking.phone) === phone;
-}
-
 export async function resolveSmsTarget(target: SmsTarget, forSend = false, automatic = false) {
   const { recordId, kind } = target;
   if (kind === 'manual' && recordId.startsWith('phone:')) {
@@ -124,12 +119,10 @@ export async function dispatchSms(id: string) {
   const canSend = async () => {
     const preference = await getSmsPreference(row.phone);
     if (preference === 'opted-out') return false;
-    if (row.kind === 'staff-alert') return staffAlertRecipients().includes(row.phone);
-    return preference === 'opted-in' || Boolean(row.quoteRequestBookingId &&
-      await isMetaQuoteRequest(row.quoteRequestBookingId, row.phone));
+    return row.kind !== 'staff-alert' || staffAlertRecipients().includes(row.phone);
   };
   if (!await canSend()) {
-    await changeSms(row, { status: 'canceled', error: 'SMS consent is missing or was withdrawn.' });
+    await changeSms(row, { status: 'canceled', error: 'This number is opted out or can no longer receive SMS.' });
     return getSms(id);
   }
   if (row.kind !== 'welcome' && row.kind !== 'staff-alert' && !await hasSubmittedCustomerSms(row.phone)) {
@@ -137,11 +130,10 @@ export async function dispatchSms(id: string) {
     const now = new Date().toISOString();
     await insertSms({ id: welcomeId, kind: 'welcome', phone: row.phone, recordId: null,
       body: brand('We use this number to text you about your quotes, bookings and invoices. You can reply here to reach our team. This line does not accept calls. If you’d prefer to speak with us, please call Lincoln on 0466 050 834.'),
-      direction: 'outbound', status: 'pending', actor: row.actor, createdAt: now, updatedAt: now,
-      quoteRequestBookingId: row.quoteRequestBookingId });
+      direction: 'outbound', status: 'pending', actor: row.actor, createdAt: now, updatedAt: now });
     const existing = await getSms(welcomeId);
     if (existing?.status === 'canceled' && !existing.sid) {
-      await changeSms(existing, { status: 'pending', error: undefined, quoteRequestBookingId: row.quoteRequestBookingId });
+      await changeSms(existing, { status: 'pending', error: undefined });
     }
     const welcome = await dispatchSms(welcomeId);
     if (welcome?.status !== 'delivered') {
@@ -153,7 +145,7 @@ export async function dispatchSms(id: string) {
   }
   if (!await changeSms(row, { status: 'sending', submittedAt: new Date().toISOString(), attempts: (row.attempts ?? 0) + 1 })) return getSms(id);
   if (!await canSend()) {
-    await updateResult(id, undefined, 'canceled', 'SMS consent was withdrawn.');
+    await updateResult(id, undefined, 'canceled', 'This number is opted out or can no longer receive SMS.');
     return getSms(id);
   }
   try {
@@ -187,9 +179,6 @@ export async function sendSms(input: SendInput, actor: string) {
   if (input.kind === 'manual' && !input.text?.trim()) throw new SmsError('Enter a message first.', 400);
   const preference = await getSmsPreference(target.phone);
   if (preference === 'opted-out') throw new SmsError('This number opted out. The customer must text START to opt back in.');
-  const quoteRequestBookingId = preference === null && !input.automatic && input.kind === 'manual' &&
-    !input.recordId.startsWith('phone:') && await isMetaQuoteRequest(input.recordId, target.phone) ? input.recordId : undefined;
-  if (preference !== 'opted-in' && !quoteRequestBookingId) throw new SmsError('Record customer consent before sending SMS.');
   const id = !input.requestId && input.kind === 'reminder'
     ? key(input.kind, input.recordId, input.reminderNumber ?? 1)
     : input.requestId ? key(input.kind, input.recordId, input.requestId) : key(input.kind, input.recordId, target.version);
@@ -214,7 +203,7 @@ export async function sendSms(input: SendInput, actor: string) {
   const recordId = input.kind === 'manual' && input.recordId.startsWith('phone:')
     ? (await matchReplyBooking(target.phone))?.id ?? null : input.recordId;
   await insertSms({ id, kind: input.kind, recordId, phone: target.phone, body, direction: 'outbound',
-    status: 'pending', actor, automatic: input.automatic, quoteRequestBookingId, createdAt: now, updatedAt: now });
+    status: 'pending', actor, automatic: input.automatic, createdAt: now, updatedAt: now });
   return dispatchSms(id);
 }
 
@@ -358,7 +347,7 @@ export async function runSmsCron() {
     try {
       const target = await resolveSmsTarget({ kind: 'reminder', recordId: item.recordId }, true);
       const age = (Date.parse(sydneyDay(Date.now())) - Date.parse(target.dueDate ?? '')) / dayMs;
-      if (!Number.isFinite(age) || age < 3 || target.phone !== item.phone || await getSmsPreference(item.phone) !== 'opted-in') continue;
+      if (!Number.isFinite(age) || age < 3 || target.phone !== item.phone || await getSmsPreference(item.phone) === 'opted-out') continue;
       const first = await getSms(key('reminder', item.recordId, 1));
       const number = !first ? 1 : age >= 7 && ['sent', 'delivered'].includes(first.status) &&
         Date.now() - Date.parse(first.createdAt) >= 4 * dayMs ? 2 : 0;

@@ -15,7 +15,6 @@ const input = target.extend({
   text: z.string().max(500).optional(),
   approveQuote: z.boolean().optional(),
   approveInvoice: z.boolean().optional(),
-  confirmConsent: z.boolean().optional(),
 });
 const failure = (error: unknown) => error instanceof SmsError
   ? NextResponse.json({ error: error.message }, { status: error.status })
@@ -70,18 +69,10 @@ export async function POST(request: Request) {
       let approvedQuote: Quote | null = null;
       let approvedInvoice: Invoice | null = null;
       if (action.kind === 'manual' && !action.requestId) throw new SmsError('A request ID is required.', 400);
-      if (action.confirmConsent) {
-        if (!smsEnabled()) throw new SmsError('Customer SMS sending is disabled.', 503);
-        const { phone } = await resolveSmsTarget(action);
-        if (!await setSmsPreference(phone, 'opted-in', actor)) {
-          throw new SmsError('This number opted out. The customer must text START to opt back in.');
-        }
-        await logActivity('sms.preference_changed', 'Customer SMS consent confirmed on send', { recordId: action.recordId }, actor).catch(() => {});
-      }
       if (action.kind === 'quote' && action.approveQuote) {
         if (!smsEnabled()) throw new SmsError('Customer SMS sending is disabled.', 503);
         const { phone } = await resolveSmsTarget(action);
-        if (await getSmsPreference(phone) !== 'opted-in') throw new SmsError('Record customer consent before sending SMS.');
+        if (await getSmsPreference(phone) === 'opted-out') throw new SmsError('This number opted out. The customer must text START to opt back in.');
         const quote = await getQuoteById(action.recordId);
         if (quote?.status === 'draft') {
           approvedQuote = await updateQuote(quote.id, { status: 'sent' });
@@ -92,7 +83,7 @@ export async function POST(request: Request) {
       if (action.kind === 'invoice' && action.approveInvoice) {
         if (!smsEnabled()) throw new SmsError('Customer SMS sending is disabled.', 503);
         const { phone } = await resolveSmsTarget(action);
-        if (await getSmsPreference(phone) !== 'opted-in') throw new SmsError('Record customer consent before sending SMS.');
+        if (await getSmsPreference(phone) === 'opted-out') throw new SmsError('This number opted out. The customer must text START to opt back in.');
         const invoice = await getInvoiceById(action.recordId);
         if (invoice?.status === 'draft') {
           approvedInvoice = await updateInvoice(invoice.id, { status: 'sent' });
