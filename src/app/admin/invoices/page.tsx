@@ -12,7 +12,7 @@ import {
   ArrowLeft, Plus, FileText, Send, BadgeCheck, Share, Undo2, Eye, Banknote, ScrollText, X,
   Smartphone, Tablet, Monitor, MapPin, Clock, AlertTriangle, FileSignature, ExternalLink, Search, Trash2,
 } from 'lucide-react';
-import { type Invoice, type InvoiceStatus, type PaymentMethod, PAYMENT_METHOD_LABEL, isInvoiceOverdue, money, longDate } from '@/lib/invoice';
+import { type Invoice, type InvoiceStatus, type PaymentMethod, PAYMENT_METHOD_LABEL, invoiceDaysOverdue, money, longDate } from '@/lib/invoice';
 import { type Quote, type QuoteStatus, money as quoteMoney, longDate as quoteLongDate } from '@/lib/quote';
 import { quoteShareMessage, quoteShareClipboardText } from '@/lib/quoteShare';
 import type { AppSettings } from '@/lib/settings';
@@ -198,7 +198,8 @@ export default function InvoicesQuotesPage() {
 
   const backHref = isGuest ? '/guest' : '/admin/dashboard';
 
-  const visibleInvoices = overdueOnly ? invoices.filter(isInvoiceOverdue) : invoices;
+  const invoiceRows = invoices.map(invoice => ({ invoice, daysOverdue: invoiceDaysOverdue(invoice) }));
+  const visibleInvoices = overdueOnly ? invoiceRows.filter(row => row.daysOverdue > 0) : invoiceRows;
   const unpaidTotal = invoices.filter(i => i.status !== 'paid' && i.status !== 'cancelled').reduce((s, i) => s + i.total, 0);
 
   const setStatus = async (inv: Invoice, status: InvoiceStatus, paymentMethod?: PaymentMethod) => {
@@ -344,7 +345,7 @@ export default function InvoicesQuotesPage() {
             </div>
           ) : (
             <ul className="space-y-3">
-              {visibleInvoices.map(inv => (
+              {visibleInvoices.map(({ invoice: inv, daysOverdue }) => (
                 <li key={inv.id}>
                   <div
                     onClick={() => router.push("/admin/invoices/" + inv.id + (overdueOnly ? "?from=" + encodeURIComponent("/admin/invoices?filter=overdue") : ""))}
@@ -352,12 +353,12 @@ export default function InvoicesQuotesPage() {
                   >
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
-                        <div className="flex items-center gap-2">
+                        <div className="flex flex-wrap items-center gap-2">
                           <span className="text-white font-semibold">{inv.number}</span>
                           <span className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold border ${STATUS_STYLE[inv.status]}`}>{STATUS_LABEL[inv.status]}</span>
-                          {isInvoiceOverdue(inv) && (
+                          {daysOverdue > 0 && (
                             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold border border-red-400/30 bg-red-500/15 text-red-300" title={`Due ${longDate(inv.dueDate)}`}>
-                              <AlertTriangle className="w-3 h-3" /> Overdue
+                              <AlertTriangle className="w-3 h-3" aria-hidden="true" /> Overdue · {daysOverdue} {daysOverdue === 1 ? 'day' : 'days'}
                             </span>
                           )}
                           {inv.status === 'paid' && inv.paymentMethod && inv.paymentMethod !== 'bank_transfer' && (

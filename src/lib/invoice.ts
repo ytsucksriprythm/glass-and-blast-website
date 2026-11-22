@@ -2,6 +2,8 @@
 // No `fs` / `neon` imports here so this module is safe to import from client
 // components (the editor + preview) as well as server code (db + public page).
 
+import { sydneyDay } from './callingTypes';
+
 export type InvoiceStatus = 'draft' | 'sent' | 'paid' | 'cancelled';
 
 // How a paid invoice was actually settled. `null` = not paid yet, or paid
@@ -254,8 +256,15 @@ export function computeTotals(items: InvoiceLineItem[]): { subtotal: number; tot
 // Overdue = sent, unpaid, and past its due date. Draft invoices aren't
 // "overdue" — the customer was never told about them.
 export function isInvoiceOverdue(invoice: Pick<Invoice, 'status' | 'dueDate'>): boolean {
-  if (invoice.status !== 'sent' || !invoice.dueDate) return false;
-  return invoice.dueDate < new Date().toISOString().slice(0, 10);
+  return invoiceDaysOverdue(invoice) > 0;
+}
+
+export function invoiceDaysOverdue(invoice: Pick<Invoice, 'status' | 'dueDate'>): number {
+  if (invoice.status !== 'sent' || !invoice.dueDate) return 0;
+  const due = Date.parse(invoice.dueDate);
+  if (!Number.isFinite(due)) return 0;
+  // Compare calendar dates in Sydney, where daylight saving can change the length of a day.
+  return Math.max(0, (Date.parse(sydneyDay(Date.now())) - due) / 86400000);
 }
 
 // Whole days between an invoice being marked sent and being marked paid —
