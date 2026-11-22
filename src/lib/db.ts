@@ -401,7 +401,7 @@ export async function ensureSchema(): Promise<void> {
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ`;
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS status_changed_at TIMESTAMPTZ`;
       await sql`ALTER TABLE bookings ALTER COLUMN status_changed_at SET DEFAULT now()`;
-      await sql`CREATE OR REPLACE FUNCTION track_booking_status_change() RETURNS trigger AS $
+      await sql`CREATE OR REPLACE FUNCTION track_booking_status_change() RETURNS trigger AS $booking_status$
         BEGIN
           IF NEW.status IS DISTINCT FROM OLD.status THEN
             IF NEW.status = 'cold' AND NEW.auto_moved THEN
@@ -412,7 +412,7 @@ export async function ensureSchema(): Promise<void> {
           END IF;
           RETURN NEW;
         END;
-      $ LANGUAGE plpgsql`;
+      $booking_status$ LANGUAGE plpgsql`;
       await sql`CREATE OR REPLACE TRIGGER track_booking_status_change BEFORE UPDATE OF status ON bookings
         FOR EACH ROW EXECUTE FUNCTION track_booking_status_change()`;
       // Backfill customer-link tokens for pre-existing rows.
