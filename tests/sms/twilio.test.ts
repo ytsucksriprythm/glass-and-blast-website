@@ -114,6 +114,19 @@ test('signed Twilio callbacks, consent and outbox dedup work without customer se
       service: 'window-washing', propertyType: 'residential', preferredDate: '', preferredTime: '',
       notes: '', quoteAmount: null, adminNotes: '',
     });
+    await context.test('customer replies only move uncontacted leads to contacted', async () => {
+      assert.equal(booking.status, 'uncontacted');
+      await sms.receiveSms({ ...form, Body: 'HELP', MessageSid: 'SM' + '6'.repeat(32) });
+      assert.equal((await db.getBookingById(booking.id))?.status, 'uncontacted');
+      await sms.receiveSms({ ...form, Body: 'Could I get a quote?', MessageSid: 'SM' + '7'.repeat(32) });
+      const contacted = await db.getBookingById(booking.id);
+      assert.equal(contacted?.status, 'contacted');
+      assert.ok(contacted.contactedAt);
+      await db.updateBooking(booking.id, { status: 'quoted' });
+      await sms.receiveSms({ ...form, Body: 'Thanks for the quote', MessageSid: 'SM' + '8'.repeat(32) });
+      assert.equal((await db.getBookingById(booking.id))?.status, 'quoted');
+    });
+
     const recipients = ['+61411111111', '+61422222222'];
     process.env.TWILIO_SMS_STAFF_ALERT_RECIPIENTS = recipients.join(',');
     // Opted-out fixture numbers exercise queueing and dedup without a Twilio API send.

@@ -1,8 +1,9 @@
 import { buildConfirmationText } from './bookingConfirmation';
+import { syncBookingStatusToSheet } from './metaLeads';
 ﻿import { createHash } from 'node:crypto';
 import twilio from 'twilio';
 import {
-  changeSms, getBookingById, getBookings, getInvoiceById, getInvoicesForBooking, getQuoteById, getSms, getSmsPreference, hasSubmittedCustomerSms,
+  changeSms, contactUncontactedBooking, getBookingById, getBookings, getInvoiceById, getInvoicesForBooking, getQuoteById, getSms, getSmsPreference, hasSubmittedCustomerSms,
   insertSms, listChatgptSmsReads, listLatestCustomerSms, listPendingCustomerSms, listSms, listSmsReadStates, listSmsWork, logActivity, setSmsPreference,
 } from './db';
 import { australianMobile, smsPhone, smsReadReceipts, type SmsConversation, type SmsKind, type SmsMessage } from './smsTypes';
@@ -285,10 +286,15 @@ export async function receiveSms(fields: Record<string, string>, notifyStaff = f
     await setSmsPreference(phone, 'opted-out', 'Twilio');
   }
   const recipients = notifyStaff && smsEnabled() ? staffAlertRecipients() : [];
-  const booking = recipients.length ? await matchReplyBooking(phone).catch(error => {
-    console.error('Could not match SMS to a booking', error instanceof Error ? error.name : 'Unknown error');
-    return undefined;
-  }) : undefined;
+  const booking = await matchReplyBooking(phone);
+  const isCustomerReply = Boolean(fields.Body?.trim() || Number(fields.NumMedia) > 0) && !fields.OptOutType &&
+    !['STOP', 'STOPALL', 'UNSUBSCRIBE', 'CANCEL', 'END', 'QUIT', 'REVOKE', 'OPTOUT', 'START', 'UNSTOP', 'HELP', 'INFO'].includes(event);
+  if (isCustomerReply && booking?.status === 'uncontacted') {
+    const contacted = await contactUncontactedBooking(booking.id);
+    if (contacted) await syncBookingStatusToSheet(contacted).catch(error => {
+      console.error('Could not sync SMS contact status', error instanceof Error ? error.name : 'Unknown error');
+    });
+  }
   const now = new Date().toISOString();
   const reply: SmsMessage = { id, sid, kind: 'reply', recordId: booking?.id ?? null, phone, body: fields.Body ?? '',
     direction: 'inbound', status: 'received', actor: 'customer', createdAt: now, updatedAt: now };

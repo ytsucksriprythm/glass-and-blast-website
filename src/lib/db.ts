@@ -1037,6 +1037,27 @@ function withAutoMoveReset(updates: Partial<Booking>): Partial<Booking> {
   return updates;
 }
 
+export async function contactUncontactedBooking(id: string): Promise<Booking | null> {
+  if (sql) {
+    await ensureSchema();
+    const rows = await sql`UPDATE bookings SET status = 'contacted',
+      contacted_at = COALESCE(contacted_at, now()), updated_at = now(),
+      auto_moved = false, auto_moved_at = NULL, auto_moved_from = NULL
+      WHERE id = ${id} AND status = 'uncontacted' AND deleted_at IS NULL
+      RETURNING *`;
+    return rows.length ? rowToBooking(rows[0]) : null;
+  }
+
+  const rows = readFile();
+  const index = rows.findIndex(booking => booking.id === id && booking.status === 'uncontacted' && !booking.deletedAt);
+  if (index === -1) return null;
+  const booking = rows[index];
+  const updates = withAutoMoveReset(withContactedAt(booking, { status: 'contacted' }));
+  rows[index] = { ...booking, ...updates, updatedAt: new Date().toISOString() };
+  writeFile(rows);
+  return localCallingRecord(rows[index]).booking;
+}
+
 export async function updateBooking(id: string, rawUpdates: Partial<Booking>): Promise<Booking | null> {
   if ('createdBy' in rawUpdates || 'callState' in rawUpdates || 'quoteStaff' in rawUpdates || 'callingManaged' in rawUpdates) {
     const safe = { ...rawUpdates } as Partial<StoredCallBooking>;
