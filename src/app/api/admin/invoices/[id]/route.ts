@@ -44,6 +44,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     'showFromAddress', 'billToName', 'billToLines', 'invoiceDate', 'serviceDate', 'dueDate', 'notes',
     'payAccountName', 'payBsb', 'payAccountNumber', 'bookingId', 'bookingIds', 'sentAt', 'paidAt'] as (keyof Invoice)[])
     .forEach(copy);
+  if (ctx.role === 'admin' && typeof b.reminderHold === 'boolean') updates.reminderHold = b.reminderHold;
 
   if ('client' in b && b.client) {
     updates.client = {
@@ -69,6 +70,10 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   if (updates.status && updates.status !== existing.status) {
     const methodNote = updates.status === 'paid' && invoice.paymentMethod ? ` (${invoice.paymentMethod})` : '';
     await logActivity('invoice.status_changed', `${invoice.number} ${existing.status} -> ${updates.status}${methodNote}`, { from: existing.status, to: updates.status, paymentMethod: invoice.paymentMethod }, actorLabel(ctx), invoice.id);
+  }
+  if (updates.reminderHold !== undefined && updates.reminderHold !== (existing.reminderHold ?? false)) {
+    await logActivity('invoice.reminder_hold_changed', updates.reminderHold ? 'Payment reminders paused' : 'Payment reminders resumed',
+      { reminderHold: updates.reminderHold }, actorLabel(ctx), invoice.id);
   }
   return NextResponse.json(invoice);
 }

@@ -1,4 +1,5 @@
 import { buildConfirmationText } from './bookingConfirmation';
+import { invoiceReminderOnHold } from './smartActionRules';
 import { syncBookingStatusToSheet } from './metaLeads';
 ﻿import { createHash } from 'node:crypto';
 import twilio from 'twilio';
@@ -11,14 +12,19 @@ import type { StaffProfile } from './staff';
 import { sydneyDay } from './callingTypes';
 
 export type SmsTarget = { kind: Exclude<SmsKind, 'reply' | 'staff-alert' | 'welcome'>; recordId: string };
-type SendInput = SmsTarget & { requestId?: string; text?: string; automatic?: boolean; reminderNumber?: number };
+type SendInput = SmsTarget & { requestId?: string; text?: string; automatic?: boolean; reminderNumber?: number; expected?: { phone: string; body: string } };
 export class SmsError extends Error {
   constructor(message: string, public status = 409) { super(message); }
 }
 const base = () => (process.env.TWILIO_SMS_PUBLIC_URL || process.env.NEXT_PUBLIC_URL || 'https://glassandblast.com.au').replace(/\/$/, '');
 const dayMs = 86400000;
 const name = (value: string) => value.trim().split(/\s+/)[0] || 'there';
-const brand = (text: string) => ['Glass & Blast', text, 'Reply STOP to opt out.'].join('\n\n');
+export const formatCustomerSms = (text: string) => ['Glass & Blast', text, 'Reply STOP to opt out.'].join('\n\n');
+export const SMS_WELCOME_BODY = formatCustomerSms('We use this number to text you about your quotes, bookings and invoices. You can reply here to reach our team. This line does not accept calls. If you’d prefer to speak with us, please call Lincoln on 0466 050 834.');
+export const invoiceReminderSms = (customer: string, number: string, token: string) => formatCustomerSms(
+  'Hi ' + name(customer) + ', a friendly reminder that Glass & Blast invoice ' + number +
+  ' is overdue. You can view or pay it here: ' + base() + '/invoice/' + encodeURIComponent(token),
+);
 const key = (...parts: unknown[]) => createHash('sha256').update(JSON.stringify(parts)).digest('hex');
 const states = new Set(['queued', 'accepted', 'sending', 'sent', 'delivered', 'undelivered', 'failed', 'canceled']);
 const terminal = new Set(['delivered', 'undelivered', 'failed', 'canceled']);
@@ -58,14 +64,19 @@ export async function resolveSmsTarget(target: SmsTarget, forSend = false, autom
     if (forSend && !unpaidInvoice && !(isReceipt && !automatic)) {
       throw new SmsError('This invoice is not ready for SMS or has already been paid.');
     }
-    if (forSend && kind === 'reminder' && !overdue) throw new SmsError('The invoice is not overdue.');
+    if (forSend && kind === 'reminder') {
+      if (!overdue) throw new SmsError('The invoice is not overdue.');
+      if (invoiceReminderOnHold(invoice, jobs.filter((job): job is NonNullable<typeof job> => !!job))) {
+        throw new SmsError('Payment reminders are on hold for this invoice.');
+      }
+    }
     const url = base() + '/invoice/' + encodeURIComponent(invoice.token);
     return { phone: phones[0], version: isReceipt ? [invoice.token, 'paid'] : invoice.token, completed: jobs.some(job => job!.status === 'completed'),
-      dueDate: invoice.dueDate, body: brand(kind === 'invoice'
-        ? 'Hi ' + name(invoice.billToName) + ', ' + (isReceipt
+      dueDate: invoice.dueDate, body: kind === 'invoice'
+        ? formatCustomerSms('Hi ' + name(invoice.billToName) + ', ' + (isReceipt
           ? 'thanks for your payment. View your receipt for invoice ' + invoice.number + ': '
-          : 'invoice ' + invoice.number + ' is ready: ') + url
-        : 'Hi ' + name(invoice.billToName) + ', invoice ' + invoice.number + ' is overdue. View or pay: ' + url) };
+          : 'invoice ' + invoice.number + ' is ready: ') + url)
+        : invoiceReminderSms(invoice.billToName, invoice.number, invoice.token) };
   }
   const quote = kind === 'quote' ? await getQuoteById(recordId) : null;
   if (kind === 'quote' && !quote) throw new SmsError('Quote not found.', 404);
@@ -76,7 +87,7 @@ export async function resolveSmsTarget(target: SmsTarget, forSend = false, autom
   const first = name(job.name);
   if (quote) {
     if (forSend && quote.status !== 'sent') throw new SmsError('Approve the quote by marking it sent first.');
-    return { phone, version: quote.token, body: brand('Hi ' + first + ', your quote ' + quote.number + ' is ready: ' + base() + '/quote/' + encodeURIComponent(quote.token)) };
+    return { phone, version: quote.token, body: formatCustomerSms('Hi ' + first + ', your quote ' + quote.number + ' is ready: ' + base() + '/quote/' + encodeURIComponent(quote.token)) };
   }
   if (kind === 'manual') return { phone, version: job.id, body: '' };
   if (forSend && (!job.scheduledAt || !['confirmed', 'quote-booked'].includes(job.status) || Date.parse(job.scheduledAt) <= Date.now())) throw new SmsError('Confirm and schedule a future appointment first.');
@@ -129,7 +140,7 @@ export async function dispatchSms(id: string) {
     const welcomeId = key('sms-welcome', row.phone);
     const now = new Date().toISOString();
     await insertSms({ id: welcomeId, kind: 'welcome', phone: row.phone, recordId: null,
-      body: brand('We use this number to text you about your quotes, bookings and invoices. You can reply here to reach our team. This line does not accept calls. If you’d prefer to speak with us, please call Lincoln on 0466 050 834.'),
+      body: SMS_WELCOME_BODY,
       direction: 'outbound', status: 'pending', actor: row.actor, createdAt: now, updatedAt: now });
     const existing = await getSms(welcomeId);
     if (existing?.status === 'canceled' && !existing.sid) {
@@ -175,7 +186,10 @@ export async function sendSms(input: SendInput, actor: string) {
   if (!smsEnabled() || (input.automatic && !smsAutomation())) throw new SmsError('Customer SMS sending is disabled.', 503);
   const target = await resolveSmsTarget(input, true, input.automatic);
   if (input.automatic && input.kind === 'invoice' && !target.completed) return null;
-  const body = input.kind === 'manual' ? brand(input.text?.trim() ?? '') : target.body;
+  const body = input.kind === 'manual' ? formatCustomerSms(input.text?.trim() ?? '') : target.body;
+  if (input.expected && (target.phone !== input.expected.phone || body !== input.expected.body)) {
+    throw new SmsError('The recipient or message changed. Review the latest suggestion.');
+  }
   if (input.kind === 'manual' && !input.text?.trim()) throw new SmsError('Enter a message first.', 400);
   const preference = await getSmsPreference(target.phone);
   if (preference === 'opted-out') throw new SmsError('This number opted out. The customer must text START to opt back in.');

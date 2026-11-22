@@ -34,6 +34,7 @@ export const TABLE_COVERAGE: Record<string, TableCoverage> = {
 };
 
 export const EXCLUDED_TABLES: Record<string, string> = {
+  smart_actions: 'Dashboard approval records stay internal. Staff can review completed and dismissed actions through the activity log.',
   sms_messages: "Signed-in staff can search threads with list_sms_conversations and page through message bodies, replies and delivery status with get_customer_sms_history.",
   sms_preferences: "Signed-in staff can read consent status through get_customer_sms_history.",
   sms_read_state: "The inbox and get_customer_sms_history show which staff profiles have read incoming messages in the CRM.",

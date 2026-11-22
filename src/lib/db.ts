@@ -1,3 +1,5 @@
+import { overlapsBooking } from './smartActionRules';
+import type { SmartActionRecord } from './smartActionTypes';
 import { COLD_ACTIVITY_MS, hasReadSms, smsMessageTime, smsPhone, type SmsMessage, type SmsPreference, type SmsReadState } from './smsTypes';
 import { callState, sydneyDay, type CallState } from './callingTypes';
 import type { StaffProfile } from './staff';
@@ -593,6 +595,7 @@ export async function ensureSchema(): Promise<void> {
       await sql`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS square_payment_id TEXT`;
       await sql`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS square_link_amount NUMERIC`;
       await sql`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS square_paid_at TIMESTAMPTZ`;
+      await sql`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS reminder_hold BOOLEAN NOT NULL DEFAULT false`;
       await sql`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS show_from_address BOOLEAN NOT NULL DEFAULT true`;
       await sql`CREATE INDEX IF NOT EXISTS invoices_square_order_idx ON invoices (square_order_id)`;
       // Backfill the multi-link array from the legacy single booking_id.
@@ -679,6 +682,9 @@ export async function ensureSchema(): Promise<void> {
         `;
       }
       // Selectable business-info ("from") profiles for invoices — same idea as
+      await sql`CREATE TABLE IF NOT EXISTS smart_actions (
+        id TEXT PRIMARY KEY, status TEXT NOT NULL, data JSONB NOT NULL
+      )`;
       await sql`CREATE TABLE IF NOT EXISTS sms_messages (
         id TEXT PRIMARY KEY, phone TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL, data JSONB NOT NULL
       )`;
@@ -1083,6 +1089,40 @@ export async function contactUncontactedBooking(id: string): Promise<Booking | n
   rows[index] = { ...booking, ...updates, updatedAt: new Date().toISOString() };
   writeFile(rows);
   return localCallingRecord(rows[index]).booking;
+}
+
+export async function rescheduleBookingIfAvailable(
+  id: string, slot: { before: string; endBefore?: string | null; start: string; end: string },
+): Promise<Booking | null> {
+  const before = await getBookingById(id);
+  if (!before || before.deletedAt || !['confirmed', 'quote-booked'].includes(before.status) ||
+      before.scheduledAt !== slot.before || (before.scheduledEnd ?? null) !== (slot.endBefore ?? null)) return null;
+  if (sql) {
+    await ensureSchema();
+    const [, rows] = await sql.transaction([
+      sql`SELECT pg_advisory_xact_lock(hashtext('smart-action:calendar'))`,
+      sql`UPDATE bookings SET scheduled_at = ${slot.start}, scheduled_end = ${slot.end}, updated_at = now()
+        WHERE id = ${id} AND deleted_at IS NULL AND status = ${before.status}
+          AND scheduled_at = ${slot.before}::timestamptz AND scheduled_end IS NOT DISTINCT FROM ${slot.endBefore ?? null}::timestamptz
+          AND NOT EXISTS (SELECT 1 FROM bookings AS other
+            WHERE other.id <> ${id} AND other.deleted_at IS NULL AND other.status <> 'cancelled'
+              AND other.scheduled_at < ${slot.end}::timestamptz
+              AND COALESCE(other.scheduled_end, other.scheduled_at + interval '120 minutes') > ${slot.start}::timestamptz)
+        RETURNING *`,
+    ]);
+    const saved = rows.length ? rowToBooking(rows[0]) : null;
+    if (saved) await bookingSmsTransition(before, saved);
+    return saved;
+  }
+  const rows = readFile();
+  const index = rows.findIndex(job => job.id === id && !job.deletedAt && job.status === before.status &&
+    job.scheduledAt === slot.before && (job.scheduledEnd ?? null) === (slot.endBefore ?? null));
+  if (index === -1 || overlapsBooking(rows, id, slot.start, slot.end)) return null;
+  rows[index] = { ...rows[index], scheduledAt: slot.start, scheduledEnd: slot.end, updatedAt: new Date().toISOString() };
+  writeFile(rows);
+  const saved = localCallingRecord(rows[index]).booking;
+  await bookingSmsTransition(before, saved);
+  return saved;
 }
 
 export async function updateBooking(id: string, rawUpdates: Partial<Booking>): Promise<Booking | null> {
@@ -2444,6 +2484,7 @@ function rowToInvoice(r: any): Invoice {
     squareOrderId: r.square_order_id ?? null,
     squarePaymentId: r.square_payment_id ?? null,
     squareLinkAmount: r.square_link_amount == null ? null : Number(r.square_link_amount),
+    reminderHold: r.reminder_hold === true,
     squarePaidAt: r.square_paid_at == null ? null : (typeof r.square_paid_at === 'string' ? r.square_paid_at : new Date(r.square_paid_at).toISOString()),
     fromName: r.from_name ?? '',
     fromTradingAs: r.from_trading_as ?? '',
@@ -2794,6 +2835,7 @@ export async function updateInvoice(id: string, rawUpdates: Partial<Invoice>): P
         square_payment_id = ${m.squarePaymentId ?? null},
         square_link_amount = ${m.squareLinkAmount ?? null},
         square_paid_at = ${m.squarePaidAt ?? null},
+        reminder_hold = ${m.reminderHold ?? false},
         updated_at = now()
       WHERE id = ${id}
       RETURNING *
@@ -4359,4 +4401,88 @@ async function bookingSmsTransition(before: Booking | null, booking: Booking) {
       await (await import('./sms')).completedBookingSms(booking.id);
     }
   } catch { console.error('SMS booking hook failed'); }
+}
+
+function readSmartActions(): Record<string, SmartActionRecord> {
+  const file = path.join(path.dirname(DB_PATH), 'smart-actions.json');
+  return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {};
+}
+
+function writeSmartActions(records: Record<string, SmartActionRecord>) {
+  ensureFile();
+  const file = path.join(path.dirname(DB_PATH), 'smart-actions.json');
+  fs.writeFileSync(file + '.tmp', JSON.stringify(records, null, 2));
+  fs.renameSync(file + '.tmp', file);
+}
+
+export async function getSmartActionRecords(ids: string[]): Promise<Map<string, SmartActionRecord>> {
+  if (!ids.length) return new Map();
+  if (!sql) {
+    const records = readSmartActions();
+    return new Map(ids.flatMap(id => records[id] ? [[id, records[id]]] : []));
+  }
+  await ensureSchema();
+  const rows = await sql`SELECT data FROM smart_actions WHERE id IN (SELECT jsonb_array_elements_text(${JSON.stringify(ids)}::jsonb))`;
+  return new Map(rows.map(row => [row.data.id, row.data as SmartActionRecord]));
+}
+
+export async function claimSmartAction(record: SmartActionRecord): Promise<boolean> {
+  if (!sql) {
+    const records = readSmartActions();
+    if (records[record.id]) return false;
+    records[record.id] = record;
+    writeSmartActions(records);
+    return true;
+  }
+  await ensureSchema();
+  const rows = await sql`INSERT INTO smart_actions (id, status, data)
+    VALUES (${record.id}, ${record.status}, ${JSON.stringify(record)}::jsonb) ON CONFLICT (id) DO NOTHING RETURNING id`;
+  return rows.length === 1;
+}
+
+export async function finishSmartAction(record: SmartActionRecord): Promise<void> {
+  if (!sql) {
+    const records = readSmartActions();
+    if (records[record.id]?.status !== 'executing') return;
+    records[record.id] = record;
+    writeSmartActions(records);
+    return;
+  }
+  await ensureSchema();
+  await sql`UPDATE smart_actions SET status = ${record.status}, data = ${JSON.stringify(record)}::jsonb
+    WHERE id = ${record.id} AND status = 'executing'`;
+}
+
+export async function listSmartActionSms(since: string): Promise<SmsMessage[]> {
+  if (!sql) return readSmsFile().messages.filter(row => row.createdAt >= since && row.kind !== 'staff-alert');
+  await ensureSchema();
+  const rows = await sql`SELECT data FROM sms_messages WHERE created_at >= ${since}::timestamptz
+    AND data->>'kind' <> 'staff-alert'`;
+  return rows.map(row => row.data as SmsMessage);
+}
+
+export async function listSmsOptOuts(): Promise<Set<string>> {
+  if (!sql) return new Set(Object.entries(readSmsFile().preferences).filter(([, entry]) => entry === 'opted-out').map(([phone]) => phone));
+  await ensureSchema();
+  const rows = await sql`SELECT phone FROM sms_preferences WHERE preference = 'opted-out'`;
+  return new Set(rows.map(row => row.phone));
+}
+
+export async function listLatestInvoiceReminderSms(): Promise<SmsMessage[]> {
+  const active = ['pending', 'retry', 'sending', 'accepted', 'queued', 'sent', 'delivered', 'unknown'];
+  if (!sql) {
+    const latest = new Map<string, SmsMessage>();
+    for (const row of readSmsFile().messages) {
+      if (row.kind !== 'reminder' || !row.recordId || !active.includes(row.status)) continue;
+      const prior = latest.get(row.recordId);
+      if (!prior || smsMessageTime(row) > smsMessageTime(prior)) latest.set(row.recordId, row);
+    }
+    return [...latest.values()];
+  }
+  await ensureSchema();
+  const rows = await sql`SELECT DISTINCT ON (data->>'recordId') data FROM sms_messages
+    WHERE data->>'kind' = 'reminder' AND data->>'recordId' IS NOT NULL
+      AND data->>'status' IN (SELECT jsonb_array_elements_text(${JSON.stringify(active)}::jsonb))
+    ORDER BY data->>'recordId', COALESCE(data->>'submittedAt', data->>'updatedAt', data->>'createdAt') DESC`;
+  return rows.map(row => row.data as SmsMessage);
 }

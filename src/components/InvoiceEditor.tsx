@@ -156,6 +156,7 @@ export default function InvoiceEditor({ initial, prefill, returnHref, onChanged,
   const [inv, setInv] = useState<Invoice | null>(initial);
   const [f, setF] = useState<Form>(initial ? fromInvoice(initial) : blankForm(prefill, staff));
   const [saving, setSaving] = useState(false);
+  const [reminderBusy, setReminderBusy] = useState(false);
   const [tab, setTab] = useState<'edit' | 'preview'>('edit');
   // Linked bookings (multi). Linkage is the single source of truth on the invoice.
   const [linkedIds, setLinkedIds] = useState<string[]>(
@@ -448,6 +449,26 @@ export default function InvoiceEditor({ initial, prefill, returnHref, onChanged,
     } else toast.error('Update failed');
   };
 
+  async function toggleReminderHold() {
+    if (!inv || reminderBusy) return;
+    setReminderBusy(true);
+    try {
+      const response = await fetch(`/api/admin/invoices/${inv.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reminderHold: !inv.reminderHold }),
+      });
+      if (!response.ok) throw new Error('Could not change payment reminders.');
+      const updated: Invoice = await response.json();
+      setInv(updated);
+      onChanged?.(updated);
+      toast.success(updated.reminderHold ? 'Payment reminders paused' : 'Payment reminders resumed');
+    } catch {
+      toast.error('Could not change payment reminders.');
+    } finally {
+      setReminderBusy(false);
+    }
+  }
+
   const [squareBusy, setSquareBusy] = useState(false);
   const generateSquareLink = async () => {
     if (!inv) return;
@@ -536,6 +557,11 @@ export default function InvoiceEditor({ initial, prefill, returnHref, onChanged,
             </div>
           </div>
           <CreatedBy name={inv.createdBy} />
+          {staff && !inv.ownerGuestId && inv.status === 'sent' && <button type="button" aria-pressed={!!inv.reminderHold}
+            disabled={reminderBusy} onClick={() => void toggleReminderHold()}
+            className="min-h-11 rounded-lg px-2 text-xs font-semibold text-amber-200 disabled:opacity-40">
+            {inv.reminderHold ? 'Resume payment reminders' : 'Pause payment reminders'}
+          </button>}
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <input readOnly value={publicUrl} aria-label="Invoice link" className="form-input w-full min-h-11 text-base sm:flex-1" onFocus={e => e.currentTarget.select()} />
             <button onClick={shareInvoice} className="min-h-11 rounded-lg bg-sky-500 px-3 font-semibold text-navy-900">Share invoice</button>

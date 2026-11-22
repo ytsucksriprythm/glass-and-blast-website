@@ -1,5 +1,7 @@
 'use client';
 
+import SmartActions from '@/components/admin/SmartActions';
+
 import { Suspense, useState, useEffect, useCallback, useRef } from 'react';
 import UnreadTexts from '@/components/admin/UnreadTexts';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -1592,6 +1594,7 @@ const openBooking = (id: string) => {
             {/* ── OVERVIEW ─────────────────────────────────────────────── */}
             {activeTab === 'overview' && (
               <motion.div key="overview" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-6">
+                <SmartActions />
                 <TodayWork bookings={bookings} invoices={invoices} newLeads={stats?.uncontacted ?? 0} acceptedIds={acceptedIds} loading={loading} onOpen={openBooking} />
                 <section aria-label="Booking and financial metrics" className="space-y-5">
                 {loading ? (
