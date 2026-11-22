@@ -35,7 +35,10 @@ export function smsMessageTime(message: SmsMessage): string {
 }
 
 export type SmsPreference = 'opted-in' | 'opted-out';
+export const COLD_ACTIVITY_MS = 14 * 24 * 60 * 60 * 1000;
+
 export type SmsConversation = {
+  group: 'active' | 'inactive' | 'cold';
   phone: string;
   jobs: { id: string; name: string; address: string; status: string; scheduledAt?: string | null }[];
   latest?: Pick<SmsMessage, 'id' | 'body' | 'direction' | 'createdAt'>;

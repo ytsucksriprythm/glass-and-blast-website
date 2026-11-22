@@ -3,10 +3,10 @@ import { syncBookingStatusToSheet } from './metaLeads';
 ﻿import { createHash } from 'node:crypto';
 import twilio from 'twilio';
 import {
-  changeSms, contactUncontactedBooking, getBookingById, getBookings, getInvoiceById, getInvoicesForBooking, getQuoteById, getSms, getSmsPreference, hasSubmittedCustomerSms,
+  bookingStatusActivity, changeSms, contactUncontactedBooking, getBookingById, getBookings, getInvoiceById, getInvoicesForBooking, getQuoteById, getSms, getSmsPreference, hasSubmittedCustomerSms,
   insertSms, listChatgptSmsReads, listLatestCustomerSms, listPendingCustomerSms, listSms, listSmsReadStates, listSmsWork, logActivity, setSmsPreference,
 } from './db';
-import { australianMobile, smsPhone, smsReadReceipts, type SmsConversation, type SmsKind, type SmsMessage } from './smsTypes';
+import { COLD_ACTIVITY_MS, smsMessageTime, australianMobile, smsPhone, smsReadReceipts, type SmsConversation, type SmsKind, type SmsMessage } from './smsTypes';
 import type { StaffProfile } from './staff';
 import { sydneyDay } from './callingTypes';
 
@@ -360,28 +360,36 @@ export async function runSmsCron() {
 }
 
 export async function listSmsConversations(incomingOnly = false, profile?: StaffProfile) {
-  const latest = listLatestCustomerSms(incomingOnly);
-  const latestIncoming = profile ? (incomingOnly ? latest : listLatestCustomerSms(true)) : Promise.resolve([]);
-  const [bookings, messages, incoming, states, chatgpt] = await Promise.all([
+  const latest = listLatestCustomerSms(incomingOnly, undefined, true);
+  const latestIncoming = incomingOnly ? latest : listLatestCustomerSms(true, undefined, true);
+  const [bookings, messages, incoming, states, chatgpt, previews] = await Promise.all([
     getBookings(), latest, latestIncoming,
     profile ? listSmsReadStates() : null,
-    latestIncoming.then(rows => listChatgptSmsReads(rows.map(row => row.id))),
+    profile ? latestIncoming.then(rows => listChatgptSmsReads(rows.map(row => row.id))) : Promise.resolve<Record<string, StaffProfile[]>>({}),
+    incomingOnly ? latest : listLatestCustomerSms(),
   ]);
   const incomingPhones = new Set(incomingOnly ? messages.map(message => message.phone) : []);
   const conversations = new Map<string, SmsConversation>();
+  const latestStatus = new Map<string, number>();
+  const cutoff = Date.now() - COLD_ACTIVITY_MS;
   for (const booking of bookings) {
     const phone = smsPhone(booking.phone ?? '');
     if (!phone || (incomingOnly && !incomingPhones.has(phone))) continue;
-    const conversation = conversations.get(phone) ?? { phone, jobs: [] };
+    const conversation = conversations.get(phone) ?? { phone, jobs: [], group: 'active' as const };
+    latestStatus.set(phone, Math.max(latestStatus.get(phone) ?? 0, Date.parse(bookingStatusActivity(booking)) || 0));
     conversation.jobs.push({
       id: booking.id, name: booking.name, address: [booking.address, booking.suburb].filter(Boolean).join(', '),
       status: booking.status, scheduledAt: booking.scheduledAt,
     });
     conversations.set(phone, conversation);
   }
-  for (const { phone, id, body, direction, createdAt } of messages) {
+  const activityByPhone = new Map(messages.map(message => [message.phone, message]));
+  for (const preview of previews) {
+    const message = preview.kind === 'welcome' ? activityByPhone.get(preview.phone) ?? preview : preview;
+    const { phone, id, body, direction } = message;
+    const createdAt = smsMessageTime(message);
     if (!smsPhone(phone)) continue;
-    conversations.set(phone, { ...conversations.get(phone), phone, jobs: conversations.get(phone)?.jobs ?? [],
+    conversations.set(phone, { ...conversations.get(phone), phone, group: 'active', jobs: conversations.get(phone)?.jobs ?? [],
       latest: { id, body, direction, createdAt } });
   }
   if (profile) for (const message of incoming) {
@@ -390,6 +398,14 @@ export async function listSmsConversations(incomingOnly = false, profile?: Staff
     const receipts = smsReadReceipts(states?.[message.phone], chatgpt[message.id], message);
     conversation.unread = !receipts.some(receipt => receipt.profile === profile);
     conversation.latestIncomingReceipts = receipts;
+  }
+  const replied = new Set(incoming.map(message => message.phone));
+  for (const conversation of conversations.values()) {
+    const activity = activityByPhone.get(conversation.phone);
+    if (!activity) continue;
+    const lastActivity = Math.max(Date.parse(smsMessageTime(activity)), latestStatus.get(conversation.phone) ?? 0);
+    if (lastActivity <= cutoff) conversation.group = 'cold';
+    else if (!replied.has(conversation.phone) && activity.direction === 'outbound') conversation.group = 'inactive';
   }
   return [...conversations.values()].sort((a, b) =>
     (b.latest?.createdAt ?? '').localeCompare(a.latest?.createdAt ?? '') ||

@@ -1,6 +1,6 @@
 ﻿import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -127,6 +127,38 @@ test('signed Twilio callbacks, consent and outbox dedup work without customer se
       assert.equal((await db.getBookingById(booking.id))?.status, 'quoted');
     });
 
+    await context.test('inbox and lead aging use SMS and status activity', async () => {
+      const bookingsFile = join(scratch, 'data', 'bookings.json');
+      const existing = JSON.parse(readFileSync(bookingsFile, 'utf8'));
+      const now = new Date().toISOString();
+      const old = new Date(Date.now() - 15 * 86400000).toISOString();
+      const fixtures = [
+        { id: 'recent-text', phone: '+61410000001', statusChangedAt: old },
+        { id: 'recent-status', phone: '+61410000002', statusChangedAt: now },
+        { id: 'stale-lead', phone: '+61410000003', statusChangedAt: old },
+      ];
+      writeFileSync(bookingsFile, JSON.stringify([...existing, ...fixtures.map(fixture => ({
+        ...booking, status: 'uncontacted', createdAt: old, updatedAt: now, ...fixture,
+      }))]));
+      for (const [index, fixture] of fixtures.entries()) {
+        const at = index === 0 ? now : old;
+        await db.insertSms({
+          id: fixture.id, kind: 'manual', recordId: fixture.id, phone: fixture.phone, body: 'Quote follow-up',
+          direction: 'outbound', status: 'delivered', actor: 'Liam', sid: fixture.id,
+          createdAt: at, submittedAt: at, updatedAt: at,
+        });
+      }
+      const conversation = async (phone: string) => (await sms.listSmsConversations()).find(row => row.phone === phone);
+      assert.equal((await conversation(fixtures[0].phone))?.group, 'inactive');
+      assert.equal((await conversation(fixtures[1].phone))?.group, 'inactive');
+      assert.equal((await conversation(fixtures[2].phone))?.group, 'cold');
+      assert.deepEqual((await db.checkStaleLeads()).map(row => row.id), ['stale-lead']);
+      assert.equal((await db.getBookingById('stale-lead'))?.status, 'cold');
+      assert.equal((await conversation(fixtures[2].phone))?.group, 'cold');
+      await sms.receiveSms({ ...form, From: fixtures[0].phone, Body: 'Thanks!', MessageSid: 'SM' + '9'.repeat(32) });
+      assert.equal((await conversation(fixtures[0].phone))?.group, 'active');
+    });
+
     const recipients = ['+61411111111', '+61422222222'];
     process.env.TWILIO_SMS_STAFF_ALERT_RECIPIENTS = recipients.join(',');
     // Opted-out fixture numbers exercise queueing and dedup without a Twilio API send.
@@ -136,7 +168,7 @@ test('signed Twilio callbacks, consent and outbox dedup work without customer se
     await sms.receiveSms(reply, true);
     await sms.receiveSms(reply, true);
     assert.equal((await db.listSms(phone)).find(row => row.sid === reply.MessageSid)?.recordId, booking.id);
-    assert.deepEqual((await db.listLatestCustomerSms(false, phone)).filter(row => row.sid).map(row => row.sid), [reply.MessageSid]);
+    assert.deepEqual((await db.listLatestCustomerSms(false, phone)).filter(row => row.sid && row.phone === phone).map(row => row.sid), [reply.MessageSid]);
     assert.equal((await sms.resolveSmsTarget({ kind: 'manual', recordId: 'phone:' + phone }, true)).phone, phone);
     await assert.rejects(sms.resolveSmsTarget({ kind: 'manual', recordId: 'phone:+12025550123' }, true), /Australian mobiles/);
     for (const recipient of recipients) {

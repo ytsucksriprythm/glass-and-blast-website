@@ -1,4 +1,4 @@
-import { hasReadSms, smsMessageTime, type SmsMessage, type SmsPreference, type SmsReadState } from './smsTypes';
+import { COLD_ACTIVITY_MS, hasReadSms, smsMessageTime, smsPhone, type SmsMessage, type SmsPreference, type SmsReadState } from './smsTypes';
 import { callState, sydneyDay, type CallState } from './callingTypes';
 import type { StaffProfile } from './staff';
 import fs from 'fs';
@@ -86,6 +86,7 @@ export interface Booking {
                                     // re-quote, unlike the "first time only" fields above) — powers
                                     // the "unscheduled a week after quoting" Pipeline -> Leads auto-revert
   sortOrder?: number | null;       // manual drag order (Bookings tab, select mode). null = unset
+  statusChangedAt?: string | null;
   autoMoved?: boolean;             // true while the CURRENT status was set by the stale-lead
                                     // job, not a person — cleared the moment anyone changes
                                     // status manually (see withAutoMoveReset)
@@ -322,6 +323,7 @@ function rowToBooking(r: any): Booking {
     contactedAt: r.contacted_at == null ? null : (typeof r.contacted_at === 'string' ? r.contacted_at : new Date(r.contacted_at).toISOString()),
     quotedAt: r.quoted_at == null ? null : (typeof r.quoted_at === 'string' ? r.quoted_at : new Date(r.quoted_at).toISOString()),
     sortOrder: r.sort_order == null ? null : Number(r.sort_order),
+    statusChangedAt: r.status_changed_at == null ? null : new Date(r.status_changed_at).toISOString(),
     autoMoved: r.auto_moved === true || r.auto_moved === 1,
     autoMovedAt: r.auto_moved_at == null ? null : (typeof r.auto_moved_at === 'string' ? r.auto_moved_at : new Date(r.auto_moved_at).toISOString()),
     autoMovedFrom: r.auto_moved_from ?? null,
@@ -397,6 +399,22 @@ export async function ensureSchema(): Promise<void> {
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS created_by TEXT`;
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS external_lead_id TEXT`;
       await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ`;
+      await sql`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS status_changed_at TIMESTAMPTZ`;
+      await sql`ALTER TABLE bookings ALTER COLUMN status_changed_at SET DEFAULT now()`;
+      await sql`CREATE OR REPLACE FUNCTION track_booking_status_change() RETURNS trigger AS $
+        BEGIN
+          IF NEW.status IS DISTINCT FROM OLD.status THEN
+            IF NEW.status = 'cold' AND NEW.auto_moved THEN
+              NEW.status_changed_at := COALESCE(OLD.status_changed_at, OLD.updated_at);
+            ELSE
+              NEW.status_changed_at := now();
+            END IF;
+          END IF;
+          RETURN NEW;
+        END;
+      $ LANGUAGE plpgsql`;
+      await sql`CREATE OR REPLACE TRIGGER track_booking_status_change BEFORE UPDATE OF status ON bookings
+        FOR EACH ROW EXECUTE FUNCTION track_booking_status_change()`;
       // Backfill customer-link tokens for pre-existing rows.
       await sql`UPDATE bookings SET public_token = 'bk_' || substr(md5(random()::text || id), 1, 20) WHERE public_token IS NULL`;
       // One-time cleanup: Meta's sheet connector was prefixing phone answers
@@ -792,6 +810,14 @@ function readFile(): Booking[] {
 }
 function writeFile(rows: Booking[]): void {
   ensureFile();
+  const previous = new Map(readFile().map(row => [row.id, row]));
+  const now = new Date().toISOString();
+  for (const row of rows) {
+    const prior = previous.get(row.id);
+    if (prior && prior.status !== row.status) {
+      row.statusChangedAt = row.status === 'cold' && row.autoMoved ? bookingStatusActivity(prior) : now;
+    }
+  }
   fs.writeFileSync(DB_PATH, JSON.stringify(rows, null, 2));
 }
 
@@ -879,6 +905,7 @@ export async function addBooking(data: NewBooking, createdBy: string | null = nu
     contactedAt: null,
     quotedAt: data.status === 'quoted' ? now : null,
     sortOrder: null,
+    statusChangedAt: now,
     autoMoved: false,
     autoMovedAt: null,
     autoMovedFrom: null,
@@ -1166,27 +1193,49 @@ export async function resetBookingSortOrder(): Promise<number> {
   return n;
 }
 
-const STALE_LEAD_DAYS = 14;
+// Legacy bookings predate status timestamps. Their last edit is a conservative starting point.
+export function bookingStatusActivity(booking: Booking): string {
+  return booking.statusChangedAt ?? booking.updatedAt ?? booking.createdAt;
+}
 
-// An uncontacted/contacted job nobody has actioned (quoted or confirmed) in
-// 14 days gets auto-moved to "cold" so it drops out of the active list
-// instead of quietly rotting at the top. Runs on-demand (called once when
-// the dashboard loads) rather than on a cron, so "next time someone checks
-// the site" is literally true. Returns only the bookings THIS call just
-// moved, which is exactly what the dashboard needs to show the one-time
-// "moved to cold" popup.
 export async function checkStaleLeads(): Promise<Booking[]> {
-  const all = await getBookings();
-  const cutoff = Date.now() - STALE_LEAD_DAYS * 24 * 60 * 60 * 1000;
-  const stale = all.filter(b => !b.callingManaged && (b.status === 'uncontacted' || b.status === 'contacted') && new Date(b.createdAt).getTime() <= cutoff);
+  const [bookings, sms] = await Promise.all([getBookings(), listLatestCustomerSms(false, undefined, true)]);
+  const latestSms = new Map(sms.map(message => [message.phone, Date.parse(smsMessageTime(message))]));
+  const cutoff = Date.now() - COLD_ACTIVITY_MS;
   const moved: Booking[] = [];
-  for (const b of stale) {
-    const updated = await updateBooking(b.id, {
-      status: 'cold', autoMoved: true, autoMovedAt: new Date().toISOString(), autoMovedFrom: b.status,
-    });
+  for (const booking of bookings) {
+    if (booking.status !== 'uncontacted' && booking.status !== 'contacted') continue;
+    if (booking.scheduledAt || booking.paid) continue;
+    const lastStatus = Date.parse(bookingStatusActivity(booking));
+    const phone = smsPhone(booking.phone ?? '');
+    const lastSms = latestSms.get(phone ?? '') ?? 0;
+    if (!(Math.max(lastStatus, lastSms) <= cutoff)) continue;
+    const now = new Date().toISOString();
+    let updated: Booking | null;
+    if (sql) {
+      const rows = await sql`UPDATE bookings SET status = 'cold', auto_moved = true,
+        auto_moved_at = ${now}, auto_moved_from = status, updated_at = now()
+        WHERE id = ${booking.id} AND status = ${booking.status}
+          AND date_trunc('milliseconds', updated_at) = date_trunc('milliseconds', ${booking.updatedAt}::timestamptz)
+          AND deleted_at IS NULL AND scheduled_at IS NULL AND NOT paid
+          AND NOT EXISTS (
+            SELECT 1 FROM sms_messages WHERE phone = ${phone}
+              AND data->>'kind' NOT IN ('welcome', 'staff-alert')
+              AND (CASE WHEN data->>'direction' = 'inbound' THEN created_at
+                WHEN data->>'sid' IS NOT NULL AND data->>'status' IN ('accepted', 'queued', 'sending', 'sent', 'delivered')
+                THEN COALESCE((data->>'submittedAt')::timestamptz, (data->>'updatedAt')::timestamptz) END) > ${new Date(cutoff).toISOString()}::timestamptz
+          ) RETURNING *`;
+      updated = rows.length ? rowToBooking(rows[0]) : null;
+    } else {
+      const current = readFile().find(row => row.id === booking.id);
+      updated = current && !current.deletedAt && current.status === booking.status && current.updatedAt === booking.updatedAt
+        ? await updateBooking(booking.id, { status: 'cold', autoMoved: true, autoMovedAt: now, autoMovedFrom: booking.status })
+        : null;
+    }
     if (updated) {
       moved.push(updated);
-      void logActivity('booking.auto_moved_cold', `${updated.name}: ${b.status} ${STALE_LEAD_DAYS}d with no update, auto-moved to Cold Lead`, { bookingId: updated.id }, 'system');
+      void logActivity('booking.auto_moved_cold', 'Lead moved to Cold after 14 days without SMS or a status change',
+        { bookingId: updated.id }, 'system');
     }
   }
   return moved;
@@ -4234,13 +4283,16 @@ export async function listSms(phone: string | null, includeStaffAlerts = true, o
   return rows.map(row => row.data as SmsMessage);
 }
 
-export async function listLatestCustomerSms(incomingOnly = false, phone?: string): Promise<SmsMessage[]> {
+export async function listLatestCustomerSms(incomingOnly = false, phone?: string, activityOnly = false): Promise<SmsMessage[]> {
   if (!sql) {
     const latest = new Map<string, SmsMessage>();
     for (const message of readSmsFile().messages) {
       if (message.kind === 'staff-alert' || (incomingOnly && message.direction !== 'inbound') || (phone && phone !== message.phone)) continue;
+      if (activityOnly && (message.kind === 'welcome' ||
+        (message.direction === 'outbound' && (!message.sid || !['accepted', 'queued', 'sending', 'sent', 'delivered'].includes(message.status))))) continue;
       const previous = latest.get(message.phone);
-      if (!hasReadSms(previous, message)) latest.set(message.phone, message);
+      if (!previous || smsMessageTime(message) > smsMessageTime(previous) ||
+        (smsMessageTime(message) === smsMessageTime(previous) && message.id > previous.id)) latest.set(message.phone, message);
     }
     return [...latest.values()];
   }
@@ -4248,8 +4300,11 @@ export async function listLatestCustomerSms(incomingOnly = false, phone?: string
   const rows = await sql`SELECT DISTINCT ON (phone) data FROM sms_messages
     WHERE data->>'kind' <> 'staff-alert'
       AND (NOT ${incomingOnly} OR data->>'direction' = 'inbound')
+      AND (NOT ${activityOnly} OR (data->>'kind' <> 'welcome' AND (data->>'direction' = 'inbound' OR
+        (data->>'sid' IS NOT NULL AND data->>'status' IN ('accepted', 'queued', 'sending', 'sent', 'delivered')))))
       AND (${phone ?? null}::text IS NULL OR phone = ${phone ?? null})
-    ORDER BY phone, created_at DESC, id DESC`;
+    ORDER BY phone, (CASE WHEN data->>'direction' = 'outbound' AND data->>'sid' IS NOT NULL
+      THEN COALESCE(data->>'submittedAt', data->>'updatedAt') ELSE data->>'createdAt' END) DESC, id DESC`;
   return rows.map(row => row.data as SmsMessage);
 }
 

@@ -1,4 +1,5 @@
 ﻿import { NextResponse } from 'next/server';
+import { checkStaleLeads } from '@/lib/db';
 import { runSmsCron } from '@/lib/sms';
 
 export const dynamic = 'force-dynamic';
@@ -9,5 +10,6 @@ export async function GET(request: Request) {
   if (!secret || request.headers.get('authorization') !== 'Bearer ' + secret) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
-  return NextResponse.json(await runSmsCron());
+  const [sms, movedToCold] = await Promise.all([runSmsCron(), checkStaleLeads()]);
+  return NextResponse.json({ ...sms, movedToCold: movedToCold.length });
 }

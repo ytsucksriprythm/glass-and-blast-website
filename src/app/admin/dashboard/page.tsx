@@ -2319,7 +2319,7 @@ function StaleMovedModal({ bookings, onOk, onUndo }: {
   return (
     <Overlay onClose={() => bookings.forEach(b => onOk(b.id))}>
       <Group title="Back to Leads" icon={PhoneCall} reason="sat quoted with no calendar slot for 7 days" items={toLeads} />
-      <Group title="Moved to Cold Lead" icon={Snowflake} reason="sat for 14 days with no update" items={toCold} />
+      <Group title="Moved to Cold Lead" icon={Snowflake} reason="had no SMS activity or status change for 14 days" items={toCold} />
     </Overlay>
   );
 }
