@@ -174,16 +174,18 @@ const SERVICE_OPTIONS: { v: string; l: string }[] = [
 
 // ─── Sub-components ─────────────────────────────────────────────────────
 
-function StatCard({ label, value, sub, icon: Icon, trend, color = '#38BDF8' }: {
+function StatCard({ label, value, sub, icon: Icon, trend, href, color = '#38BDF8' }: {
   label: string; value: string | number; sub?: string;
-  icon: React.FC<{ className?: string; style?: React.CSSProperties }>; trend?: number; color?: string;
+  icon: React.FC<{ className?: string; style?: React.CSSProperties }>; trend?: number; color?: string; href?: string;
 }) {
-  return (
-    <motion.div whileHover={{ y: -2 }} className="glass rounded-2xl border border-white/8 p-6 hover:border-sky-400/20 transition-all duration-300">
+  const className = "glass block min-w-0 rounded-2xl border border-white/8 p-4 sm:p-6";
+  const content = (
+    <>
       <div className="flex items-start justify-between mb-4">
         <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: `${color}15`, border: `1px solid ${color}20` }}>
           <Icon className="w-5 h-5" style={{ color }} />
         </div>
+        {href && <ChevronRight aria-hidden="true" className="h-4 w-4 text-slate-400" />}
         {trend !== undefined && (
           <div className={`flex items-center gap-1 text-xs font-semibold ${trend >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
             {trend >= 0 ? <ArrowUpRight className="w-3.5 h-3.5" /> : <ArrowDownRight className="w-3.5 h-3.5" />}
@@ -191,11 +193,14 @@ function StatCard({ label, value, sub, icon: Icon, trend, color = '#38BDF8' }: {
           </div>
         )}
       </div>
-      <div className="font-display text-3xl font-bold text-white">{value}</div>
+      <div className="font-display text-2xl font-bold text-white sm:text-3xl">{value}</div>
       <div className="text-slate-400 text-sm mt-1">{label}</div>
-      {sub && <div className="text-slate-600 text-xs mt-0.5">{sub}</div>}
-    </motion.div>
+      {sub && <div className="text-slate-400 text-xs mt-0.5">{sub}</div>}
+    </>
   );
+  return href
+    ? <Link href={href} prefetch={false} className={className + " hover:border-sky-400/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400"}>{content}</Link>
+    : <motion.div whileHover={{ y: -2 }} className={className + " hover:border-sky-400/20 transition-all duration-300"}>{content}</motion.div>;
 }
 
 // Generic checkbox-list filter dropdown — replaces the old single-value
@@ -1002,8 +1007,6 @@ function DashboardContent() {
   const unpaidInvoiceFor = (bookingId: string) => invoices.find(i => ((i.bookingIds ?? []).includes(bookingId) || i.bookingId === bookingId) && i.status !== "paid" && i.status !== "cancelled") ?? null;
 
   // Filters — multi-select checkboxes now, so these are arrays. Empty = "all".
-  // 'facebook-lead-ad' is a synthetic status option that actually filters by
-  // source, not status — see fetchData/API below.
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<string[]>([]);
   const [serviceFilter, setServiceFilter] = useState<string[]>([]);
@@ -1032,7 +1035,7 @@ function DashboardContent() {
     const search = params.get('search') ?? '';
     setSearch(search);
     setQuery(search);
-    setStatusFilter(params.get('status')?.split(',').filter(Boolean) ?? []);
+    setStatusFilter(params.get('status')?.split(',').filter(status => status && status !== 'facebook-lead-ad') ?? []);
     setServiceFilter(params.get('service')?.split(',').filter(Boolean) ?? []);
     setBookingsView(params.get('view') === 'pipeline' || params.has('attention') ? 'pipeline' : 'leads');
     setSortField(params.get('sort') ?? 'sortOrder');
@@ -1590,18 +1593,18 @@ const openBooking = (id: string) => {
             {activeTab === 'overview' && (
               <motion.div key="overview" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-6">
                 <TodayWork bookings={bookings} invoices={invoices} newLeads={stats?.uncontacted ?? 0} acceptedIds={acceptedIds} loading={loading} onOpen={openBooking} />
-                <div className="hidden lg:block space-y-5">
+                <section aria-label="Booking and financial metrics" className="space-y-5">
                 {loading ? (
                   <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
                     {Array.from({ length: 5 }).map((_, i) => <div key={i} className="glass rounded-2xl border border-white/8 p-6 h-32 animate-pulse" />)}
                   </div>
                 ) : stats && (
                   <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
-                    <StatCard label="Total Leads" value={stats.total} icon={Calendar} color="#38BDF8" sub="All time" />
-                    <StatCard label="Quoted" value={money(stats.quotedValue) || '$0'} icon={DollarSign} color="#A78BFA" sub={`${stats.quotedCount} quote${stats.quotedCount !== 1 ? 's' : ''} out`} />
-                    <StatCard label="Revenue (total)" value={money(stats.paidValue) || '$0'} icon={CheckCircle} color="#34D399" sub="All money collected" />
-                    <StatCard label="Revenue (this month)" value={money(stats.paidThisMonthValue ?? 0) || '$0'} icon={TrendingUp} color="#818CF8" sub={new Date().toLocaleDateString('en-AU', { month: 'long' })} />
-                    <StatCard label="Owed" value={money(stats.owedValue) || '$0'} icon={Wallet} color="#F87171" sub={`${stats.owedCount} job${stats.owedCount !== 1 ? 's' : ''} unpaid`} />
+                    <StatCard href="/admin/dashboard/metrics/leads" label="Total Leads" value={stats.total} icon={Calendar} color="#38BDF8" sub="All time" />
+                    <StatCard href="/admin/dashboard/metrics/quote-value" label="Quoted" value={money(stats.quotedValue) || '$0'} icon={DollarSign} color="#A78BFA" sub={`${stats.quotedCount} quote${stats.quotedCount !== 1 ? 's' : ''} out`} />
+                    <StatCard href="/admin/dashboard/metrics/revenue" label="Revenue (total)" value={money(stats.paidValue) || '$0'} icon={CheckCircle} color="#34D399" sub="All money collected" />
+                    <StatCard href="/admin/dashboard/metrics/revenue-this-month" label="Revenue (this month)" value={money(stats.paidThisMonthValue ?? 0) || '$0'} icon={TrendingUp} color="#818CF8" sub={new Date().toLocaleDateString('en-AU', { month: 'long', timeZone: 'Australia/Sydney' })} />
+                    <StatCard href="/admin/dashboard/metrics/owed" label="Owed" value={money(stats.owedValue) || '$0'} icon={Wallet} color="#F87171" sub={`${stats.owedCount} job${stats.owedCount !== 1 ? 's' : ''} unpaid`} />
                   </div>
                 )}
 
@@ -1610,18 +1613,21 @@ const openBooking = (id: string) => {
                     {STATUS_KEYS.map((key) => {
                       const cfg = STATUS_CONFIG[key];
                       return (
-                        <div key={key} className="glass rounded-xl border border-white/8 p-4 flex items-center gap-3">
+                        <Link key={key} href={`/admin/dashboard/metrics/${key}`} prefetch={false} className="glass rounded-xl border border-white/8 p-4 flex items-center gap-3 hover:border-sky-400/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400">
                           <cfg.icon className="w-4 h-4 flex-shrink-0" style={{ color: cfg.color }} />
                           <div>
                             <div className="text-white font-bold text-lg">{stats[key]}</div>
-                            <div className="text-slate-500 text-xs">{cfg.label}</div>
+                            <div className="text-slate-400 text-xs">{cfg.label}</div>
                           </div>
-                        </div>
+                          <ChevronRight aria-hidden="true" className="ml-auto h-4 w-4 shrink-0 text-slate-400" />
+                        </Link>
                       );
                     })}
                   </div>
                 )}
 
+                </section>
+                <div className="hidden space-y-5 lg:block">
                 <UpcomingJobs bookings={bookings} />
 
                 {/* Money owed + shortcuts */}
@@ -1707,7 +1713,7 @@ const openBooking = (id: string) => {
                   <div className="grid grid-cols-2 sm:flex gap-2">
                     <MultiSelectDropdown
                       label="Status"
-                      options={[...viewStatuses.map(s => ({ value: s, label: STATUS_CONFIG[s].label })), { value: 'facebook-lead-ad', label: 'Facebook Lead' }]}
+                      options={viewStatuses.map(s => ({ value: s, label: STATUS_CONFIG[s].label }))}
                       selected={statusFilter}
                       onChange={setStatusFilter}
                     />

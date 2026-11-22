@@ -1,5 +1,5 @@
 import { hasReadSms, type SmsMessage, type SmsPreference, type SmsReadState } from './smsTypes';
-import { callState, type CallState } from './callingTypes';
+import { callState, sydneyDay, type CallState } from './callingTypes';
 import type { StaffProfile } from './staff';
 import fs from 'fs';
 import path from 'path';
@@ -1423,13 +1423,12 @@ export async function getStats() {
     .reduce((sum, b) => sum + (b.quoteAmount ?? 0), 0);
   // Paid this calendar month — by paidAt, falling back to completedAt for
   // older records marked paid before paidAt existed.
+  const currentMonth = sydneyDay(now).slice(0, 7);
   const paidThisMonthValue = bookings
     .filter(b => {
       if (!b.paid || typeof b.quoteAmount !== 'number') return false;
       const when = b.paidAt || b.completedAt;
-      if (!when) return false;
-      const d = new Date(when);
-      return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+      return Boolean(when && Number.isFinite(Date.parse(when)) && sydneyDay(when).startsWith(currentMonth));
     })
     .reduce((sum, b) => sum + (b.quoteAmount ?? 0), 0);
   // Owed = work that's done but not yet paid (accounts receivable).
