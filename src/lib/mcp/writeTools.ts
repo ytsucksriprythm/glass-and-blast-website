@@ -197,6 +197,7 @@ export function registerWriteTools(server: McpServer, cfg: McpConfig, caller: Ca
 
 
   if (isOwner) tool('send_customer_sms', 'Send a customer SMS',
+    'For a paid invoice receipt, record the payment first with update_invoice_status, then send kind="invoice" with the invoice ID. ' +
     'Send one free-form SMS, quote link, invoice link, confirmed appointment, or overdue reminder. For manual messages give the exact Australian mobile or booking ID, the message text, and a UUID requestId. For templates give the exact record ID. Use list_sms_conversations to resolve names and ask if recipients are ambiguous. Get explicit permission for the recipient and message before calling. SMS consent and live sending are required. Template first sends are deduplicated. An explicit template resend requires resend=true and a new UUID. Reuse the UUID on retries.',
     {
       kind: z.enum(['quote', 'invoice', 'booking', 'reminder', 'manual']),

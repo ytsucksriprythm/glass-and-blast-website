@@ -36,7 +36,7 @@ function client() {
   return twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN, { timeout: 10000 });
 }
 
-export async function resolveSmsTarget(target: SmsTarget, forSend = false) {
+export async function resolveSmsTarget(target: SmsTarget, forSend = false, automatic = false) {
   const { recordId, kind } = target;
   if (kind === 'manual' && recordId.startsWith('phone:')) {
     const phone = smsPhone(recordId.slice(6));
@@ -52,14 +52,18 @@ export async function resolveSmsTarget(target: SmsTarget, forSend = false) {
     const phones = [...new Set(jobs.flatMap(job => australianMobile(job!.phone ?? '') ?? []))];
     if (phones.length !== 1) throw new SmsError('Link the invoice to a booking with one unambiguous Australian mobile number.');
     const overdue = invoice.dueDate && invoice.dueDate < sydneyDay(Date.now());
-    if (forSend && (invoice.status !== 'sent' || invoice.squarePaidAt || (jobs.length > 0 && jobs.every(job => job!.paid)))) {
+    const isReceipt = kind === 'invoice' && invoice.status === 'paid';
+    const unpaidInvoice = invoice.status === 'sent' && !invoice.squarePaidAt && !jobs.every(job => job!.paid);
+    if (forSend && !unpaidInvoice && !(isReceipt && !automatic)) {
       throw new SmsError('This invoice is not ready for SMS or has already been paid.');
     }
     if (forSend && kind === 'reminder' && !overdue) throw new SmsError('The invoice is not overdue.');
     const url = base() + '/invoice/' + encodeURIComponent(invoice.token);
-    return { phone: phones[0], version: invoice.token, completed: jobs.some(job => job!.status === 'completed'),
+    return { phone: phones[0], version: isReceipt ? [invoice.token, 'paid'] : invoice.token, completed: jobs.some(job => job!.status === 'completed'),
       dueDate: invoice.dueDate, body: brand(kind === 'invoice'
-        ? 'Hi ' + name(invoice.billToName) + ', invoice ' + invoice.number + ' is ready: ' + url
+        ? 'Hi ' + name(invoice.billToName) + ', ' + (isReceipt
+          ? 'thanks for your payment. View your receipt for invoice ' + invoice.number + ': '
+          : 'invoice ' + invoice.number + ' is ready: ') + url
         : 'Hi ' + name(invoice.billToName) + ', invoice ' + invoice.number + ' is overdue. View or pay: ' + url) };
   }
   const quote = kind === 'quote' ? await getQuoteById(recordId) : null;
@@ -101,7 +105,7 @@ export async function dispatchSms(id: string) {
   }
   if (row.kind !== 'reply' && row.kind !== 'staff-alert' && row.kind !== 'welcome' && row.recordId) {
     try {
-      const current = await resolveSmsTarget({ kind: row.kind, recordId: row.recordId }, true);
+      const current = await resolveSmsTarget({ kind: row.kind, recordId: row.recordId }, true, row.automatic);
       if (current.phone !== row.phone || (row.kind !== 'manual' && current.body !== row.body) || (row.automatic && row.kind === 'invoice' && !current.completed)) {
         throw new SmsError('The booking or document changed before dispatch.');
       }
@@ -169,7 +173,7 @@ export async function dispatchSms(id: string) {
 
 export async function sendSms(input: SendInput, actor: string) {
   if (!smsEnabled() || (input.automatic && !smsAutomation())) throw new SmsError('Customer SMS sending is disabled.', 503);
-  const target = await resolveSmsTarget(input, true);
+  const target = await resolveSmsTarget(input, true, input.automatic);
   if (input.automatic && input.kind === 'invoice' && !target.completed) return null;
   if (await getSmsPreference(target.phone) !== 'opted-in') throw new SmsError('Record customer consent before sending SMS.');
   const body = input.kind === 'manual' ? brand(input.text?.trim() ?? '') : target.body;
