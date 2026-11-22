@@ -1,4 +1,4 @@
-import { hasReadSms, type SmsMessage, type SmsPreference, type SmsReadState } from './smsTypes';
+import { hasReadSms, smsMessageTime, type SmsMessage, type SmsPreference, type SmsReadState } from './smsTypes';
 import { callState, sydneyDay, type CallState } from './callingTypes';
 import type { StaffProfile } from './staff';
 import fs from 'fs';
@@ -4203,10 +4203,13 @@ export async function markChatgptSmsRead(ids: string[], profile: StaffProfile) {
 
 export async function listSms(phone: string | null, includeStaffAlerts = true, offset = 0, limit = 50): Promise<SmsMessage[]> {
   if (!sql) return readSmsFile().messages.filter(row => (!phone || row.phone === phone) && (includeStaffAlerts || row.kind !== 'staff-alert'))
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id)).slice(offset, offset + limit);
+    .sort((a, b) => smsMessageTime(b).localeCompare(smsMessageTime(a)) ||
+      Number(a.kind === 'welcome') - Number(b.kind === 'welcome') || b.id.localeCompare(a.id)).slice(offset, offset + limit);
   await ensureSchema();
   const rows = await sql`SELECT data FROM sms_messages WHERE (${phone}::text IS NULL OR phone = ${phone})
-    AND (${includeStaffAlerts} OR data->>'kind' <> 'staff-alert') ORDER BY created_at DESC, id DESC LIMIT ${limit} OFFSET ${offset}`;
+    AND (${includeStaffAlerts} OR data->>'kind' <> 'staff-alert')
+    ORDER BY (CASE WHEN data->>'direction' = 'outbound' AND data->>'sid' IS NOT NULL THEN COALESCE(data->>'submittedAt', data->>'updatedAt')
+      ELSE data->>'createdAt' END) DESC, (data->>'kind' = 'welcome') ASC, id DESC LIMIT ${limit} OFFSET ${offset}`;
   return rows.map(row => row.data as SmsMessage);
 }
 

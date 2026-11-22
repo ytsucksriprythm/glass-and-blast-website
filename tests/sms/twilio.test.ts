@@ -75,6 +75,28 @@ test('signed Twilio callbacks, consent and outbox dedup work without customer se
       assert.equal((await db.listSmsReadStates(phone))[phone].liam, undefined);
     });
 
+    await context.test('SMS history puts the welcome notice before the customer message', async () => {
+      const recipient = '+61400123459';
+      const queuedAt = '2026-11-22T06:46:00.000Z';
+      const welcomeAt = '2026-11-22T06:46:01.000Z';
+      const sentAt = '2026-11-22T06:46:02.000Z';
+      for (const actor of ['Liam', 'mcp:liam']) {
+        const request = {
+          id: actor + '-message', kind: 'manual', recordId: null, phone: recipient, body: 'Receipt',
+          direction: 'outbound', status: 'delivered', actor, createdAt: queuedAt,
+          updatedAt: sentAt, sid: actor + '-sid',
+        } as const;
+        await db.insertSms(request);
+      }
+      await db.insertSms({
+        id: 'welcome', kind: 'welcome', recordId: null, phone: recipient, body: 'Welcome',
+        direction: 'outbound', status: 'delivered', actor: 'Liam', createdAt: welcomeAt,
+        submittedAt: welcomeAt, updatedAt: sentAt, sid: 'welcome-sid',
+      });
+      assert.deepEqual((await db.listSms(recipient)).map(row => row.kind), ['manual', 'manual', 'welcome']);
+      assert.equal((await db.listSms(recipient, true, 2, 1))[0]?.kind, 'welcome');
+    });
+
     const id = 'a'.repeat(64);
     const at = new Date().toISOString();
     const fixture = { id, kind: 'booking', recordId: 'test', phone, body: 'Test', direction: 'outbound', status: 'sending', actor: 'Liam', createdAt: at, updatedAt: at } as const;
@@ -101,7 +123,7 @@ test('signed Twilio callbacks, consent and outbox dedup work without customer se
     await sms.receiveSms(reply, true);
     await sms.receiveSms(reply, true);
     assert.equal((await db.listSms(phone)).find(row => row.sid === reply.MessageSid)?.recordId, booking.id);
-    assert.deepEqual((await db.listLatestCustomerSms()).filter(row => row.sid).map(row => row.sid), [reply.MessageSid]);
+    assert.deepEqual((await db.listLatestCustomerSms(false, phone)).filter(row => row.sid).map(row => row.sid), [reply.MessageSid]);
     assert.equal((await sms.resolveSmsTarget({ kind: 'manual', recordId: 'phone:' + phone }, true)).phone, phone);
     await assert.rejects(sms.resolveSmsTarget({ kind: 'manual', recordId: 'phone:+12025550123' }, true), /Australian mobiles/);
     for (const recipient of recipients) {

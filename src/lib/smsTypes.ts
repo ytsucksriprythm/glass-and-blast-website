@@ -28,8 +28,12 @@ export type SmsMessage = {
   id: string; kind: SmsKind; recordId: string | null; phone: string; body: string;
   direction: 'inbound' | 'outbound'; status: string; sid?: string; error?: string;
   automatic?: boolean; actor: string; createdAt: string; updatedAt: string;
-  retryAt?: string; attempts?: number;
+  submittedAt?: string; retryAt?: string; attempts?: number;
 };
+export function smsMessageTime(message: SmsMessage): string {
+  return message.direction === 'outbound' && message.sid ? message.submittedAt ?? message.updatedAt : message.createdAt;
+}
+
 export type SmsPreference = 'opted-in' | 'opted-out';
 export type SmsConversation = {
   phone: string;

@@ -143,7 +143,7 @@ export async function dispatchSms(id: string) {
       return getSms(id);
     }
   }
-  if (!await changeSms(row, { status: 'sending', attempts: (row.attempts ?? 0) + 1 })) return getSms(id);
+  if (!await changeSms(row, { status: 'sending', submittedAt: new Date().toISOString(), attempts: (row.attempts ?? 0) + 1 })) return getSms(id);
   if (!await canSend()) {
     await updateResult(id, undefined, 'canceled', 'SMS consent was withdrawn.');
     return getSms(id);

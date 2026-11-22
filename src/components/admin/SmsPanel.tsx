@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { MessageSquare, Send } from 'lucide-react';
 import Link from 'next/link';
-import { australianMobile, hasReadSms, smsReadLabel, smsReadReceipts, SMS_READ_EVENT, type SmsMessage, type SmsPreference, type SmsReadState } from '@/lib/smsTypes';
+import { australianMobile, hasReadSms, smsMessageTime, smsReadLabel, smsReadReceipts, SMS_READ_EVENT, type SmsMessage, type SmsPreference, type SmsReadState } from '@/lib/smsTypes';
 import type { StaffProfile } from '@/lib/staff';
 import type { Quote } from '@/lib/quote';
 import type { Invoice } from '@/lib/invoice';
@@ -145,10 +145,11 @@ export default function SmsPanel({ kind, recordId, needsApproval = false, onQuot
           className={(conversation ? 'min-h-0 flex-1 ' : 'max-h-72 ') + 'space-y-3 overflow-y-auto overscroll-contain rounded-lg bg-navy-900/50 p-2'}>
           {[...history.messages].reverse().map(message => {
             const inbound = message.direction === 'inbound';
+            const messageTime = smsMessageTime(message);
             return <li key={message.id} className={'flex flex-col ' + (inbound ? 'items-start' : 'items-end')}>
               <p className={'max-w-[90%] whitespace-pre-wrap break-words rounded-2xl px-3 py-2 text-sm text-white ' + (inbound ? 'rounded-bl-sm bg-navy-700' : 'rounded-br-sm bg-sky-800')}>{message.body}</p>
               <div className="mt-1 text-xs text-slate-300">
-                <time dateTime={message.createdAt}>{new Date(message.createdAt).toLocaleString('en-AU', { timeZone: 'Australia/Sydney', dateStyle: 'short', timeStyle: 'short' })}</time>
+                <time dateTime={messageTime}>{new Date(messageTime).toLocaleString('en-AU', { timeZone: 'Australia/Sydney', dateStyle: 'short', timeStyle: 'short' })}</time>
                 {!inbound && <span> · {message.status}</span>}
                 {inbound && smsReadReceipts(history.readState, history.chatgptReads[message.id], message).map(receipt =>
                   <span key={receipt.profile + receipt.source} className="block text-[11px] text-slate-400">{smsReadLabel(receipt)}</span>)}
