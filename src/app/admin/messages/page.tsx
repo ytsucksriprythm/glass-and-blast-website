@@ -21,8 +21,7 @@ function Messages() {
   const query = useSearchParams();
   const phone = smsPhone(query.get('phone') ?? '');
   const [inbox, setInbox] = useState<SmsConversation[] | null>(null);
-  const [tab, setTab] = useState<'inbox' | 'cold'>('inbox');
-  const [inactiveOpen, setInactiveOpen] = useState(false);
+  const [tab, setTab] = useState<SmsConversation['group']>('active');
   const [search, setSearch] = useState('');
   const [error, setError] = useState('');
 
@@ -70,8 +69,8 @@ function Messages() {
       item.latest?.body.toLowerCase().includes(term)
     : Boolean(item.latest));
   const coldCount = inbox?.filter(item => item.group === 'cold').length ?? 0;
-  const inactive = visible?.filter(item => item.group === 'inactive') ?? [];
-  const primary = visible?.filter(item => term || (tab === 'cold' ? item.group === 'cold' : item.group === 'active')) ?? [];
+  const inactiveCount = inbox?.filter(item => item.group === 'inactive').length ?? 0;
+  const primary = visible?.filter(item => term || item.group === tab) ?? [];
   const href = phone ? messagesPath + '?' + new URLSearchParams({ phone }) : messagesPath;
 
   return (
@@ -89,8 +88,10 @@ function Messages() {
                   value={search} onChange={event => setSearch(event.target.value)} />
               </div>
               {!term && <div className="mt-3 flex gap-2" aria-label="Conversation folders">
-                <button type="button" aria-pressed={tab === 'inbox'} onClick={() => setTab('inbox')}
+                <button type="button" aria-pressed={tab === 'active'} onClick={() => setTab('active')}
                   className="min-h-11 rounded-lg px-3 text-sm text-slate-300 aria-pressed:bg-sky-400/15 aria-pressed:text-sky-200">Inbox</button>
+                <button type="button" aria-pressed={tab === 'inactive'} onClick={() => setTab('inactive')}
+                  className="min-h-11 rounded-lg px-3 text-sm text-slate-300 aria-pressed:bg-sky-400/15 aria-pressed:text-sky-200">Inactive ({inactiveCount})</button>
                 <button type="button" aria-pressed={tab === 'cold'} onClick={() => setTab('cold')}
                   className="min-h-11 rounded-lg px-3 text-sm text-slate-300 aria-pressed:bg-sky-400/15 aria-pressed:text-sky-200">Cold ({coldCount})</button>
               </div>}
@@ -98,19 +99,14 @@ function Messages() {
             {error && <p role="alert" className="p-4 text-sm text-red-300">{error}</p>}
             {!inbox && !error && <p role="status" className="p-4 text-sm text-slate-300">Loading conversations…</p>}
             <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-              {inbox && !primary.length && (term || tab === 'cold' || !inactive.length) && (
-                <p className="p-4 text-sm text-slate-300">{term ? 'No conversations match your search.' :
-                  tab === 'cold' ? 'No cold conversations.' : 'No conversations in your inbox.'}</p>
-              )}
-              {!term && tab === 'inbox' && inactive.length > 0 && (
-                <button type="button" aria-expanded={inactiveOpen} onClick={() => setInactiveOpen(open => !open)}
-                  className="flex min-h-11 w-full items-center gap-2 border-b border-white/10 px-4 text-left text-sm text-sky-200">
-                  <ChevronRight aria-hidden="true" className={'size-4 ' + (inactiveOpen ? 'rotate-90' : '')} />
-                  Inactive conversations ({inactive.length})
-                </button>
+              {inbox && !primary.length && (
+                <p className="p-4 text-sm text-slate-300">
+                  {term ? 'No conversations match your search.' :
+                    tab === 'active' ? 'No conversations in your inbox.' : `No ${tab} conversations.`}
+                </p>
               )}
               <ul className="divide-y divide-white/5">
-              {(inactiveOpen && !term && tab === 'inbox' ? [...inactive, ...primary] : primary).map(item => (
+              {primary.map(item => (
                 <li key={item.phone}>
                   <Link href={messagesPath + '?' + new URLSearchParams({ phone: item.phone })} aria-current={phone === item.phone ? 'page' : undefined}
                     className={'flex min-h-16 items-center gap-3 px-4 py-2 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-sky-300 ' +
