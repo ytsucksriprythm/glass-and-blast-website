@@ -1,0 +1,30 @@
+name: SMS scheduler
+
+on:
+  schedule:
+    - cron: '2-59/5 * * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: sms-scheduler
+  cancel-in-progress: false
+
+jobs:
+  process-sms:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Run SMS scheduler
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          CRON_SECRET="$(printf '%s' "$CRON_SECRET" | tr -d '[:space:]')"
+          if [ -z "$CRON_SECRET" ]; then
+            echo "::error::CRON_SECRET repo secret is not set"
+            exit 1
+          fi
+          curl -sS --fail-with-body --max-time 75 \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            https://glassandblast.com.au/api/cron/sms

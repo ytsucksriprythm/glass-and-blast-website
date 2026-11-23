@@ -81,7 +81,67 @@ test('staff SMS tools read by number and validate manual sends without sending',
   }
 });
 
-const WRITE_TOOLS = ['create_booking', 'update_booking', 'schedule_booking', 'create_quote', 'update_quote', 'create_invoice', 'update_invoice_status', 'make_recurring_customer', 'create_recurring_job', 'book_next_recurring_visit'];
+const WRITE_TOOLS = ['create_booking', 'update_booking', 'schedule_booking', 'create_quote', 'update_quote', 'create_invoice', 'update_invoice', 'update_invoice_status', 'make_recurring_customer', 'create_recurring_job', 'book_next_recurring_visit'];
+
+test('invoice status tool can manage the customer cancellation notice and replacement', async () => {
+  async function create(amount: number) {
+    const result = await call('create_invoice', {
+      billToName: 'Cancellation test',
+      items: [{ description: 'Window cleaning', amount }],
+    });
+    assert.equal(result.isError, false, result.text);
+    return result.data.invoice;
+  }
+
+  const original = await create(200);
+  const replacement = await create(175);
+  const args = { idOrNumber: original.number, status: 'cancelled' };
+
+  const selfLink = await call('update_invoice_status', { ...args, replacementInvoiceIdOrNumber: original.number });
+  assert.equal(selfLink.isError, true);
+  const cancelled = await call('update_invoice_status', {
+    ...args,
+    cancellationMessage: 'Please use the corrected invoice.',
+    replacementInvoiceIdOrNumber: replacement.number,
+  });
+  assert.equal(cancelled.isError, false, cancelled.text);
+  assert.equal(cancelled.data.invoice.status, 'cancelled');
+  assert.equal(cancelled.data.invoice.replacementInvoiceId, replacement.id);
+  assert.equal(cancelled.data.invoice.cancellationMessage, 'Please use the corrected invoice.');
+
+  const edited = await call('update_invoice', {
+    idOrNumber: original.id,
+    cancellationMessage: 'Updated note',
+    notes: 'Updated regular invoice notes',
+    billToName: 'Updated customer',
+    client: { show: true, claimRef: 'TEST-123' },
+    items: [{ description: 'Corrected line', amount: 180 }, { description: 'Discount', amount: -15 }],
+    dueDate: '2026-12-01',
+    payAccountName: 'Demo account',
+    reminderHold: true,
+  });
+  assert.equal(edited.isError, false, edited.text);
+  assert.equal(edited.data.invoice.cancellationMessage, 'Updated note');
+  assert.equal(edited.data.invoice.replacementInvoiceId, replacement.id);
+  assert.equal(edited.data.invoice.status, 'cancelled');
+  assert.equal(edited.data.invoice.notes, 'Updated regular invoice notes');
+  assert.equal(edited.data.invoice.billToName, 'Updated customer');
+  assert.equal(edited.data.invoice.client.claimRef, 'TEST-123');
+  assert.equal(edited.data.invoice.client.trn, original.client.trn);
+  assert.equal(edited.data.invoice.total, 165);
+  assert.equal(edited.data.invoice.dueDate, '2026-12-01');
+  assert.equal(edited.data.invoice.payAccountName, 'Demo account');
+  assert.equal(edited.data.invoice.reminderHold, true);
+  assert.equal(edited.data.invoice.number, original.number);
+  assert.equal(edited.data.invoice.token, original.token);
+
+  const cleared = await call('update_invoice_status', {
+    ...args, cancellationMessage: '', replacementInvoiceIdOrNumber: null,
+  });
+  assert.equal(cleared.isError, false, cleared.text);
+  assert.equal(cleared.data.invoice.cancellationMessage, '');
+  assert.equal(cleared.data.invoice.replacementInvoiceId, null);
+});
 
 test('a legacy owner connector asks for profile selection before writing', async () => {
   const secret = process.env.MCP_TOKEN_SECRET!;

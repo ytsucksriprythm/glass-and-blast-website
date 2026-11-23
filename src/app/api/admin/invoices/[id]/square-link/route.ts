@@ -22,6 +22,9 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   if (ctx.role !== 'admin' && invoice.ownerGuestId !== ctx.guestId) {
     return NextResponse.json({ error: 'Access denied' }, { status: 403 });
   }
+  if (invoice.status === 'cancelled') {
+    return NextResponse.json({ error: 'This invoice is cancelled' }, { status: 409 });
+  }
   if (!squareConfigured()) {
     return NextResponse.json({ error: 'Square is not configured (missing SQUARE_ACCESS_TOKEN / SQUARE_LOCATION_ID)' }, { status: 400 });
   }

@@ -1,14 +1,15 @@
 ﻿import { createHash } from 'node:crypto';
 import {
   claimSmartAction, finishSmartAction, getBookingById, getBookings, getInvoiceById, getInvoices, getQuoteById, getQuotes, getRecurringJobs,
-  getSmartActionRecords, getSmsPreference, listLatestInvoiceReminderSms, listSms, listSmartActionSms, listSmsOptOuts, logActivity, rescheduleBookingIfAvailable, type Booking,
+  getSettings, getSmartActionRecords, getSmsPreference, listLatestInvoiceReminderSms, listSms, listSmartActionSms, listSmsOptOuts, logActivity, rescheduleBookingIfAvailable, type Booking,
 } from './db';
-import { formatCustomerSms, invoiceReminderSms, resolveSmsTarget, sendSms, smsEnabled, type SmsTarget } from './sms';
-import { buildConfirmationText, serviceText } from './bookingConfirmation';
+import { formatCustomerSms, invoiceReminderSms, resolveSmsTarget, sendSms, smsAutomation, smsEnabled, type SmsTarget } from './sms';
+import { buildConfirmationText } from './bookingConfirmation';
 import { australianMobile, smsMessageTime, type SmsMessage } from './smsTypes';
+import { isLarpPhone } from './larpPhones';
 import { invoiceDaysOverdue, money } from './invoice';
 import { DAY, hasMarketingConsent, interpretSms, invoiceMilestone, overlapsBooking, quoteEligible } from './smartActionRules';
-import { smartSmsIntent } from './smartActionAi';
+import { analyzeSmsThread, rankSmartActions, smartSmsIntent } from './smartActionAi';
 import { sydneyToday, sydneyLocalToIso, toSydney } from './mcp/time';
 import type { SmartAction, SmartActionRecord, SmartActionResult } from './smartActionTypes';
 
@@ -19,9 +20,10 @@ type Plan = {
   target: SmsTarget;
   text?: string;
   quoteId?: string;
-  move?: { id: string; before: string; endBefore: string | null | undefined; start: string; end: string };
+  move?: Parameters<typeof rescheduleBookingIfAvailable>[1] & { id: string };
+  threadVersion?: string;
 };
-type ActionPlan = { action: SmartAction; plans: Plan[] };
+type ActionPlan = { action: SmartAction; plans: Plan[]; priority: number; value: number };
 const confirmation = (job: Booking) => buildConfirmationText(job) + '\n\nReply STOP to opt out.';
 const first = (name: string) => name.trim().split(/\s+/)[0] || 'there';
 const hash = (...parts: unknown[]) => createHash('sha256').update(JSON.stringify(parts)).digest('hex');
@@ -35,6 +37,26 @@ const isControl = (body: string) => /^(STOP|STOPALL|START|UNSTOP|HELP|INFO|UNSUB
 const phoneFor = (job?: Booking) => australianMobile(job?.phone ?? '');
 const lastActivity = (sms: SmsMessage) => Math.max(Date.parse(sms.createdAt), Date.parse(smsMessageTime(sms)));
 const aiCache = new Map<string, ReturnType<typeof smartSmsIntent>>();
+const threadCache = new Map<string, ReturnType<typeof analyzeSmsThread>>();
+const rankCache = new Map<string, ReturnType<typeof rankSmartActions>>();
+const threadRows = (history: SmsMessage[]) => history.filter(row =>
+  activeSms.has(row.status) && !['welcome', 'staff-alert'].includes(row.kind) && !isControl(row.body) && row.body.trim()).slice(0, 12);
+const threadVersion = (rows: SmsMessage[]) => hash(rows.map(row => [row.id, row.body]));
+const documentAlreadySending = (history: SmsMessage[], target: SmsTarget, requestAt: number) => history.some(row =>
+  row.direction === 'outbound' && row.kind === target.kind && row.recordId === target.recordId &&
+  (inFlightSms.has(row.status) || (activeSms.has(row.status) && lastActivity(row) >= requestAt)));
+
+function cacheResult<T>(cache: Map<string, Promise<T | null>>, key: string, run: () => Promise<T | null>) {
+  const cached = cache.get(key);
+  if (cached) return cached;
+  if (cache.size >= 200) cache.clear();
+  const result = run();
+  cache.set(key, result);
+  void result.then(value => {
+    if (value === null) setTimeout(() => { if (cache.get(key) === result) cache.delete(key); }, 30_000).unref();
+  });
+  return result;
+}
 
 function intentFor(message: SmsMessage) {
   const cached = aiCache.get(message.id);
@@ -58,43 +80,127 @@ function manual(kind: SmartAction['kind'], identity: unknown[], title: string, d
 }
 
 function fingerprint(action: SmartAction) {
-  return hash(action.recipients);
+  return hash(action.id, action.description, action.recipients);
 }
 
-async function generate(): Promise<ActionPlan[]> {
+async function generate(phoneFilter?: string, refresh = false): Promise<ActionPlan[]> {
   const now = Date.now();
   const today = sydneyToday();
   const cooldown = invoiceCooldown();
-  const [jobs, invoices, quotes, recurring, messages, optedOut, reminders] = await Promise.all([
+  const [jobs, invoices, quotes, recurring, messages, optedOut, reminders, settings] = await Promise.all([
     getBookings(), getInvoices(), getQuotes(), getRecurringJobs(),
-    listSmartActionSms(new Date(now - 40 * DAY).toISOString()), listSmsOptOuts(), listLatestInvoiceReminderSms(),
+    phoneFilter ? listSms(phoneFilter, false, 0, 100) : listSmartActionSms(new Date(now - 40 * DAY).toISOString()), listSmsOptOuts(), listLatestInvoiceReminderSms(), getSettings(),
   ]);
   const byInvoice = new Map(reminders.map(message => [message.recordId, message]));
-  const byId = new Map(jobs.map(job => [job.id, job]));
+  const liveJobs = jobs.filter(job => !job.id.startsWith('LARP-'));
+  const byId = new Map(liveJobs.map(job => [job.id, job]));
   const byPhone = new Map<string, Booking[]>();
   const histories = new Map<string, SmsMessage[]>();
-  for (const job of jobs) {
+  for (const job of liveJobs) {
     const phone = phoneFor(job);
     if (phone) byPhone.set(phone, [...(byPhone.get(phone) ?? []), job]);
   }
   for (const message of messages.sort((a, b) => lastActivity(b) - lastActivity(a) || b.id.localeCompare(a.id))) {
+    if (message.id.startsWith('LARP-') || isLarpPhone(message.phone)) continue;
     const history = histories.get(message.phone) ?? [];
     history.push(message);
     histories.set(message.phone, history);
   }
   const plans: Plan[] = [];
+  const threadCandidates = [...histories].flatMap(([phone, history]) => {
+    const rows = threadRows(history);
+    return australianMobile(phone) && !optedOut.has(phone) && rows.some(row => row.direction === 'inbound' &&
+      Date.parse(row.createdAt) > now - 7 * DAY) ? [{ phone, rows }] : [];
+  }).slice(0, 6);
+  const handledThreads = new Set<string>();
+  if (settings.smartActionsAiEnabled) await Promise.all(threadCandidates.map(async ({ phone, rows }) => {
+    const linked = byPhone.get(phone) ?? [];
+    const related = rows.find(row => row.recordId && linked.some(job => job.id === row.recordId))?.recordId;
+    const latest = rows[0];
+    const version = threadVersion(rows);
+    const upcoming = linked.filter(job => ['confirmed', 'quote-booked'].includes(job.status) && Date.parse(job.scheduledAt ?? '') > now);
+    const unscheduled = linked.filter(job => !job.scheduledAt && ['uncontacted', 'contacted', 'quoted', 'confirmed', 'quote-booked'].includes(job.status));
+    const choose = (jobs: Booking[]) => jobs.find(job => job.id === related) ?? (jobs.length === 1 ? jobs[0] : undefined);
+    const current = choose(upcoming);
+    const cacheKey = hash(version, current?.id, current?.scheduledAt, !!choose(unscheduled));
+    if (refresh) threadCache.delete(cacheKey);
+    const decision = await cacheResult(threadCache, cacheKey, () => analyzeSmsThread({
+      timezone: 'Australia/Sydney', existingAppointment: toSydney(current?.scheduledAt)?.label ?? null,
+      today,
+      hasUnscheduledBooking: !!choose(unscheduled),
+      turns: [...rows].reverse().map(row => ({
+        speaker: row.direction === 'inbound' ? 'customer' : 'staff',
+        time: toSydney(smsMessageTime(row))?.label,
+        text: row.body.slice(0, 700).replace(/https?:\/\/\S+|[\w.+-]+@[\w.-]+\.\w+|(?:\+61|0)4(?:[ -]?\d){8}/g, '[removed]'),
+      })),
+    }));
+    if (!decision) return;
+    handledThreads.add(phone);
+    if (decision.action === 'none') return;
+    const add = (item: Plan) => {
+      plans.push({ ...item, threadVersion: version, action: { ...item.action, messageId: latest.id,
+        customerSms: rows.find(row => row.direction === 'inbound')?.body } });
+    };
+    const identity = [phone, version];
+    const customer = current?.name ?? choose(unscheduled)?.name ?? linked[0]?.name ?? phone;
+    if (['move', 'book_job', 'book_quote'].includes(decision.action)) {
+      const moving = decision.action === 'move';
+      const job = moving ? current : choose(unscheduled);
+      const start = sydneyLocalToIso(decision.localStart);
+      if (!job || !start || Date.parse(start) <= now || start === job.scheduledAt) return;
+      const status = moving ? undefined : decision.action === 'book_quote' ? 'quote-booked' : 'confirmed';
+      const oldDuration = Date.parse(job.scheduledEnd ?? '') - Date.parse(job.scheduledAt ?? '');
+      const end = new Date(Date.parse(start) + (oldDuration > 0 ? oldDuration : (status === 'quote-booked' ? 60 : 120) * 60_000)).toISOString();
+      if (overlapsBooking(jobs, job.id, start, end)) return;
+      const label = toSydney(start)?.label;
+      const item = plan(moving ? 'reschedule' : 'schedule', [...identity, job.id, job.updatedAt, start, end, status],
+        moving ? 'Update calendar' : 'Add to calendar', `${job.name} · ${label} · ${status === 'quote-booked' || job.status === 'quote-booked' && moving ? 'quote visit' : 'job'}`,
+        job.name, phone, '', { kind: 'booking', recordId: job.id }, 1, 0, undefined,
+        { id: job.id, before: job.scheduledAt ?? null, endBefore: job.scheduledEnd, updatedAt: job.updatedAt, start, end, status });
+      add({ ...item, action: { ...item.action, calendarOnly: true } });
+      return;
+    }
+    if (decision.action === 'send_invoice' || decision.action === 'send_quote') {
+      const incoming = rows.find(row => row.direction === 'inbound');
+      if (!incoming) return;
+      const invoice = decision.action === 'send_invoice';
+      const ids = new Set(linked.map(job => job.id));
+      const docs = invoice
+        ? invoices.filter(doc => !doc.ownerGuestId && ['sent', 'paid'].includes(doc.status) && [doc.bookingId, ...(doc.bookingIds ?? [])].some(id => id && ids.has(id)))
+        : quotes.filter(doc => doc.status === 'sent' && ids.has(doc.bookingId));
+      const number = decision.documentNumber.trim().toUpperCase().replace(/[ -]/g, '');
+      const doc = number ? docs.find(item => item.number.toUpperCase().replace(/[ -]/g, '') === number) : docs.length === 1 ? docs[0] : undefined;
+      if (doc) {
+        const target: SmsTarget = { kind: invoice ? 'invoice' : 'quote', recordId: doc.id };
+        if (documentAlreadySending(histories.get(phone) ?? [], target, Date.parse(incoming.createdAt))) return;
+        const recipient = await resolveSmsTarget(target, true).catch(() => null);
+        if (recipient?.phone === phone) {
+          add(plan(invoice ? 'send-invoice' : 'send-quote', [...identity, doc.id], invoice ? 'Text invoice' : 'Text quote',
+            `${customer} · Send ${doc.number} by SMS.`, customer, phone, recipient.body, target, 1));
+          return;
+        }
+      }
+      const text = `Hi, could you confirm the ${invoice ? 'invoice' : 'quote'} number or the service address so we can find the right document?`;
+      add(manual('clarify', [...identity, decision.action], 'Ask which document to send', `${customer} · Confirm the requested document.`, customer, phone, text, 2));
+      return;
+    }
+    const reply = decision.reply.trim();
+    if (latest.direction === 'inbound' && reply && reply.length <= 450 && !/https?:\/\//i.test(reply)) {
+      add(manual('reply', [...identity, reply], `Reply to ${customer}`, 'Send the suggested reply shown below.', customer, phone, reply, 2));
+    }
+  }));
   const quotePlans: Plan[] = [];
   const recentOutbound = (phone: string, days: number, quoteId?: string) => (histories.get(phone) ?? []).some(row =>
     row.direction === 'outbound' && row.kind !== 'welcome' && !(row.kind === 'quote' && row.recordId === quoteId) &&
     activeSms.has(row.status) && lastActivity(row) >= now - days * DAY);
 
-  for (const invoice of invoices) {
+  for (const invoice of phoneFilter || smsAutomation() ? [] : invoices) {
     const linked = [...new Set([...(invoice.bookingIds ?? []), invoice.bookingId])].flatMap(id => id && byId.has(id) ? [byId.get(id)!] : []);
     const days = invoiceDaysOverdue(invoice);
     const milestone = invoiceMilestone(invoice, linked, days);
     const phones = [...new Set(linked.map(phoneFor).filter((value): value is string => Boolean(value)))];
     const phone = phones[0];
-    if (!milestone || invoice.ownerGuestId || phones.length !== 1 || optedOut.has(phone)) continue;
+    if (!milestone || invoice.id.startsWith('LARP-') || invoice.ownerGuestId || phones.length !== 1 || optedOut.has(phone)) continue;
     const previous = byInvoice.get(invoice.id);
     if (previous && (inFlightSms.has(previous.status) || lastActivity(previous) >= now - cooldown * DAY)) continue;
     const message = invoiceReminderSms(invoice.billToName, invoice.number, invoice.token);
@@ -105,7 +211,7 @@ async function generate(): Promise<ActionPlan[]> {
   }
 
   const quotePhones = new Set<string>();
-  for (const quote of [...quotes].sort((a, b) => b.amount - a.amount)) {
+  for (const quote of phoneFilter ? [] : [...quotes].sort((a, b) => b.amount - a.amount)) {
     const job = byId.get(quote.bookingId);
     const phone = phoneFor(job);
     if (!job || !phone || optedOut.has(phone) || quotePhones.has(phone) || !quoteEligible(quote, job, today) ||
@@ -120,18 +226,20 @@ async function generate(): Promise<ActionPlan[]> {
   }
 
   const inbound = [...histories.entries()].flatMap(([phone, history]) => {
-    if (!australianMobile(phone) || optedOut.has(phone)) return [];
+    if (!australianMobile(phone) || optedOut.has(phone) || handledThreads.has(phone)) return [];
     const received = history.find(row => row.direction === 'inbound' && !isControl(row.body) && row.body.trim());
     if (!received || history.some(row => row.direction === 'outbound' && row.kind !== 'welcome' &&
       activeSms.has(row.status) && lastActivity(row) >= Date.parse(received.createdAt))) return [];
     return [{ phone, received }];
   });
-  const intents = await Promise.all(inbound.map(({ received }, index) => index < 6
+  if (!settings.smartActionsAiEnabled) aiCache.clear();
+  const intents = await Promise.all(inbound.map(({ received }, index) => settings.smartActionsAiEnabled && index < 6
     ? intentFor(received) : Promise.resolve(interpretSms(received.body, received.createdAt))));
 
   for (const [index, { phone, received }] of inbound.entries()) {
     const addReply = (item: Plan) => plans.push({
-      ...item, action: { ...item.action, customerSms: received.body },
+      ...item, threadVersion: threadVersion(threadRows(histories.get(phone) ?? [])),
+      action: { ...item.action, customerSms: received.body, messageId: received.id },
     });
     const intent = intents[index];
     const linked = byPhone.get(phone) ?? [];
@@ -145,10 +253,12 @@ async function generate(): Promise<ActionPlan[]> {
         const duration = Date.parse(job.scheduledEnd ?? '') - Date.parse(before);
         const end = new Date(Date.parse(start) + (duration > 0 ? duration : 120 * 60_000)).toISOString();
         if (!overlapsBooking(jobs, job.id, start, end)) {
-          addReply(plan('reschedule', [received.id, job.id, before, start], `Move ${customer}’s booking`,
-            `Reschedule to ${toSydney(start)?.label} and text the updated confirmation.`,
-            customer, phone, confirmation({ ...job, scheduledAt: start, scheduledEnd: end }),
-            { kind: 'booking', recordId: job.id }, 1, 0, undefined, { id: job.id, before, endBefore: job.scheduledEnd, start, end }));
+          const automated = smsAutomation();
+          const item = plan('reschedule', [received.id, job.id, before, start], automated ? 'Update calendar' : `Move ${customer}’s booking`,
+            automated ? `Reschedule ${customer} to ${toSydney(start)?.label}.` : `Reschedule to ${toSydney(start)?.label} and text the updated confirmation.`,
+            customer, phone, automated ? '' : confirmation({ ...job, scheduledAt: start, scheduledEnd: end }),
+            { kind: 'booking', recordId: job.id }, 1, 0, undefined, { id: job.id, before, endBefore: job.scheduledEnd, start, end });
+          addReply(automated ? { ...item, action: { ...item.action, calendarOnly: true } } : item);
           continue;
         }
       }
@@ -164,21 +274,17 @@ async function generate(): Promise<ActionPlan[]> {
     addReply(manual('reply', [received.id], `Reply to ${customer}`, 'Acknowledge the unanswered customer message.', customer, phone, text, 3));
   }
 
+  if (phoneFilter) {
+    const records = await getSmartActionRecords(plans.map(item => item.action.id));
+    return plans.filter(item => !records.has(item.action.id)).map(item => ({
+      action: item.action, plans: [item], priority: item.priority, value: item.value,
+    })).sort((a, b) => a.priority - b.priority);
+  }
+
   const recurringPhones = new Set(recurring.filter(job => job.active).map(job => australianMobile(job.phone)));
   for (const [phone, linked] of byPhone) {
     if (optedOut.has(phone)) continue;
     const upcoming = linked.filter(job => job.status === 'confirmed' && Date.parse(job.scheduledAt ?? '') > now);
-    for (const job of upcoming) {
-      const start = Date.parse(job.scheduledAt!);
-      if (start - now > DAY || !job.address.trim()) continue;
-      const time = toSydney(job.scheduledAt)?.label;
-      const text = `Hi ${first(job.name)}, a reminder that Glass & Blast is booked for ${serviceText(job.service)} on ${time} at ${[job.address, job.suburb].filter(Boolean).join(', ')}. Please reply if you need to make a change.`;
-      if (histories.get(phone)?.some(row => row.recordId === job.id && activeSms.has(row.status) &&
-        ((row as { kind: string }).kind === 'booking-reminder' || row.body === formatCustomerSms(text)) &&
-        lastActivity(row) >= Date.parse(job.updatedAt))) continue;
-      plans.push(manual('booking', [job.id, job.scheduledAt], `Remind ${job.name} about their booking`,
-        `Confirmed job within 24 hours at ${job.address}.`, job.name, phone, text, 5, 0, job.id));
-    }
     if (upcoming.length || recurringPhones.has(phone) || recentOutbound(phone, 14) ||
         linked.some(job => /\b(marketing consent withdrawn|do not contact|do not text)\b/i.test(job.adminNotes ?? ''))) continue;
     const completed = linked.filter(job => job.status === 'completed' && job.completedAt)
@@ -213,8 +319,23 @@ async function generate(): Promise<ActionPlan[]> {
   return ordered.sort((a, b) => a.priority - b.priority || b.value - a.value || a.action.id.localeCompare(b.action.id));
 }
 
-export async function listSmartActions() {
-  return { actions: (await generate()).map(({ action }) => ({ ...action, preview: fingerprint(action) })), smsEnabled: smsEnabled() };
+export async function listSmartActions(phone?: string, refresh = false) {
+  let actions = await generate(phone, refresh);
+  if (!phone && actions.length > 1 && (await getSettings()).smartActionsAiEnabled) {
+    const shortlist = actions.slice(0, 30);
+    const signals = shortlist.map(({ action, value, priority }, index) => ({
+      index, kind: action.kind, value, urgency: priority, customerRequest: Boolean(action.messageId), recipients: action.recipients.length,
+    }));
+    const ranking = await cacheResult(rankCache, hash(signals), () => rankSmartActions(signals));
+    if (ranking) {
+      const selected = new Set(ranking.order.filter(index => index >= 0 && index < shortlist.length));
+      const essential = shortlist.flatMap(({ action }, index) => action.messageId && !selected.has(index) ? [index] : []);
+      const order = [...essential, ...selected];
+      // Requests always stay visible even if Gemini omits them.
+      actions = [...order.map(index => shortlist[index]), ...actions.slice(30)];
+    }
+  }
+  return { actions: actions.map(({ action }) => ({ ...action, preview: fingerprint(action) })), smsEnabled: smsEnabled() };
 }
 
 
@@ -236,17 +357,27 @@ async function execute(plan: Plan, actor: string): Promise<SmartActionResult> {
   const { action, move, target } = plan;
   const recipient = action.recipients[0];
   if (await getSmsPreference(recipient.phone) === 'opted-out') throw new Error('This recipient has opted out.');
+  if (plan.threadVersion) {
+    const latest = (await listSms(recipient.phone, false, 0, 100))
+      .sort((a, b) => lastActivity(b) - lastActivity(a) || b.id.localeCompare(a.id));
+    if (threadVersion(threadRows(latest)) !== plan.threadVersion) throw new Error('The conversation changed. Review the latest suggestion.');
+    if ((action.kind === 'send-invoice' || action.kind === 'send-quote') &&
+      documentAlreadySending(latest, target, Date.parse(threadRows(latest).find(row => row.direction === 'inbound')?.createdAt ?? ''))) {
+      throw new Error('This document was already sent or is being sent.');
+    }
+  }
   if (move) {
     const job = await getBookingById(move.id);
-    if (!job || job.deletedAt || !['confirmed', 'quote-booked'].includes(job.status) || phoneFor(job) !== recipient.phone ||
-        job.scheduledAt !== move.before || Date.parse(move.start) <= Date.now() ||
-        confirmation({ ...job, scheduledAt: move.start, scheduledEnd: move.end }) !== recipient.message) {
+    if (!job || job.deletedAt || phoneFor(job) !== recipient.phone ||
+        (job.scheduledAt ?? null) !== move.before || Date.parse(move.start) <= Date.now() ||
+        (!action.calendarOnly && confirmation({ ...job, scheduledAt: move.start, scheduledEnd: move.end }) !== recipient.message)) {
       throw new Error('This booking changed. Review the latest suggestion.');
     }
     const saved = await rescheduleBookingIfAvailable(job.id, move);
     if (!saved) throw new Error('The booking or calendar changed. No appointment was moved.');
-    await logActivity('booking.scheduled', 'Rescheduled after customer SMS via Smart Actions',
+    await logActivity('booking.scheduled', (move.before ? 'Rescheduled' : 'Scheduled') + ' after customer SMS via Smart Actions',
       { bookingId: saved.id, scheduledAt: saved.scheduledAt, smartActionId: action.id }, actor).catch(() => {});
+    if (action.calendarOnly) return { id: action.id, status: 'submitted', detail: 'Calendar updated.' };
     try {
       const result = sendResult(action.id, await sendSms(target, actor));
       return { ...result, detail: 'Booking moved. ' + result.detail };
@@ -256,6 +387,7 @@ async function execute(plan: Plan, actor: string): Promise<SmartActionResult> {
     }
   }
   if (action.kind === 'invoice') {
+    if (smsAutomation()) throw new Error('Invoice reminders are handled automatically.');
     const invoice = await getInvoiceById(target.recordId);
     const linkedIds = [...new Set([...(invoice?.bookingIds ?? []), invoice?.bookingId])].filter((id): id is string => Boolean(id));
     const [linked, reminders] = await Promise.all([
@@ -288,16 +420,16 @@ async function execute(plan: Plan, actor: string): Promise<SmartActionResult> {
 }
 
 export async function respondToSmartAction(
-  id: string, operation: 'approve' | 'dismiss', preview: string | undefined, actor: string,
+  id: string, operation: 'approve' | 'dismiss', preview: string | undefined, actor: string, phone?: string,
 ) {
   const existing = (await getSmartActionRecords([id])).get(id);
   if (existing) return existing;
-  const candidate = (await generate()).find(item => item.action.id === id);
+  const candidate = (await generate(phone)).find(item => item.action.id === id);
   if (!candidate) {
     if (operation === 'dismiss') return null;
     return state(id, actor, 'expired');
   }
-  if (operation === 'approve' && (!smsEnabled() || fingerprint(candidate.action) !== preview)) return state(id, actor, 'expired');
+  if (operation === 'approve' && ((!candidate.action.calendarOnly && !smsEnabled()) || fingerprint(candidate.action) !== preview)) return state(id, actor, 'expired');
 
   const initial = state(id, actor, operation === 'dismiss' ? 'dismissed' : 'executing');
   if (!await claimSmartAction(initial)) return (await getSmartActionRecords([id])).get(id) ?? initial;

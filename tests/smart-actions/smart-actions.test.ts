@@ -117,6 +117,10 @@ test('Smart Action approval, dismissal and partial bulk failure use the existing
     const initial = (await service.listSmartActions()).actions;
     const reminder = initial.find(action => action.kind === 'invoice')!;
     assert.ok(reminder);
+    process.env.TWILIO_SMS_AUTOMATION = 'true';
+    assert.equal((await service.listSmartActions()).actions.some(action => action.kind === 'invoice'), false);
+    assert.equal((await service.respondToSmartAction(reminder.id, 'approve', reminder.preview, 'Liam'))?.status, 'expired');
+    process.env.TWILIO_SMS_AUTOMATION = 'false';
     await db.updateInvoice(invoice.id, { status: 'paid', paymentMethod: 'cash' });
     assert.equal((await service.respondToSmartAction(reminder.id, 'approve', reminder.preview, 'Liam'))?.status, 'expired');
     assert.equal(submitted.length, 0);
@@ -172,6 +176,41 @@ test('Smart Action approval, dismissal and partial bulk failure use the existing
     assert.equal((await service.respondToSmartAction(nextMilestone.id, 'approve', nextMilestone.preview, 'Liam'))?.status, 'completed');
     assert.equal(submitted.at(-1)?.Body, nextMilestone.recipients[0].message);
     assert.equal((await service.listSmartActions()).actions.some(action => action.kind === 'invoice'), false);
+
+    const soon = new Date(Date.now() + 8 * 3600_000).toISOString();
+    await db.updateBooking(b.id, { scheduledAt: soon, scheduledEnd: null });
+    assert.equal((await service.listSmartActions()).actions.some(action => action.kind === 'booking'), false);
+    await db.updateSettings({ smsBookingReminderDay: true });
+    assert.equal((await service.listSmartActions()).actions.some(action => action.kind === 'booking'), false);
+
+    process.env.GEMINI_API_KEY = 'fixture';
+    process.env.SMART_ACTIONS_GEMINI_ENABLED = 'true';
+    process.env.TWILIO_SMS_ENABLED = 'false';
+    const nextDate = addDays(today, 4);
+    const decision = context.mock.method(globalThis, 'fetch', async (_url: string, options: RequestInit) => {
+      const request = JSON.parse(String(options.body));
+      assert.match(request.contents[0].parts[0].text, /"speaker":"staff"/);
+      assert.match(request.contents[0].parts[0].text, /"speaker":"customer"/);
+      return Response.json({ candidates: [{ content: { parts: [{ text: JSON.stringify({
+        action: 'book_job', localStart: nextDate + 'T15:00', documentNumber: '', reply: '',
+      }) }] } }] });
+    });
+    for (const [direction, body, offset] of [
+      ['outbound', 'I can do the window clean at 3pm on ' + nextDate, -2000],
+      ['inbound', 'Yes, that works for me.', -1000],
+    ] as const) {
+      const at = new Date(Date.now() + offset).toISOString();
+      await db.insertSms({ id: 'gemini-' + direction, kind: direction === 'inbound' ? 'reply' : 'manual',
+        recordId: c.id, direction, phone: c.phone, body, status: direction === 'inbound' ? 'received' : 'delivered',
+        actor: direction === 'inbound' ? 'customer' : 'Liam', createdAt: at, updatedAt: at });
+    }
+    const schedule = (await service.listSmartActions(c.phone)).actions.find(action => action.kind === 'schedule')!;
+    assert.equal(schedule.title, 'Add to calendar');
+    assert.equal((await db.getBookingById(c.id))?.scheduledAt ?? null, null);
+    assert.equal((await service.respondToSmartAction(schedule.id, 'approve', schedule.preview, 'Liam', c.phone))?.status, 'completed');
+    assert.equal((await db.getBookingById(c.id))?.scheduledAt, sydneyLocalToIso(nextDate + 'T15:00'));
+    assert.equal((await db.getBookingById(c.id))?.status, 'confirmed');
+    assert.equal(decision.mock.callCount(), 1);
   } finally {
     process.chdir(cwd);
     await rm(scratch, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }).catch(() => {});

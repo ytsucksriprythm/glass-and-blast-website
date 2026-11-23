@@ -44,6 +44,7 @@ export const ACTIVITY_TYPE_LABEL: Record<string, string> = {
   'invoice.created': 'Invoice created',
   'invoice.deleted': 'Invoice deleted',
   'invoice.status_changed': 'Invoice status changed',
+  'invoice.updated': 'Invoice edited',
   'invoice.customer_marked_paid': 'Customer tapped "I\'ve paid"',
   'invoice.pay_by_card_clicked': 'Pay-by-card button clicked',
   'square.paid': 'Square payment confirmed',

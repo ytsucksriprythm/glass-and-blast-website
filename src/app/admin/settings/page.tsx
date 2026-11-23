@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import toast from 'react-hot-toast';
 import { upload } from '@vercel/blob/client';
+import SmsRoutingSettings from '@/components/admin/SmsRoutingSettings';
 import {
   ArrowLeft, Settings as SettingsIcon, Save, ShieldAlert, CreditCard, Bell, Star,
   CalendarClock, Globe, ScrollText, RefreshCw, FileEdit, Trash2, Plus, Pencil, X, Check, MapPin, Sparkles,
@@ -20,6 +21,7 @@ import { APP_VERSION } from '@/lib/version';
 import { AdminSidebar, AdminMobileNav, AdminMoreSheet, useMoreSheet, adminNavItems } from '@/components/admin/AdminNav';
 import type { MediaItem } from '@/lib/media';
 import { STAFF_PROFILES, isStaffProfile } from '@/lib/staff';
+import { BOOKING_SMS_REMINDERS } from '@/lib/smsTypes';
 
 const connectorTime = new Intl.DateTimeFormat('en-AU', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Australia/Sydney' });
 
@@ -197,7 +199,7 @@ function Toggle({ label, sub, checked, onChange, disabled }: {
       </div>
       <input
         type="checkbox"
-        checked={checked}
+        checked={checked ?? false}
         disabled={disabled}
         onChange={e => onChange(e.target.checked)}
         className="mt-0.5 flex-shrink-0 appearance-none w-9 h-5 rounded-full border border-white/20 bg-white/10 checked:bg-sky-500 checked:border-sky-500 cursor-pointer disabled:cursor-not-allowed relative transition-colors before:content-[''] before:absolute before:top-[1px] before:left-[1px] before:w-[16px] before:h-[16px] before:rounded-full before:bg-slate-300 checked:before:bg-white before:transition-transform checked:before:translate-x-4"
@@ -1136,6 +1138,12 @@ export default function SettingsPage() {
             </div>
           ) : s && (
             <div className="space-y-4">
+              <nav aria-label="Settings shortcuts" className="flex flex-wrap gap-2">
+                {[["Scheduling", "scheduling"], ["SMS reminders", "booking-sms-reminders"], ["Payments", "card-payments-square"], ["Facebook leads", "facebook-lead-sync"], ["MCP access", "mcp-access"], ["Guest logins", "guest-logins"], ["Deleted bookings", "deleted-bookings"]].map(([label, id]) => (
+                  <a key={id} href={"#" + id} className="inline-flex min-h-11 items-center rounded-lg border border-white/10 px-3 text-sm font-medium text-sky-300">{label}</a>
+                ))}
+              </nav>
+
               <ProfileManager<BusinessProfile>
                 title="Invoice & quote autofill: business info"
                 icon={FileEdit}
@@ -1154,11 +1162,6 @@ export default function SettingsPage() {
                 onDelete={deleteBusinessProfile}
               />
 
-              <nav aria-label="Settings shortcuts" className="flex flex-wrap gap-2">
-                {[["Scheduling", "scheduling"], ["Payments", "card-payments-square"], ["Facebook leads", "facebook-lead-sync"], ["MCP access", "mcp-access"], ["Guest logins", "guest-logins"], ["Deleted bookings", "deleted-bookings"]].map(([label, id]) => (
-                  <a key={id} href={"#" + id} className="inline-flex min-h-11 items-center rounded-lg border border-white/10 px-3 text-sm font-medium text-sky-300">{label}</a>
-                ))}
-              </nav>
               <ConnectorAccess />
               <Section title="Invoice & quote address display" icon={MapPin}>
                 <Toggle
@@ -1236,6 +1239,25 @@ export default function SettingsPage() {
               <Section title="Scheduling" icon={CalendarClock}>
                 <Field label="Default job start time" type="time" value={s.defaultJobStartTime} onChange={v => set('defaultJobStartTime', v)} />
                 <Toggle label="Recurring auto-book enabled" checked={s.recurringAutoBookEnabled} onChange={v => set('recurringAutoBookEnabled', v)} />
+              </Section>
+
+              <Section title="Smart Actions" icon={Sparkles}>
+                <Toggle label="Gemini Smart Actions"
+                  sub="Uses recent incoming and outgoing texts to suggest actions and prioritise the dashboard. Rule-based suggestions stay active when this is off."
+                  checked={s.smartActionsAiEnabled ?? true} onChange={value => set('smartActionsAiEnabled', value)} />
+              </Section>
+
+              <Section title="SMS provider routing" icon={Bell}>
+                <Toggle label="Use DataFlows for new conversations"
+                  sub="Existing conversations keep their assigned sender when you change this setting."
+                  checked={s.smsDataFlowsNewConversations ?? false} onChange={value => set('smsDataFlowsNewConversations', value)} />
+                <SmsRoutingSettings />
+              </Section>
+
+              <Section title="Booking SMS reminders" icon={Bell}>
+                <p className="text-xs text-slate-400">Automatically text opted-in customers before confirmed bookings. Reminders start from the time you save each toggle.</p>
+                {BOOKING_SMS_REMINDERS.map(({ key, label }) =>
+                  <Toggle key={key} label={label} checked={s[key]} onChange={value => set(key, value)} />)}
               </Section>
 
               <Section title="Recurring customer contract" icon={FileSignature}>

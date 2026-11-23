@@ -1,26 +1,41 @@
-import { buildConfirmationText } from './bookingConfirmation';
+import { buildConfirmationText, serviceText } from './bookingConfirmation';
 import { invoiceReminderOnHold } from './smartActionRules';
+import { isLarpPhone } from './larpPhones';
 import { syncBookingStatusToSheet } from './metaLeads';
 ﻿import { createHash } from 'node:crypto';
 import twilio from 'twilio';
 import {
-  bookingStatusActivity, changeSms, contactUncontactedBooking, getBookingById, getBookings, getInvoiceById, getInvoicesForBooking, getQuoteById, getSms, getSmsPreference, hasSubmittedCustomerSms,
+  bookingStatusActivity, changeSms, contactUncontactedBooking, getBookingById, getBookings, getBookingsInRange, getInvoiceById, getInvoicesForBooking, getQuoteById, getSettings, getSms, getSmsPreference, hasSubmittedCustomerSms,
   insertSms, listChatgptSmsReads, listLatestCustomerSms, listPendingCustomerSms, listSms, listSmsReadStates, listSmsWork, logActivity, setSmsPreference,
 } from './db';
-import { COLD_ACTIVITY_MS, smsMessageTime, australianMobile, smsPhone, smsReadReceipts, type SmsConversation, type SmsKind, type SmsMessage } from './smsTypes';
+import { COLD_ACTIVITY_MS, smsMessageTime, australianMobile, BOOKING_SMS_REMINDERS, smsPhone, smsReadReceipts, type BookingSmsReminderHours, type SmsConversation, type SmsKind, type SmsMessage } from './smsTypes';
 import type { StaffProfile } from './staff';
 import { sydneyDay } from './callingTypes';
+import { dataFlowsCutoverReady, dataFlowsSender, sendDataFlowsSms, smsEstimate } from './dataFlowsSms';
+import { claimSmsRoute, getSmsBySid } from './db';
+import type { SmsProvider } from './smsTypes';
 
-export type SmsTarget = { kind: Exclude<SmsKind, 'reply' | 'staff-alert' | 'welcome'>; recordId: string };
+export type SmsTarget = {
+  kind: Exclude<SmsKind, 'reply' | 'staff-alert' | 'welcome'>; recordId: string;
+  bookingReminderHours?: BookingSmsReminderHours;
+};
 type SendInput = SmsTarget & { requestId?: string; text?: string; automatic?: boolean; reminderNumber?: number; expected?: { phone: string; body: string } };
 export class SmsError extends Error {
   constructor(message: string, public status = 409) { super(message); }
 }
 const base = () => (process.env.TWILIO_SMS_PUBLIC_URL || process.env.NEXT_PUBLIC_URL || 'https://glassandblast.com.au').replace(/\/$/, '');
 const dayMs = 86400000;
+const hourMs = 3600000;
+const reminderGraceMs = 30 * 60000;
+const appointmentTime = new Intl.DateTimeFormat('en-AU', {
+  timeZone: 'Australia/Sydney', weekday: 'long', day: 'numeric', month: 'long', hour: 'numeric', minute: '2-digit',
+});
 const name = (value: string) => value.trim().split(/\s+/)[0] || 'there';
-export const formatCustomerSms = (text: string) => ['Glass & Blast', text, 'Reply STOP to opt out.'].join('\n\n');
-export const SMS_WELCOME_BODY = formatCustomerSms('We use this number to text you about your quotes, bookings and invoices. You can reply here to reach our team. This line does not accept calls. If you’d prefer to speak with us, please call Lincoln on 0466 050 834.');
+export const formatCustomerSms = (text: string) => [
+  /^Glass & Blast(?:\s|$)/i.test(text) ? '' : 'Glass & Blast', text,
+  /\breply\s+STOP\b/i.test(text) ? '' : 'Reply STOP to opt out.',
+].filter(Boolean).join('\n\n');
+export const SMS_WELCOME_BODY = formatCustomerSms('Texts for quotes, bookings and invoices. Reply here or call Lincoln on 0466 050 834.');
 export const invoiceReminderSms = (customer: string, number: string, token: string) => formatCustomerSms(
   'Hi ' + name(customer) + ', a friendly reminder that Glass & Blast invoice ' + number +
   ' is overdue. You can view or pay it here: ' + base() + '/invoice/' + encodeURIComponent(token),
@@ -38,6 +53,29 @@ export function smsConfigured() {
 }
 export function smsEnabled() { return smsConfigured() && process.env.TWILIO_SMS_ENABLED === 'true'; }
 export function smsAutomation() { return smsEnabled() && process.env.TWILIO_SMS_AUTOMATION === 'true'; }
+async function routeCustomerSms(phone: string, customerId: string | null, incoming?: { provider: SmsProvider; senderNumber: string }) {
+  const twilio = process.env.TWILIO_SMS_FROM ?? '';
+  const useDataFlows = !incoming && (await getSettings()).smsDataFlowsNewConversations;
+  if (useDataFlows && !dataFlowsCutoverReady()) {
+    // Existing assignments still work if the new provider has not been configured.
+    // Unassigned contacts remain on hold pending a valid cutover configuration.
+    return claimRoute(null);
+  }
+  return claimRoute(incoming ?? (useDataFlows ? { provider: 'dataflows', senderNumber: dataFlowsSender()! } : { provider: 'twilio', senderNumber: twilio }));
+
+  async function claimRoute(choice: { provider: SmsProvider; senderNumber: string } | null) {
+    const now = new Date().toISOString();
+    return claimSmsRoute({ phone, customerId, ...(choice ?? { provider: 'dataflows', senderNumber: '' }),
+      firstInteraction: now, lastInteraction: now, locked: true, migrationStatus: 'assigned' }, twilio, !!incoming);
+  }
+}
+
+function smsAccounting(body: string, provider: SmsProvider) {
+  const { segments } = smsEstimate(body);
+  const configured = process.env[provider === 'twilio' ? 'TWILIO_SMS_SEGMENT_COST_AUD' : 'DATAFLOWS_SMS_SEGMENT_COST_AUD'];
+  const rate = Number(configured);
+  return { segments, estimatedCostAud: configured && Number.isFinite(rate) && rate >= 0 ? segments * rate : undefined };
+}
 function client() {
   if (!smsConfigured()) throw new SmsError('Twilio sender is not configured.', 503);
   return twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN, { timeout: 10000 });
@@ -90,6 +128,25 @@ export async function resolveSmsTarget(target: SmsTarget, forSend = false, autom
     return { phone, version: quote.token, body: formatCustomerSms('Hi ' + first + ', your quote ' + quote.number + ' is ready: ' + base() + '/quote/' + encodeURIComponent(quote.token)) };
   }
   if (kind === 'manual') return { phone, version: job.id, body: '' };
+  if (kind === 'booking-reminder') {
+    const timing = BOOKING_SMS_REMINDERS.find(reminder => reminder.hours === target.bookingReminderHours);
+    const scheduled = Date.parse(job.scheduledAt ?? '');
+    const due = scheduled - (timing?.hours ?? 0) * hourMs;
+    const now = Date.now();
+    if (!timing || job.status !== 'confirmed' || !job.address.trim() || !Number.isFinite(due) ||
+      now < due || now >= due + reminderGraceMs) {
+      throw new SmsError('This booking reminder is no longer due.');
+    }
+    const settings = await getSettings();
+    if (!settings[timing.key] || due <= (settings.smsBookingReminderEnabledAt?.[timing.hours] ?? Infinity)) {
+      throw new SmsError('This reminder became due before the setting was enabled.');
+    }
+    const address = [job.address, job.suburb].filter(Boolean).join(', ');
+    return { phone, version: [scheduled, timing.hours], body: formatCustomerSms(
+      'Hi ' + first + ', a reminder for your ' + serviceText(job.service) + ' booking on ' +
+      appointmentTime.format(scheduled) + ' at ' + address + '. Reply if you need to make a change.',
+    ) };
+  }
   if (forSend && (!job.scheduledAt || !['confirmed', 'quote-booked'].includes(job.status) || Date.parse(job.scheduledAt) <= Date.now())) throw new SmsError('Confirm and schedule a future appointment first.');
   return { phone, version: [job.scheduledAt, job.status],
     body: job.scheduledAt ? buildConfirmationText(job) + '\n\nReply STOP to opt out.' : '' };
@@ -110,14 +167,21 @@ export async function dispatchSms(id: string) {
   if (!smsEnabled()) return getSms(id);
   const row = await getSms(id);
   if (!row || (row.status !== 'pending' && !(row.status === 'retry' && (row.retryAt ?? '') <= new Date().toISOString()))) return row;
+  if (isLarpPhone(row.phone) || row.recordId?.startsWith('LARP-') || row.id.startsWith('LARP-')) {
+    await changeSms(row, { status: 'canceled', error: 'Demo messages are never sent to Twilio.' });
+    return getSms(id);
+  }
   if (row.automatic && !smsAutomation()) return row;
+  const provider = row.provider ?? 'twilio';
+  const sender = row.senderNumber ?? process.env.TWILIO_SMS_FROM!;
+  if (provider === 'dataflows' && (!dataFlowsCutoverReady() || sender !== dataFlowsSender())) return row;
   if (row.automatic && row.createdAt < new Date(Date.now() - dayMs).toISOString()) {
     await changeSms(row, { status: 'canceled', error: 'Automated message expired before sending.' });
     return getSms(id);
   }
   if (row.kind !== 'reply' && row.kind !== 'staff-alert' && row.kind !== 'welcome' && row.recordId) {
     try {
-      const current = await resolveSmsTarget({ kind: row.kind, recordId: row.recordId }, true, row.automatic);
+      const current = await resolveSmsTarget({ kind: row.kind, recordId: row.recordId, bookingReminderHours: row.bookingReminderHours }, true, row.automatic);
       if (current.phone !== row.phone || (row.kind !== 'manual' && current.body !== row.body) || (row.automatic && row.kind === 'invoice' && !current.completed)) {
         throw new SmsError('The booking or document changed before dispatch.');
       }
@@ -141,8 +205,10 @@ export async function dispatchSms(id: string) {
     const now = new Date().toISOString();
     await insertSms({ id: welcomeId, kind: 'welcome', phone: row.phone, recordId: null,
       body: SMS_WELCOME_BODY,
+      provider, senderNumber: sender, ...smsAccounting(SMS_WELCOME_BODY, provider),
       direction: 'outbound', status: 'pending', actor: row.actor, createdAt: now, updatedAt: now });
     const existing = await getSms(welcomeId);
+    if (existing && ((existing.provider ?? 'twilio') !== provider || (existing.senderNumber ?? process.env.TWILIO_SMS_FROM) !== sender)) return row;
     if (existing?.status === 'canceled' && !existing.sid) {
       await changeSms(existing, { status: 'pending', error: undefined });
     }
@@ -160,22 +226,22 @@ export async function dispatchSms(id: string) {
     return getSms(id);
   }
   try {
-    const result = await client().messages.create({
-      from: process.env.TWILIO_SMS_FROM!, to: row.phone, body: row.body,
+    const result = provider === 'dataflows' ? await sendDataFlowsSms(row.phone, sender, row.body) : await client().messages.create({
+      from: sender, to: row.phone, body: row.body,
       statusCallback: base() + '/api/webhooks/twilio/status?id=' + encodeURIComponent(id),
     });
-    await updateResult(id, result.sid, result.status, result.errorCode ? 'Twilio ' + result.errorCode : undefined);
-    await logActivity('sms.submitted', 'SMS ' + row.kind + ' submitted to Twilio', { smsId: id, recordId: row.recordId }, row.actor).catch(() => {});
+    await updateResult(id, result.sid, result.status, 'errorCode' in result && result.errorCode ? 'Twilio ' + result.errorCode : undefined);
+    await logActivity('sms.submitted', 'SMS ' + row.kind + ' submitted', { smsId: id, recordId: row.recordId, provider }, row.actor).catch(() => {});
   } catch (error) {
     const code = error && typeof error === 'object' && 'code' in error ? Number(error.code) : null;
     const statusCode = error && typeof error === 'object' && 'status' in error ? Number(error.status) : 0;
-    if (code === 21610) await setSmsPreference(row.phone, 'opted-out', 'Twilio');
+    if (provider === 'twilio' && code === 21610) await setSmsPreference(row.phone, 'opted-out', 'Twilio');
     const latest = await getSms(id);
     if (latest && !latest.sid && latest.status === 'sending') {
       const retry = statusCode === 429 && (latest.attempts ?? 0) < 3;
       // A timeout or 5xx can mean Twilio accepted the request. Leave it for callback or manual reconciliation.
       await changeSms(latest, { status: retry ? 'retry' : statusCode >= 400 && statusCode < 500 ? 'failed' : 'unknown',
-        error: code ? 'Twilio ' + code : 'No confirmed response from Twilio.',
+        error: code ? provider + ' ' + code : 'No confirmed response from ' + provider + '.',
         retryAt: retry ? new Date(Date.now() + 300000 * (latest.attempts ?? 1)).toISOString() : undefined });
     }
   }
@@ -183,7 +249,8 @@ export async function dispatchSms(id: string) {
 }
 
 export async function sendSms(input: SendInput, actor: string) {
-  if (!smsEnabled() || (input.automatic && !smsAutomation())) throw new SmsError('Customer SMS sending is disabled.', 503);
+  if (input.automatic && !smsAutomation()) throw new SmsError('Customer SMS sending is disabled.', 503);
+  if (!smsEnabled() && !(await getSettings()).larpModeActive) throw new SmsError('Customer SMS sending is disabled.', 503);
   const target = await resolveSmsTarget(input, true, input.automatic);
   if (input.automatic && input.kind === 'invoice' && !target.completed) return null;
   const body = input.kind === 'manual' ? formatCustomerSms(input.text?.trim() ?? '') : target.body;
@@ -191,6 +258,18 @@ export async function sendSms(input: SendInput, actor: string) {
     throw new SmsError('The recipient or message changed. Review the latest suggestion.');
   }
   if (input.kind === 'manual' && !input.text?.trim()) throw new SmsError('Enter a message first.', 400);
+  const recordId = input.kind === 'manual' && input.recordId.startsWith('phone:')
+    ? (await matchReplyBooking(target.phone))?.id ?? null : input.recordId;
+  if (isLarpPhone(target.phone) || recordId?.startsWith('LARP-') || input.recordId.startsWith('LARP-')) {
+    if (input.automatic) return null;
+    if (!(await getSettings()).larpModeActive) throw new SmsError('Demo SMS is available in LARP mode only.');
+    const id = 'LARP-SMS-' + key(input.kind, input.recordId, input.requestId ?? target.version);
+    const now = new Date().toISOString();
+    await insertSms({ id, sid: id, kind: input.kind, recordId, phone: target.phone, body,
+      direction: 'outbound', status: 'delivered', actor, createdAt: now, updatedAt: now });
+    return getSms(id);
+  }
+  if (!smsEnabled()) throw new SmsError('Customer SMS sending is disabled.', 503);
   const preference = await getSmsPreference(target.phone);
   if (preference === 'opted-out') throw new SmsError('This number opted out. The customer must text START to opt back in.');
   const id = !input.requestId && input.kind === 'reminder'
@@ -214,10 +293,15 @@ export async function sendSms(input: SendInput, actor: string) {
     }
   }
   const now = new Date().toISOString();
-  const recordId = input.kind === 'manual' && input.recordId.startsWith('phone:')
-    ? (await matchReplyBooking(target.phone))?.id ?? null : input.recordId;
+  const previous = await getSms(id);
+  if (previous) return dispatchSms(id);
+  const customer = await matchReplyBooking(target.phone);
+  const route = await routeCustomerSms(target.phone, customer?.id ?? null);
+  if (!route.senderNumber) throw new SmsError('The assigned SMS sender is not configured.', 503);
   await insertSms({ id, kind: input.kind, recordId, phone: target.phone, body, direction: 'outbound',
-    status: 'pending', actor, automatic: input.automatic, createdAt: now, updatedAt: now });
+    provider: route.provider, senderNumber: route.senderNumber, ...smsAccounting(body, route.provider),
+    status: 'pending', actor, automatic: input.automatic, bookingReminderHours: input.bookingReminderHours,
+    createdAt: now, updatedAt: now });
   return dispatchSms(id);
 }
 
@@ -292,15 +376,29 @@ export async function receiveSms(fields: Record<string, string>, notifyStaff = f
   const phone = smsPhone(fields.From ?? '');
   const sid = fields.MessageSid;
   if (!phone || !/^SM[a-fA-F0-9]{32}$/.test(sid ?? '') || fields.To !== process.env.TWILIO_SMS_FROM) return;
+  await receiveCustomerSms(phone, sid, fields.To, 'twilio', fields, notifyStaff);
+}
+
+export async function receiveDataFlowsSms(event: { uid: string; from: string; to: string; body: string; timestamp: string }) {
+  const phone = smsPhone(event.from);
+  const sender = australianMobile(event.to);
+  if (!phone || !sender || sender !== dataFlowsSender()) throw new SmsError('Invalid DataFlows number.', 400);
+  await receiveCustomerSms(phone, 'DF-IN-' + event.uid, sender, 'dataflows',
+    { Body: event.body }, true, event.timestamp);
+}
+
+async function receiveCustomerSms(phone: string, sid: string, senderNumber: string, provider: SmsProvider,
+  fields: Record<string, string>, notifyStaff: boolean, timestamp?: string) {
   const event = fields.OptOutType || fields.Body?.trim().toUpperCase();
   const id = key('incoming', sid);
   // A replay of an old START must not undo a more recent STOP.
   if (await getSms(id)) return;
   if (['STOP', 'STOPALL', 'UNSUBSCRIBE', 'CANCEL', 'END', 'QUIT', 'REVOKE', 'OPTOUT'].includes(event)) {
-    await setSmsPreference(phone, 'opted-out', 'Twilio');
+    await setSmsPreference(phone, 'opted-out', provider);
   }
   const recipients = notifyStaff && smsEnabled() ? staffAlertRecipients() : [];
   const booking = await matchReplyBooking(phone);
+  if (australianMobile(phone) && !isLarpPhone(phone)) await routeCustomerSms(phone, booking?.id ?? null, { provider, senderNumber });
   const isCustomerReply = Boolean(fields.Body?.trim() || Number(fields.NumMedia) > 0) && !fields.OptOutType &&
     !['STOP', 'STOPALL', 'UNSUBSCRIBE', 'CANCEL', 'END', 'QUIT', 'REVOKE', 'OPTOUT', 'START', 'UNSTOP', 'HELP', 'INFO'].includes(event);
   if (isCustomerReply && booking?.status === 'uncontacted') {
@@ -311,9 +409,11 @@ export async function receiveSms(fields: Record<string, string>, notifyStaff = f
   }
   const now = new Date().toISOString();
   const reply: SmsMessage = { id, sid, kind: 'reply', recordId: booking?.id ?? null, phone, body: fields.Body ?? '',
-    direction: 'inbound', status: 'received', actor: 'customer', createdAt: now, updatedAt: now };
+    provider, senderNumber, direction: 'inbound', status: 'received', actor: 'customer',
+    createdAt: timestamp ? new Date(timestamp).toISOString() : now, updatedAt: now };
   const inserted = await insertSms(reply);
-  if (inserted && ['START', 'UNSTOP'].includes(event)) await setSmsPreference(phone, 'opted-in', 'Twilio', true);
+  // Only Twilio's opt-in event is verified to clear its carrier-level block.
+  if (inserted && provider === 'twilio' && ['START', 'UNSTOP'].includes(event)) await setSmsPreference(phone, 'opted-in', provider, true);
   if (inserted && recipients.length) await alertStaffOfReply(reply, booking?.name, recipients).catch(error => {
     console.error('Could not queue staff SMS alerts', error instanceof Error ? error.name : 'Unknown error');
   });
@@ -322,7 +422,8 @@ export async function receiveSms(fields: Record<string, string>, notifyStaff = f
 export async function receiveSmsStatus(id: string, fields: Record<string, string>) {
   if (!/^[a-f0-9]{64}$/.test(id) || !/^SM[a-fA-F0-9]{32}$/.test(fields.MessageSid ?? '') || !states.has(fields.MessageStatus)) return;
   const row = await getSms(id);
-  if (!row || row.phone !== australianMobile(fields.To ?? '') || fields.From !== process.env.TWILIO_SMS_FROM) return;
+  if (!row || (row.provider ?? 'twilio') !== 'twilio' || row.phone !== australianMobile(fields.To ?? '') ||
+    fields.From !== (row.senderNumber ?? process.env.TWILIO_SMS_FROM)) return;
   await updateResult(id, fields.MessageSid, fields.MessageStatus, fields.ErrorCode ? 'Twilio ' + fields.ErrorCode : undefined);
   if (row.kind === 'welcome' && terminal.has(fields.MessageStatus)) {
     const updated = await getSms(id);
@@ -330,6 +431,14 @@ export async function receiveSmsStatus(id: string, fields: Record<string, string
       await releaseMessagesAfterWelcome(row.phone);
     }
   }
+}
+
+export async function receiveDataFlowsStatus(uid: string, status: 'accepted' | 'sent' | 'delivered' | 'failed') {
+  const row = await getSmsBySid('DF-' + uid);
+  if (!row || row.provider !== 'dataflows' || row.direction !== 'outbound') return false;
+  await updateResult(row.id, row.sid, status);
+  if (row.kind === 'welcome' && terminal.has(status)) await releaseMessagesAfterWelcome(row.phone);
+  return true;
 }
 
 async function releaseMessagesAfterWelcome(phone: string) {
@@ -345,7 +454,7 @@ export async function runSmsCron() {
     }
   };
   await bounded(work.slice(0, 8), item => dispatchSms(item.id));
-  const poll = await listSmsWork('accepted');
+  const poll = (await listSmsWork('accepted')).filter(item => (item.provider ?? 'twilio') === 'twilio');
   await bounded(poll.slice(0, 8), async item => {
     try {
       const message = await client().messages(item.sid!).fetch();
@@ -354,6 +463,25 @@ export async function runSmsCron() {
     } catch { /* Status callbacks or a later poll can reconcile the message. */ }
   });
   if (!smsAutomation()) return { enabled: true, checked: work.length };
+  const settings = await getSettings();
+  const now = Date.now();
+  const bookingReminders = (await Promise.all(BOOKING_SMS_REMINDERS.filter(({ key, hours }) =>
+    settings[key] && Number.isFinite(settings.smsBookingReminderEnabledAt?.[hours])).map(async ({ hours }) => {
+    const cutoff = now + hours * hourMs;
+    const earliestDue = Math.max(now - reminderGraceMs, settings.smsBookingReminderEnabledAt[hours]!);
+    const bookings = await getBookingsInRange(new Date(earliestDue + hours * hourMs + 1).toISOString(), new Date(cutoff + 1).toISOString());
+    const due: SendInput[] = [];
+    for (const job of bookings) {
+      if (due.length >= 8) break;
+      const phone = australianMobile(job.phone ?? '');
+      if (job.status !== 'confirmed' || !job.address.trim() || !phone) continue;
+      if (await getSms(key('booking-reminder', job.id, [Date.parse(job.scheduledAt!), hours])) ||
+        await getSmsPreference(phone) === 'opted-out') continue;
+      due.push({ kind: 'booking-reminder', recordId: job.id, bookingReminderHours: hours, automatic: true });
+    }
+    return due;
+  }))).flat();
+  await bounded(bookingReminders, item => sendSms(item, 'system'));
   const due: { recordId: string; number: number }[] = [];
   for (const item of await listSmsWork('invoice')) {
     if (due.length >= 4) break;
@@ -370,7 +498,7 @@ export async function runSmsCron() {
     } catch { /* Paid, canceled, and incomplete invoices leave the reminder queue. */ }
   }
   await bounded(due, item => sendSms({ kind: 'reminder', recordId: item.recordId, automatic: true, reminderNumber: item.number }, 'system'));
-  return { enabled: true, remindersChecked: due.length, checked: work.length };
+  return { enabled: true, remindersChecked: due.length, bookingRemindersChecked: bookingReminders.length, checked: work.length };
 }
 
 export async function listSmsConversations(incomingOnly = false, profile?: StaffProfile) {

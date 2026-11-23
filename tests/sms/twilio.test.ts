@@ -184,7 +184,7 @@ test('signed Twilio callbacks, consent and outbox dedup work without customer se
     const newPhone = '+61499999999';
     const submitted: string[] = [];
     const provider = context.mock.method(twilio.RequestClient.prototype, 'request', async (options: { data: { Body: string } }) => {
-      submitted.push(options.data.Body);
+      if (options.data?.Body) submitted.push(options.data.Body);
       return { statusCode: 201, body: { sid: 'SM' + String(submitted.length).padStart(32, '0'), status: 'queued' } };
     });
     try {
@@ -211,6 +211,68 @@ test('signed Twilio callbacks, consent and outbox dedup work without customer se
       assert.match(submitted[0], /Reply STOP to opt out/);
       assert.match(submitted[1], /First message/);
       assert.match(submitted[2], /Second message/);
+
+      await context.test('booking reminders skip past due times on enable and re-enable', async testContext => {
+        process.env.TWILIO_SMS_AUTOMATION = 'false';
+        for (const row of await db.listSms(newPhone)) await db.changeSms(row, { status: 'delivered' });
+        const start = Date.now();
+        const makeAppointment = (hours: number, address: string, overrides: { phone?: string; status?: 'cancelled' } = {}, dueOffset = 60000) => db.addBooking({
+          name: 'Test Customer', phone: newPhone, address, suburb: 'Ainslie', service: 'window-washing',
+          email: '', preferredDate: '', preferredTime: '', notes: '',
+          propertyType: 'residential', status: 'confirmed', scheduledAt: new Date(start + dueOffset + hours * 3600000).toISOString(), ...overrides,
+        });
+        await makeAppointment(1, '1 Hour Street');
+        await makeAppointment(24, '24 Day Street', {}, 120000);
+        await makeAppointment(168, '7 Week Street');
+        await makeAppointment(1, '2 Cancelled Street', { status: 'cancelled' });
+        await makeAppointment(1, '3 Opted Out Street', { phone: recipients[0] });
+        await makeAppointment(1, '4 Already Due Street', {}, -60000);
+        await makeAppointment(1, '5 Past Appointment Street', {}, -7200000);
+        await makeAppointment(1, '6 Pause Street', {}, 180000);
+        process.env.TWILIO_SMS_AUTOMATION = 'true';
+        let now = start;
+        testContext.mock.method(Date, 'now', () => now);
+
+        assert.equal((await sms.runSmsCron()).bookingRemindersChecked, 0);
+        await db.updateSettings({ smsBookingReminderHour: true, smsBookingReminderWeek: true });
+        assert.equal((await sms.runSmsCron()).bookingRemindersChecked, 0);
+        now += 60000;
+        await Promise.all([sms.runSmsCron(), sms.runSmsCron()]);
+        const reminders = async () => (await db.listSms(newPhone)).filter(row => row.kind === 'booking-reminder');
+        assert.deepEqual((await reminders()).map(row => row.bookingReminderHours!).sort((a, b) => a - b), [1, 168]);
+        assert.equal(submitted.filter(body => body.includes('a reminder')).length, 2);
+        assert.match(submitted.find(body => body.includes('1 Hour Street')) ?? '', /Window Washing booking on .*\d+:\d\d.*1 Hour Street, Ainslie/);
+        await db.updateSettings({ smsBookingReminderDay: true });
+        await db.updateSettings({ smsBookingReminderHour: false });
+        now += 60000;
+        assert.equal((await sms.runSmsCron()).bookingRemindersChecked, 1);
+        assert.deepEqual((await reminders()).map(row => row.bookingReminderHours!).sort((a, b) => a - b), [1, 24, 168]);
+        now += 120000;
+        await db.updateSettings({ smsBookingReminderHour: true });
+        assert.equal((await sms.runSmsCron()).bookingRemindersChecked, 0);
+        assert.equal(submitted.filter(body => body.includes('a reminder')).length, 3);
+      });
+      await context.test('LARP messages populate every inbox folder and never reach Twilio', async () => {
+        const { buildLarpBookings, buildLarpInvoices, seedLarpFeatureExamples } = await import('../../src/lib/larp');
+        const { invoiceDaysOverdue } = await import('../../src/lib/invoice');
+        const examples = buildLarpBookings(10_000).slice(0, 4);
+        const demoMessages = seedLarpFeatureExamples(examples);
+        assert.equal(demoMessages.length, 4);
+        for (const example of examples) await db.insertRawBooking(example);
+        for (const message of demoMessages) await db.insertSms(message);
+        const conversations = await sms.listSmsConversations();
+        assert.deepEqual(examples.slice(0, 3).map(example => conversations.find(row => row.phone === example.phone)?.group),
+          ['active', 'inactive', 'cold']);
+        assert.ok(buildLarpInvoices(examples).some(invoice => invoiceDaysOverdue(invoice) >= 30));
+        assert.ok((await db.checkStaleLeads()).some(job => job.id === examples[2].id));
+        await db.updateSettings({ larpModeActive: true });
+        const sentBefore = submitted.length;
+        const result = await sms.sendSms({ kind: 'manual', recordId: examples[0].id, text: 'Demo reply' }, 'Liam');
+        assert.ok(result?.id.startsWith('LARP-'));
+        assert.equal(submitted.length, sentBefore);
+        assert.equal(await db.deleteLarpSms(), 5);
+        assert.equal((await db.listSms(examples[0].phone)).length, 0);
+      });
     } finally {
       provider.mock.restore();
     }

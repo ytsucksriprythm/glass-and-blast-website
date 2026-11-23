@@ -156,6 +156,12 @@ export default function InvoiceEditor({ initial, prefill, returnHref, onChanged,
   const [inv, setInv] = useState<Invoice | null>(initial);
   const [f, setF] = useState<Form>(initial ? fromInvoice(initial) : blankForm(prefill, staff));
   const [saving, setSaving] = useState(false);
+  const [cancellationOpen, setCancellationOpen] = useState(false);
+  const [cancellationMessage, setCancellationMessage] = useState('');
+  const [replacementInvoiceId, setReplacementInvoiceId] = useState('');
+  const [replacementOptions, setReplacementOptions] = useState<Invoice[] | null>(null);
+  const [cancellationError, setCancellationError] = useState('');
+  const [savingCancellation, setSavingCancellation] = useState(false);
   const [reminderBusy, setReminderBusy] = useState(false);
   const [tab, setTab] = useState<'edit' | 'preview'>('edit');
   // Linked bookings (multi). Linkage is the single source of truth on the invoice.
@@ -386,6 +392,7 @@ export default function InvoiceEditor({ initial, prefill, returnHref, onChanged,
     notes: f.notes,
     payAccountName: f.payAccountName, payBsb: f.payBsb, payAccountNumber: f.payAccountNumber,
     paid: inv?.status === 'paid',
+    cancelled: inv?.status === 'cancelled',
     paymentMethod: inv?.paymentMethod ?? null,
     cardPayable: !!settings?.squareCardPaymentsEnabled && !!inv?.squarePaymentLinkUrl,
     surchargePercent: settings?.squareSurchargePercent ?? SQUARE_SURCHARGE_PERCENT_FALLBACK,
@@ -448,6 +455,52 @@ export default function InvoiceEditor({ initial, prefill, returnHref, onChanged,
       toast.success(status === 'paid' && paymentMethod ? `Marked paid: ${PAYMENT_METHOD_LABEL[paymentMethod].toLowerCase()}` : `Marked ${STATUS_LABEL[status].toLowerCase()}`);
     } else toast.error('Update failed');
   };
+
+  async function openCancellation() {
+    if (!inv) return;
+    setCancellationMessage(inv.cancellationMessage ?? '');
+    setReplacementInvoiceId(inv.replacementInvoiceId ?? '');
+    setCancellationError('');
+    setReplacementOptions(null);
+    setCancellationOpen(true);
+    try {
+      const response = await fetch('/api/admin/invoices');
+      if (!response.ok) throw new Error();
+      const invoices: Invoice[] = await response.json();
+      setReplacementOptions(invoices.filter(option => option.id !== inv.id && option.status !== 'cancelled'));
+    } catch {
+      setCancellationError('Could not load replacement invoices. Reopen this form to try again.');
+    }
+  }
+
+  async function saveCancellation() {
+    if (!inv || savingCancellation) return;
+    setSavingCancellation(true);
+    setCancellationError('');
+    try {
+      const response = await fetch(`/api/admin/invoices/${inv.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          status: 'cancelled',
+          cancellationMessage,
+          ...(replacementInvoiceId !== (inv.replacementInvoiceId ?? '') && {
+            replacementInvoiceId: replacementInvoiceId || null,
+          }),
+        }),
+      });
+      if (!response.ok) throw new Error((await response.json()).error || 'Could not save cancellation');
+      const updated: Invoice = await response.json();
+      setInv(updated);
+      onChanged?.(updated);
+      setCancellationOpen(false);
+      toast.success(inv.status === 'cancelled' ? 'Cancellation details saved' : 'Invoice cancelled');
+    } catch (error) {
+      setCancellationError(error instanceof Error ? error.message : 'Could not save cancellation');
+    } finally {
+      setSavingCancellation(false);
+    }
+  }
 
   async function toggleReminderHold() {
     if (!inv || reminderBusy) return;
@@ -534,9 +587,9 @@ export default function InvoiceEditor({ initial, prefill, returnHref, onChanged,
                 </span>
               )}
             </div>
-            <div className="flex items-center gap-2">
-              {inv.status !== 'sent' && <button onClick={() => setStatus('sent')} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/15 text-slate-200 hover:border-sky-400/40 text-xs font-semibold cursor-pointer"><Send className="w-3.5 h-3.5" /> Mark sent</button>}
-              {inv.status !== 'paid' && (
+            <div className="flex flex-wrap items-center gap-2">
+              {inv.status !== 'sent' && inv.status !== 'cancelled' && <button onClick={() => setStatus('sent')} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/15 text-slate-200 hover:border-sky-400/40 text-xs font-semibold cursor-pointer"><Send className="w-3.5 h-3.5" /> Mark sent</button>}
+              {inv.status !== 'paid' && inv.status !== 'cancelled' && (
                 <div className="relative">
                   <select
                     value=""
@@ -553,9 +606,41 @@ export default function InvoiceEditor({ initial, prefill, returnHref, onChanged,
                   <BadgeCheck className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none text-slate-200" />
                 </div>
               )}
-              {inv.status !== 'draft' && <button onClick={() => setStatus('draft')} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/15 text-slate-400 hover:text-white text-xs font-semibold cursor-pointer"><Undo2 className="w-3.5 h-3.5" /> Draft</button>}
+              {inv.status !== 'draft' && inv.status !== 'cancelled' && <button onClick={() => setStatus('draft')} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/15 text-slate-400 hover:text-white text-xs font-semibold cursor-pointer"><Undo2 className="w-3.5 h-3.5" /> Draft</button>}
+              <button type="button" onClick={openCancellation} className="rounded-lg border border-red-400/30 px-3 py-1.5 text-xs font-semibold text-red-300 hover:bg-red-400/10">
+                {inv.status === 'cancelled' ? 'Edit cancellation' : 'Cancel invoice'}
+              </button>
             </div>
           </div>
+          {cancellationOpen && (
+            <form onSubmit={event => { event.preventDefault(); void saveCancellation(); }} className="mt-4 space-y-3 rounded-lg border border-red-400/25 p-4">
+              <p className="text-sm text-slate-300">Customers will see a cancellation notice before opening the original invoice.</p>
+              <label className="block text-sm text-slate-200">
+                Message to customer (optional)
+                <textarea className="form-input mt-1 w-full" rows={3} maxLength={2000}
+                  value={cancellationMessage} onChange={event => setCancellationMessage(event.target.value)} />
+              </label>
+              <label className="block text-sm text-slate-200">
+                Replacement invoice (optional)
+                <select className="form-input mt-1 w-full" value={replacementInvoiceId}
+                  onChange={event => setReplacementInvoiceId(event.target.value)} disabled={!replacementOptions}>
+                  <option value="">No replacement invoice</option>
+                  {replacementInvoiceId && !replacementOptions?.some(option => option.id === replacementInvoiceId) &&
+                    <option value={replacementInvoiceId}>Current replacement invoice</option>}
+                  {replacementOptions?.map(option => (
+                    <option key={option.id} value={option.id}>{option.number} · {option.billToName || option.client.clientName} · {STATUS_LABEL[option.status]}</option>
+                  ))}
+                </select>
+              </label>
+              {cancellationError && <p role="alert" className="text-sm text-red-300">{cancellationError}</p>}
+              <div className="flex flex-wrap gap-2">
+                <button type="submit" disabled={savingCancellation} className="rounded-lg bg-red-700 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50">
+                  {savingCancellation ? 'Saving…' : inv.status === 'cancelled' ? 'Save cancellation details' : 'Confirm cancellation'}
+                </button>
+                <button type="button" onClick={() => setCancellationOpen(false)} disabled={savingCancellation} className="rounded-lg border border-white/15 px-3 py-2 text-sm text-slate-200">Close</button>
+              </div>
+            </form>
+          )}
           <CreatedBy name={inv.createdBy} />
           {staff && !inv.ownerGuestId && inv.status === 'sent' && <button type="button" aria-pressed={!!inv.reminderHold}
             disabled={reminderBusy} onClick={() => void toggleReminderHold()}
@@ -565,10 +650,12 @@ export default function InvoiceEditor({ initial, prefill, returnHref, onChanged,
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <input readOnly value={publicUrl} aria-label="Invoice link" className="form-input w-full min-h-11 text-base sm:flex-1" onFocus={e => e.currentTarget.select()} />
             <button onClick={shareInvoice} className="min-h-11 rounded-lg bg-sky-500 px-3 font-semibold text-navy-900">Share invoice</button>
-            <button onClick={() => setSmsOpen(true)} className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-white/15 px-3 text-sm font-semibold text-sky-300"><Send className="size-4" /> Send via SMS</button>
+            {inv.status !== 'cancelled' && <button onClick={() => setSmsOpen(true)} className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-white/15 px-3 text-sm font-semibold text-sky-300"><Send className="size-4" /> Send via SMS</button>}
             <a href={publicUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 px-3 py-2.5 rounded-lg border border-white/15 text-slate-200 hover:text-white text-sm font-semibold cursor-pointer"><ExternalLink className="w-4 h-4" /> Open</a>
           </div>
-          <p className="mt-2 text-slate-500 text-xs">Send this link to the customer. They view the invoice and pay by bank transfer using reference <span className="text-sky-300 font-semibold">{inv.number}</span>.</p>
+          <p className="mt-2 text-slate-500 text-xs">{inv.status === 'cancelled'
+            ? 'This link opens the cancellation notice.'
+            : <>Send this link to the customer. They view the invoice and pay by bank transfer using reference <span className="text-sky-300 font-semibold">{inv.number}</span>.</>}</p>
           {inv.firstViewedAt ? (
             <p className="mt-2 inline-flex items-center gap-1.5 text-emerald-400 text-xs font-medium">
               <Eye className="w-3.5 h-3.5" /> Customer opened this{inv.viewCount > 1 ? ` ${inv.viewCount} times` : ''} · last {longDate(inv.lastViewedAt || inv.firstViewedAt)}

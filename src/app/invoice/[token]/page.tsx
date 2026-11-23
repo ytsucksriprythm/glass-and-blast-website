@@ -1,6 +1,6 @@
 import { notFound } from 'next/navigation';
 import type { Metadata } from 'next';
-import { getInvoiceByToken, updateInvoice, getSettings } from '@/lib/db';
+import { getInvoiceById, getInvoiceByToken, updateInvoice, getSettings } from '@/lib/db';
 import { cardTotal, money } from '@/lib/invoice';
 import { createSquarePaymentLink, squareConfigured } from '@/lib/square';
 import type { AppSettings } from '@/lib/settings';
@@ -9,6 +9,7 @@ import PrintButton from '@/components/PrintButton';
 import InvoiceViewBeacon from '@/components/InvoiceViewBeacon';
 import MarkPaidButton from '@/components/MarkPaidButton';
 import PayByCardButton from '@/components/PayByCardButton';
+import CancelledInvoiceNotice from '@/components/CancelledInvoiceNotice';
 import type { Invoice } from '@/lib/invoice';
 
 // Lazily create (or refresh, if the total has drifted) the Square payment
@@ -56,35 +57,48 @@ export default async function PublicInvoicePage({ params }: { params: Promise<{ 
   const settings = await getSettings();
   invoice = await ensureSquareLink(invoice, settings);
 
-  const canPayByCard = settings.squareCardPaymentsEnabled && invoice.status !== 'paid' && invoice.status !== 'cancelled' && !!invoice.squarePaymentLinkUrl;
+  const cancelled = invoice.status === 'cancelled';
+  const replacement = cancelled && invoice.replacementInvoiceId && invoice.replacementInvoiceId !== invoice.id
+    ? await getInvoiceById(invoice.replacementInvoiceId)
+    : null;
+  const replacementHref = replacement && replacement.status !== 'cancelled' ? `/invoice/${replacement.token}` : null;
+  const canPayByCard = settings.squareCardPaymentsEnabled && invoice.status !== 'paid' && !cancelled && !!invoice.squarePaymentLinkUrl;
+
+  const invoiceDocument = (
+    <div className="mx-auto w-full" style={{ maxWidth: '820px' }}>
+      <div className="no-print mb-4 flex items-center justify-between flex-wrap gap-2">
+        <span className="text-slate-500 text-sm">
+          {invoice.isTaxInvoice ? 'Tax Invoice' : 'Invoice'} {invoice.number}
+        </span>
+        <div className="flex items-center gap-2">
+          <PrintButton />
+          {!cancelled && invoice.status !== 'paid' && <MarkPaidButton token={invoice.token} />}
+        </div>
+      </div>
+      {canPayByCard && (
+        <PayByCardButton
+          token={invoice.token}
+          href={invoice.squarePaymentLinkUrl!}
+          label={`Pay by card: ${money(cardTotal(invoice.total, settings.squareSurchargePercent))} (incl. card surcharge)`}
+        />
+      )}
+      <div className="rounded-xl shadow-lg ring-1 ring-slate-200 overflow-hidden">
+        <InvoicePreview invoice={{ ...invoice, cancelled, paid: invoice.status === 'paid', paymentMethod: invoice.paymentMethod, cardPayable: canPayByCard, surchargePercent: settings.squareSurchargePercent }} />
+      </div>
+      <p className="no-print mt-6 text-center text-slate-400 text-xs">
+        Questions about this invoice? Call {invoice.fromPhone} or email {invoice.fromEmail}.
+      </p>
+    </div>
+  );
 
   return (
     <main className="invoice-page min-h-[100svh] bg-slate-100 py-6 sm:py-12 px-3 sm:px-6">
       <InvoiceViewBeacon token={invoice.token} />
-      <div className="mx-auto w-full" style={{ maxWidth: '820px' }}>
-        <div className="no-print mb-4 flex items-center justify-between flex-wrap gap-2">
-          <span className="text-slate-500 text-sm">
-            {invoice.isTaxInvoice ? 'Tax Invoice' : 'Invoice'} {invoice.number}
-          </span>
-          <div className="flex items-center gap-2">
-            <PrintButton />
-            {invoice.status !== 'paid' && <MarkPaidButton token={invoice.token} />}
-          </div>
-        </div>
-        {canPayByCard && (
-          <PayByCardButton
-            token={invoice.token}
-            href={invoice.squarePaymentLinkUrl!}
-            label={`Pay by card: ${money(cardTotal(invoice.total, settings.squareSurchargePercent))} (incl. card surcharge)`}
-          />
-        )}
-        <div className="rounded-xl shadow-lg ring-1 ring-slate-200 overflow-hidden">
-          <InvoicePreview invoice={{ ...invoice, paid: invoice.status === 'paid', paymentMethod: invoice.paymentMethod, cardPayable: canPayByCard, surchargePercent: settings.squareSurchargePercent }} />
-        </div>
-        <p className="no-print mt-6 text-center text-slate-400 text-xs">
-          Questions about this invoice? Call {invoice.fromPhone} or email {invoice.fromEmail}.
-        </p>
-      </div>
+      {cancelled ? (
+        <CancelledInvoiceNotice number={invoice.number} message={invoice.cancellationMessage} replacementHref={replacementHref}>
+          {invoiceDocument}
+        </CancelledInvoiceNotice>
+      ) : invoiceDocument}
     </main>
   );
 }

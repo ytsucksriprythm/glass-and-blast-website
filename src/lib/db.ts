@@ -1,6 +1,6 @@
 import { overlapsBooking } from './smartActionRules';
 import type { SmartActionRecord } from './smartActionTypes';
-import { COLD_ACTIVITY_MS, hasReadSms, smsMessageTime, smsPhone, type SmsMessage, type SmsPreference, type SmsReadState } from './smsTypes';
+import { BOOKING_SMS_REMINDERS, COLD_ACTIVITY_MS, hasReadSms, smsMessageTime, smsPhone, type SmsMessage, type SmsPreference, type SmsReadState, type SmsRoute } from './smsTypes';
 import { callState, sydneyDay, type CallState } from './callingTypes';
 import type { StaffProfile } from './staff';
 import fs from 'fs';
@@ -596,6 +596,8 @@ export async function ensureSchema(): Promise<void> {
       await sql`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS square_link_amount NUMERIC`;
       await sql`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS square_paid_at TIMESTAMPTZ`;
       await sql`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS reminder_hold BOOLEAN NOT NULL DEFAULT false`;
+      await sql`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS cancellation_message TEXT NOT NULL DEFAULT ''`;
+      await sql`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS replacement_invoice_id TEXT`;
       await sql`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS show_from_address BOOLEAN NOT NULL DEFAULT true`;
       await sql`CREATE INDEX IF NOT EXISTS invoices_square_order_idx ON invoices (square_order_id)`;
       // Backfill the multi-link array from the legacy single booking_id.
@@ -689,6 +691,9 @@ export async function ensureSchema(): Promise<void> {
         id TEXT PRIMARY KEY, phone TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL, data JSONB NOT NULL
       )`;
       await sql`CREATE INDEX IF NOT EXISTS sms_messages_phone_idx ON sms_messages (phone, created_at DESC)`;
+      await sql`CREATE TABLE IF NOT EXISTS sms_routes (
+        phone TEXT PRIMARY KEY, data JSONB NOT NULL
+      )`;
       await sql`CREATE TABLE IF NOT EXISTS sms_read_state (
         phone TEXT NOT NULL, profile TEXT NOT NULL, message_id TEXT NOT NULL,
         message_at TIMESTAMPTZ NOT NULL, read_at TIMESTAMPTZ NOT NULL,
@@ -986,7 +991,7 @@ export async function ensureBookingToken(id: string): Promise<string | null> {
 // thank-you page, plus the invoice number for the admin notification.
 export async function markCustomerPaidByInvoiceToken(invoiceToken: string): Promise<{ booking: Booking; invoiceNumber: string; invoiceId: string } | null> {
   const invoice = await getInvoiceByToken(invoiceToken);
-  if (!invoice) return null;
+  if (!invoice || invoice.status === 'cancelled') return null;
   const bookingId = invoice.bookingIds[0] ?? invoice.bookingId ?? null;
   if (!bookingId) return null;
   const updated = await updateBooking(bookingId, { customerMarkedPaidAt: new Date().toISOString() });
@@ -1092,18 +1097,22 @@ export async function contactUncontactedBooking(id: string): Promise<Booking | n
 }
 
 export async function rescheduleBookingIfAvailable(
-  id: string, slot: { before: string; endBefore?: string | null; start: string; end: string },
+  id: string, slot: { before: string | null; endBefore?: string | null; start: string; end: string; status?: 'confirmed' | 'quote-booked'; updatedAt?: string },
 ): Promise<Booking | null> {
   const before = await getBookingById(id);
-  if (!before || before.deletedAt || !['confirmed', 'quote-booked'].includes(before.status) ||
-      before.scheduledAt !== slot.before || (before.scheduledEnd ?? null) !== (slot.endBefore ?? null)) return null;
+  if (!before || before.deletedAt || (slot.before && !['confirmed', 'quote-booked'].includes(before.status)) ||
+      (!slot.before && (!slot.status || !['uncontacted', 'contacted', 'quoted', 'confirmed', 'quote-booked'].includes(before.status))) ||
+      (slot.updatedAt && before.updatedAt !== slot.updatedAt) ||
+      (before.scheduledAt ?? null) !== slot.before || (before.scheduledEnd ?? null) !== (slot.endBefore ?? null)) return null;
+  const status = slot.status ?? before.status;
   if (sql) {
     await ensureSchema();
     const [, rows] = await sql.transaction([
       sql`SELECT pg_advisory_xact_lock(hashtext('smart-action:calendar'))`,
-      sql`UPDATE bookings SET scheduled_at = ${slot.start}, scheduled_end = ${slot.end}, updated_at = now()
+      sql`UPDATE bookings SET scheduled_at = ${slot.start}, scheduled_end = ${slot.end}, status = ${status}, updated_at = now()
         WHERE id = ${id} AND deleted_at IS NULL AND status = ${before.status}
-          AND scheduled_at = ${slot.before}::timestamptz AND scheduled_end IS NOT DISTINCT FROM ${slot.endBefore ?? null}::timestamptz
+          AND (${slot.updatedAt ?? null}::timestamptz IS NULL OR date_trunc('milliseconds', updated_at) = ${slot.updatedAt ?? null}::timestamptz)
+          AND scheduled_at IS NOT DISTINCT FROM ${slot.before}::timestamptz AND scheduled_end IS NOT DISTINCT FROM ${slot.endBefore ?? null}::timestamptz
           AND NOT EXISTS (SELECT 1 FROM bookings AS other
             WHERE other.id <> ${id} AND other.deleted_at IS NULL AND other.status <> 'cancelled'
               AND other.scheduled_at < ${slot.end}::timestamptz
@@ -1116,9 +1125,10 @@ export async function rescheduleBookingIfAvailable(
   }
   const rows = readFile();
   const index = rows.findIndex(job => job.id === id && !job.deletedAt && job.status === before.status &&
-    job.scheduledAt === slot.before && (job.scheduledEnd ?? null) === (slot.endBefore ?? null));
+    (job.scheduledAt ?? null) === slot.before && (job.scheduledEnd ?? null) === (slot.endBefore ?? null) &&
+    (!slot.updatedAt || job.updatedAt === slot.updatedAt));
   if (index === -1 || overlapsBooking(rows, id, slot.start, slot.end)) return null;
-  rows[index] = { ...rows[index], scheduledAt: slot.start, scheduledEnd: slot.end, updatedAt: new Date().toISOString() };
+  rows[index] = { ...rows[index], status, scheduledAt: slot.start, scheduledEnd: slot.end, updatedAt: new Date().toISOString() };
   writeFile(rows);
   const saved = localCallingRecord(rows[index]).booking;
   await bookingSmsTransition(before, saved);
@@ -1333,7 +1343,7 @@ export async function insertRawBooking(booking: Booking): Promise<void> {
         id, name, email, phone, service, property_type, address, suburb, preferred_date, preferred_time,
         notes, status, quote_amount, admin_notes, paid, source, assigned_guest_id, assigned_at,
         scheduled_at, scheduled_end, recurring_id, lead_source, attribution_source, group_id, public_token,
-        completed_at, paid_at, created_at, updated_at
+        completed_at, paid_at, created_at, updated_at, status_changed_at
       ) VALUES (
         ${booking.id}, ${booking.name}, ${booking.email}, ${booking.phone}, ${booking.service}, ${booking.propertyType},
         ${booking.address}, ${booking.suburb}, ${booking.preferredDate}, ${booking.preferredTime},
@@ -1341,7 +1351,7 @@ export async function insertRawBooking(booking: Booking): Promise<void> {
         ${booking.source}, ${booking.assignedGuestId ?? null}, ${booking.assignedAt ?? null},
         ${booking.scheduledAt ?? null}, ${booking.scheduledEnd ?? null}, ${booking.recurringId ?? null},
         ${booking.leadSource ?? null}, ${booking.attributionSource ?? null}, ${booking.groupId ?? null}, ${booking.publicToken ?? null},
-        ${booking.completedAt ?? null}, ${booking.paidAt ?? null}, ${booking.createdAt}, ${booking.updatedAt}
+        ${booking.completedAt ?? null}, ${booking.paidAt ?? null}, ${booking.createdAt}, ${booking.updatedAt}, ${booking.statusChangedAt ?? booking.updatedAt}
       )
     `;
     return;
@@ -2479,6 +2489,8 @@ function rowToInvoice(r: any): Invoice {
     seq: Number(r.seq),
     isTaxInvoice: r.is_tax_invoice === true || r.is_tax_invoice === 1,
     status: r.status as InvoiceStatus,
+    cancellationMessage: r.cancellation_message ?? '',
+    replacementInvoiceId: r.replacement_invoice_id ?? null,
     paymentMethod: r.payment_method ?? null,
     squarePaymentLinkUrl: r.square_payment_link_url ?? null,
     squareOrderId: r.square_order_id ?? null,
@@ -2836,6 +2848,8 @@ export async function updateInvoice(id: string, rawUpdates: Partial<Invoice>): P
         square_link_amount = ${m.squareLinkAmount ?? null},
         square_paid_at = ${m.squarePaidAt ?? null},
         reminder_hold = ${m.reminderHold ?? false},
+        cancellation_message = ${m.cancellationMessage ?? ''},
+        replacement_invoice_id = ${m.replacementInvoiceId ?? null},
         updated_at = now()
       WHERE id = ${id}
       RETURNING *
@@ -3633,7 +3647,13 @@ export async function getSettings(): Promise<AppSettings> {
 
 export async function updateSettings(partial: Partial<AppSettings>): Promise<AppSettings> {
   const cur = await getSettings();
-  const updated: AppSettings = { ...cur, ...partial };
+  const enabledAt = { ...cur.smsBookingReminderEnabledAt };
+  const updated: AppSettings = { ...cur, ...partial, smsBookingReminderEnabledAt: enabledAt };
+  const now = Date.now();
+  for (const { key, hours } of BOOKING_SMS_REMINDERS) {
+    if (partial[key] === false) delete enabledAt[hours];
+    if (partial[key] === true && (!cur[key] || !Number.isFinite(enabledAt[hours]))) enabledAt[hours] = now;
+  }
   if (sql) {
     await ensureSchema();
     await sql`
@@ -4167,6 +4187,7 @@ export async function saveCallingRecord(before: CallingRecord, state: CallState,
 const SMS_FILE = path.join(process.cwd(), 'data', 'sms.json');
 type LocalSms = {
   messages: SmsMessage[]; preferences: Record<string, SmsPreference>; readStates?: Record<string, SmsReadState>;
+  routes?: Record<string, SmsRoute>;
   chatgptReads?: Record<string, StaffProfile[]>;
 };
 function readSmsFile(): LocalSms {
@@ -4178,6 +4199,74 @@ function writeSmsFile(value: LocalSms) {
   const temp = SMS_FILE + '.tmp';
   fs.writeFileSync(temp, JSON.stringify(value, null, 2));
   fs.renameSync(temp, SMS_FILE);
+}
+
+export async function claimSmsRoute(candidate: SmsRoute, twilioNumber: string, inbound = false): Promise<SmsRoute> {
+  if (!sql) {
+    const file = readSmsFile();
+    const routes = file.routes ??= {};
+    const history = file.messages.filter(row => smsPhone(row.phone) === candidate.phone &&
+      !row.id.startsWith('LARP-') && row.kind !== 'staff-alert' && (row.provider ?? 'twilio') === 'twilio');
+    const dates = history.map(row => row.createdAt).sort();
+    const senders = [...new Set(history.flatMap(row => row.senderNumber ? [row.senderNumber] : []))];
+    const first = dates[0];
+    if (!routes[candidate.phone] && !first && !candidate.senderNumber) return candidate;
+    const original = senders.length === 1 ? senders[0] : twilioNumber;
+    const route = routes[candidate.phone] ?? (first ? {
+      ...candidate, provider: 'twilio' as const, senderNumber: original, firstInteraction: first,
+      migrationStatus: senders.length !== 1 ? 'review' as const : 'legacy' as const,
+    } : candidate);
+    routes[candidate.phone] = { ...route, customerId: route.customerId ?? candidate.customerId,
+      lastInteraction: [route.lastInteraction, candidate.lastInteraction].sort()[1],
+      migrationStatus: inbound && (route.provider !== candidate.provider || route.senderNumber !== candidate.senderNumber) ? 'review' : route.migrationStatus };
+    writeSmsFile(file);
+    return routes[candidate.phone];
+  }
+  await ensureSchema();
+  const rows = await sql`
+    WITH history AS (
+      SELECT min(created_at) AS first, count(DISTINCT data->>'senderNumber') AS senders,
+        min(data->>'senderNumber') AS sender
+      FROM sms_messages WHERE (phone = ${candidate.phone} OR regexp_replace(lower(phone), '[^0-9]', '', 'g')
+        IN (${candidate.phone.slice(1)}, ${'0' + candidate.phone.slice(3)}, ${'00' + candidate.phone.slice(1)}))
+        AND id NOT LIKE 'LARP-%'
+        AND data->>'kind' <> 'staff-alert' AND COALESCE(data->>'provider','twilio') = 'twilio'
+    )
+    INSERT INTO sms_routes (phone, data)
+    SELECT ${candidate.phone}, ${JSON.stringify(candidate)}::jsonb ||
+      CASE WHEN first IS NULL THEN '{}'::jsonb ELSE jsonb_build_object(
+        'provider','twilio','senderNumber',CASE WHEN senders = 1 THEN sender ELSE ${twilioNumber}::text END,
+        'firstInteraction',to_char(first AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+        'migrationStatus',CASE WHEN senders <> 1 OR (${inbound} AND ${candidate.provider} <> 'twilio') THEN 'review' ELSE 'legacy' END)
+      END FROM history WHERE first IS NOT NULL OR ${candidate.senderNumber} <> ''
+        OR EXISTS (SELECT 1 FROM sms_routes WHERE phone = ${candidate.phone})
+    ON CONFLICT (phone) DO UPDATE SET data = sms_routes.data || jsonb_build_object(
+      'lastInteraction',greatest(sms_routes.data->>'lastInteraction',EXCLUDED.data->>'lastInteraction'),
+      'customerId',coalesce(sms_routes.data->>'customerId',EXCLUDED.data->>'customerId'),
+      'migrationStatus',CASE WHEN ${inbound} AND (sms_routes.data->>'provider' <> ${candidate.provider}
+        OR sms_routes.data->>'senderNumber' <> ${candidate.senderNumber}) THEN 'review'
+        ELSE sms_routes.data->>'migrationStatus' END)
+    RETURNING data`;
+  return rows[0]?.data as SmsRoute ?? candidate;
+}
+
+export async function getSmsBySid(sid: string): Promise<SmsMessage | null> {
+  if (!sql) return readSmsFile().messages.find(row => row.sid === sid) ?? null;
+  await ensureSchema();
+  const rows = await sql`SELECT data FROM sms_messages WHERE data->>'sid' = ${sid}`;
+  return rows[0]?.data as SmsMessage ?? null;
+}
+
+export async function smsRoutingSnapshot() {
+  if (!sql) {
+    const file = readSmsFile();
+    return { routes: Object.values(file.routes ?? {}), messages: file.messages };
+  }
+  await ensureSchema();
+  const [routes, messages] = await Promise.all([
+    sql`SELECT data FROM sms_routes`, sql`SELECT data FROM sms_messages WHERE id NOT LIKE 'LARP-%'`,
+  ]);
+  return { routes: routes.map(row => row.data as SmsRoute), messages: messages.map(row => row.data as SmsMessage) };
 }
 
 export async function getSmsPreference(phone: string): Promise<SmsPreference | null> {
@@ -4485,4 +4574,26 @@ export async function listLatestInvoiceReminderSms(): Promise<SmsMessage[]> {
       AND data->>'status' IN (SELECT jsonb_array_elements_text(${JSON.stringify(active)}::jsonb))
     ORDER BY data->>'recordId', COALESCE(data->>'submittedAt', data->>'updatedAt', data->>'createdAt') DESC`;
   return rows.map(row => row.data as SmsMessage);
+}
+
+export async function deleteLarpSms(): Promise<number> {
+  if (sql) {
+    await ensureSchema();
+    await sql`DELETE FROM sms_read_state WHERE message_id LIKE 'LARP-%'`;
+    const rows = await sql`DELETE FROM sms_messages WHERE id LIKE 'LARP-%' RETURNING id`;
+    return rows.length;
+  }
+  const data = readSmsFile();
+  const count = data.messages.length;
+  data.messages = data.messages.filter(row => !row.id.startsWith('LARP-'));
+  for (const id of Object.keys(data.chatgptReads ?? {})) {
+    if (id.startsWith('LARP-')) delete data.chatgptReads?.[id];
+  }
+  for (const states of Object.values(data.readStates ?? {})) {
+    for (const profile of ['liam', 'lincoln'] as const) {
+      if (states[profile]?.id.startsWith('LARP-')) delete states[profile];
+    }
+  }
+  writeSmsFile(data);
+  return count - data.messages.length;
 }

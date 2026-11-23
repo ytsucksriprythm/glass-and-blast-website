@@ -4,25 +4,26 @@ import { useCallback, useEffect, useState } from 'react';
 import { Check, ChevronDown, X } from 'lucide-react';
 import type { SmartAction, SmartActionRecord } from '@/lib/smartActionTypes';
 
-type PreviewAction = SmartAction & { preview: string };
-type Overview = { actions: PreviewAction[]; welcome: string; smsEnabled: boolean };
+type PreviewAction = SmartAction & { preview?: string };
+type Overview = { actions: PreviewAction[]; welcome: string; smsEnabled: boolean; demo?: boolean };
 
-export default function SmartActions() {
+export default function SmartActions({ demoRequested = false }: { demoRequested?: boolean }) {
   const [overview, setOverview] = useState<Overview | null>(null);
   const [showAll, setShowAll] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [handledExamples, setHandledExamples] = useState<string[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<{ headline: string; details?: string[]; error?: boolean } | null>(null);
   const refresh = useCallback(async (signal?: AbortSignal) => {
     try {
-      const response = await fetch('/api/admin/smart-actions', { cache: 'no-store', signal });
+      const response = await fetch('/api/admin/smart-actions' + (demoRequested ? '?demo=1' : ''), { cache: 'no-store', signal });
       if (!response.ok) throw new Error('Could not load Smart Actions.');
       const next: Overview = await response.json();
       if (!signal?.aborted) setOverview(next);
     } catch {
       if (!signal?.aborted) setFeedback(current => current ?? { headline: 'Could not load Smart Actions.', error: true });
     }
-  }, []);
+  }, [demoRequested]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -39,13 +40,22 @@ export default function SmartActions() {
 
   async function respond(action: PreviewAction, operation: 'approve' | 'dismiss') {
     if (busy) return;
+    if (overview?.demo) {
+      setHandledExamples(previous => [...previous, action.id]);
+      setExpanded(null);
+      setFeedback({
+        headline: operation === 'dismiss' ? 'Sample suggestion dismissed.' : 'Sample action completed. No SMS was sent.',
+        details: operation === 'approve' ? action.recipients.map(row => row.name + ' · Simulated') : undefined,
+      });
+      return;
+    }
     setBusy(action.id);
     setFeedback(null);
     try {
       const response = await fetch('/api/admin/smart-actions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: action.id, operation, preview: action.preview }),
+        body: JSON.stringify({ id: action.id, operation, preview: action.preview, phone: action.messageId ? action.recipients[0]?.phone : undefined }),
       });
       const payload: { result?: SmartActionRecord; error?: string } = await response.json();
       if (!response.ok) throw new Error(payload.error || 'Could not complete this action.');
@@ -67,13 +77,14 @@ export default function SmartActions() {
     }
   }
 
-  const actions = overview?.actions ?? [];
+  const actions = overview?.actions.filter(action => !overview.demo || !handledExamples.includes(action.id)) ?? [];
   return <section aria-labelledby="smart-actions-heading" className="rounded-xl border border-white/10 bg-navy-800 px-4 py-3">
     <header className="flex items-center justify-between gap-3">
       <h2 id="smart-actions-heading" className="font-semibold text-white">Smart Actions</h2>
       {actions.length > 4 && <button type="button" onClick={() => setShowAll(value => !value)}
         className="min-h-11 px-2 text-sm text-sky-300">{showAll ? 'Show fewer' : `View all (${actions.length})`}</button>}
     </header>
+    {overview?.demo && <p className="py-2 text-xs text-slate-300">Demo data. Approvals are simulated.</p>}
     {feedback && <div role={feedback.error ? 'alert' : 'status'} className={'py-2 text-sm ' + (feedback.error ? 'text-red-300' : 'text-emerald-200')}>
       <p>{feedback.headline}</p>
       {feedback.details?.length ? <ul className="mt-1 space-y-1">{feedback.details.map((detail, index) => <li key={index}>{detail}</li>)}</ul> : null}
@@ -85,6 +96,7 @@ export default function SmartActions() {
     <ul className="divide-y divide-white/10">
       {(showAll ? actions : actions.slice(0, 4)).map(action => {
         const open = expanded === action.id;
+        const reviewFirst = action.bulk || (action.messageId && !action.calendarOnly);
         return <li key={action.id} className="py-2">
           <div className="flex items-start gap-2">
             <button type="button" aria-expanded={open} onClick={() => setExpanded(open ? null : action.id)}
@@ -95,13 +107,13 @@ export default function SmartActions() {
                 <span className="block text-xs text-slate-300">{action.description}</span>
               </span>
             </button>
-            <button type="button" aria-label={`Approve ${action.title}`} title={action.bulk ? 'Review recipients' : 'Approve'}
-              disabled={!!busy || !overview?.smsEnabled}
-              onClick={() => action.bulk ? setExpanded(action.id) : void respond(action, 'approve')}
+            <button type="button" aria-label={`${reviewFirst ? 'Review' : 'Approve'} ${action.title}`} title={reviewFirst ? 'Review message' : 'Approve'}
+              disabled={!!busy || (!action.calendarOnly && !overview?.smsEnabled)}
+              onClick={() => reviewFirst ? setExpanded(action.id) : void respond(action, 'approve')}
               className="flex size-11 shrink-0 items-center justify-center rounded-lg text-emerald-300 hover:bg-emerald-400/10 disabled:opacity-40">
               <Check aria-hidden="true" className="size-5" />
             </button>
-            <button type="button" aria-label={`Dismiss ${action.title}`} title="Dismiss" disabled={!!busy}
+            <button type="button" aria-label={`Deny ${action.title}`} title="Deny" disabled={!!busy}
               onClick={() => void respond(action, 'dismiss')}
               className="flex size-11 shrink-0 items-center justify-center rounded-lg text-red-300 hover:bg-red-400/10 disabled:opacity-40">
               <X aria-hidden="true" className="size-5" />
@@ -116,14 +128,14 @@ export default function SmartActions() {
               <p className="break-words font-semibold text-white">{recipient.name} · {recipient.phone}</p>
               <p className="whitespace-pre-wrap break-words text-slate-300">{recipient.message}</p>
             </div>)}
-            <details className="text-xs text-slate-300">
+            {!action.calendarOnly && <details className="text-xs text-slate-300">
               <summary className="min-h-8 cursor-pointer text-sky-300">First-contact welcome notice</summary>
               <p className="whitespace-pre-wrap">{overview?.welcome}</p>
-            </details>
-            {action.bulk && <button type="button" disabled={!!busy || !overview?.smsEnabled}
+            </details>}
+            {reviewFirst && <button type="button" disabled={!!busy || !overview?.smsEnabled}
               onClick={() => void respond(action, 'approve')}
               className="min-h-11 rounded-lg bg-emerald-400/15 px-3 font-semibold text-emerald-200 disabled:opacity-40">
-              Send {action.recipients.length} follow-up {action.recipients.length === 1 ? 'SMS' : 'texts'}
+              {action.bulk ? `Send ${action.recipients.length} follow-up texts` : 'Approve and send'}
             </button>}
           </div>}
         </li>;

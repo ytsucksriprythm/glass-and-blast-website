@@ -42,6 +42,8 @@ export interface Invoice {
   seq: number;             // 1044 (numeric, for tracking / next-number)
   isTaxInvoice: boolean;   // false → titled "Invoice" (compliant default); true → "Tax Invoice"
   status: InvoiceStatus;
+  cancellationMessage?: string;
+  replacementInvoiceId?: string | null;
   reminderHold?: boolean;
   paymentMethod: PaymentMethod | null;  // how it was paid, set when status → paid
 

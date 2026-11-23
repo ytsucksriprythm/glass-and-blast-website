@@ -11,10 +11,6 @@
 //   counts, the internal calendar) reads straight from the bookings table, so
 //   seeding realistic rows here is the ONLY code needed to make "the numbers
 //   add up" everywhere else — no other read-path changes required.
-// - No fake booking is ever left in status "uncontacted" or "contacted". Those
-//   are what the 14-day stale-lead job watches (see checkStaleLeads in
-//   db.ts); leaving fake ones around would make LARP mode trigger the real
-//   "moved to Cold Lead" popup with fake customers in it.
 // - At very high revenue targets, job COUNT scales up rather than individual
 //   job prices — a two-person window cleaning business doing $1M/yr from
 //   $150-2600 jobs means a lot of jobs, not a few enormous ones. That's the
@@ -27,6 +23,8 @@
 //   service's own realistic band, never override it.
 
 import crypto from 'crypto';
+import { LARP_CONTACT_PHONES, LARP_SMS_PHONES } from './larpPhones';
+import type { SmsMessage } from './smsTypes';
 import type { Booking, BookingStatus, LeadSource, RecurringJob, RecurringFrequency, PageView } from './db';
 import { type Invoice, type InvoiceLineItem, type InvoiceStatus, type PaymentMethod, BUSINESS_DEFAULTS, PAYMENT_DEFAULTS } from './invoice';
 
@@ -41,6 +39,38 @@ export interface LarpOptions {
 export const LARP_ID_PREFIX = 'LARP-';
 export const LARP_MIN_REVENUE = 10000;
 export const LARP_MAX_REVENUE = 1000000;
+
+export function seedLarpFeatureExamples(bookings: Booking[], fakeColdLeads = true): SmsMessage[] {
+  const [active, inactive, cold, overdue] = bookings;
+  if (!active || !inactive || !cold || !overdue) return [];
+  const now = Date.now();
+  const at = (days: number) => new Date(now - days * 86_400_000).toISOString();
+  for (const [index, job] of [active, inactive, cold, overdue].entries()) {
+    Object.assign(job, {
+      phone: LARP_SMS_PHONES[index], email: '', scheduledAt: null, scheduledEnd: null,
+      paid: false, paidAt: null, completedAt: null, autoMoved: false, autoMovedAt: null, autoMovedFrom: null,
+      createdAt: at(50), updatedAt: at(50), statusChangedAt: at(50), adminNotes: '',
+    });
+  }
+  active.status = 'contacted';
+  inactive.status = 'uncontacted';
+  cold.status = fakeColdLeads ? 'uncontacted' : 'quoted';
+  overdue.status = 'completed';
+  overdue.completedAt = at(44);
+  overdue.quoteAmount = 480;
+  const sample = (job: Booking, direction: SmsMessage['direction'], body: string, age: number): SmsMessage => ({
+    id: job.id + '-sms-' + direction, sid: job.id + '-sms-' + direction, recordId: job.id, phone: job.phone,
+    kind: direction === 'inbound' ? 'reply' : 'manual', direction, body,
+    status: direction === 'inbound' ? 'received' : 'delivered', actor: 'LARP',
+    createdAt: at(age), updatedAt: at(age),
+  });
+  return [
+    sample(active, 'outbound', 'Hi, would you like a quote for a window clean?', 2),
+    sample(active, 'inbound', 'Yes please. Could you include the flyscreens?', 1),
+    sample(inactive, 'outbound', 'Hi, just checking if you’re interested in a driveway clean.', 3),
+    sample(cold, 'outbound', 'Hi, would you like us to follow up on your quote?', 16),
+  ];
+}
 
 type Tier = 'premium' | 'upper' | 'mid' | 'value';
 
@@ -229,8 +259,7 @@ function fakeAddress(): string {
   return `${num} ${pick(STREET_NAMES)} ${pick(STREET_TYPES)}`;
 }
 function fakePhone(): string {
-  const d = Array.from({ length: 8 }, () => Math.floor(Math.random() * 10));
-  return `04${d[0]}${d[1]} ${d[2]}${d[3]}${d[4]} ${d[5]}${d[6]}${d[7]}`;
+  return LARP_CONTACT_PHONES[Math.floor(Math.random() * LARP_CONTACT_PHONES.length)];
 }
 function fakeEmail(first: string, last: string): string {
   const suffix = Math.random() < 0.3 ? String(Math.floor(Math.random() * 99)) : '';

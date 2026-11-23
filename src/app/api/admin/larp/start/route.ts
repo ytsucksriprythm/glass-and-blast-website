@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isAdminAuthenticated } from '@/lib/auth';
-import { insertRawBooking, insertRawInvoice, insertRawRecurringJob, insertRawPageView, updateSettings, logActivity } from '@/lib/db';
-import { buildLarpBookings, buildLarpInvoices, buildLarpRecurringPlans, buildLarpPageViews, LARP_MIN_REVENUE, LARP_MAX_REVENUE } from '@/lib/larp';
+import { insertRawBooking, insertRawInvoice, insertRawRecurringJob, insertRawPageView, insertSms, updateSettings, logActivity } from '@/lib/db';
+import { buildLarpBookings, buildLarpInvoices, buildLarpRecurringPlans, buildLarpPageViews, seedLarpFeatureExamples, LARP_MIN_REVENUE, LARP_MAX_REVENUE } from '@/lib/larp';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -30,11 +30,13 @@ export async function POST(req: NextRequest) {
   // Invoices/cold-leads/calendar/recurring-plans are all sub-behaviors of the
   // bookings themselves — nothing to generate for any of them without bookings.
   const bookings = fakeBookings ? buildLarpBookings(target, { fakeColdLeads, fakeCalendar }) : [];
+  const messages = seedLarpFeatureExamples(bookings, fakeColdLeads);
   const invoices = fakeBookings && fakeInvoices ? buildLarpInvoices(bookings) : [];
   const recurring = fakeBookings ? buildLarpRecurringPlans() : [];
   const pageViews = fakeNumbers ? buildLarpPageViews(target) : [];
 
   await insertAll(bookings, insertRawBooking);
+  await insertAll(messages, async message => { await insertSms(message); });
   await insertAll(invoices, insertRawInvoice);
   await insertAll(recurring, insertRawRecurringJob);
   await insertAll(pageViews, insertRawPageView);

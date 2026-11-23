@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getSettings, updateSettings, logActivity } from '@/lib/db';
 import { getActiveContext } from '@/lib/auth';
 import type { AppSettings } from '@/lib/settings';
+import { dataFlowsCutoverReady } from '@/lib/dataFlowsSms';
 
 export const dynamic = 'force-dynamic';
 
@@ -31,10 +32,14 @@ export async function PATCH(req: NextRequest) {
   (['googleReviewUrl', 'defaultJobStartTime', 'contractExtraTerms'] as (keyof AppSettings)[]).forEach(copyStr);
   (['squareSurchargePercent', 'reviewStarThreshold', 'larpRevenueTarget', 'contractTermMonths', 'contractCancelFeePercent', 'contractCoolingOffDays', 'packageEssentialPercent', 'packagePremiumPercent'] as (keyof AppSettings)[]).forEach(copyNum);
   (['squareCardPaymentsEnabled', 'notificationsEnabled', 'notifyNewBooking', 'customerFeedbackEnabled',
-    'recurringAutoBookEnabled', 'contractFeeFirstTermOnly', 'acceptingNewBookings', 'siteTrackingEnabled',
+    'recurringAutoBookEnabled', 'smsBookingReminderWeek', 'smsBookingReminderDay', 'smsBookingReminderHour',
+    'contractFeeFirstTermOnly', 'acceptingNewBookings', 'siteTrackingEnabled', 'smartActionsAiEnabled', 'smsDataFlowsNewConversations',
     'autofillBusinessInfo', 'autofillPaymentDetails', 'defaultShowAddressOnInvoice',
     'larpFakeNumbers', 'larpFakeBookings', 'larpFakeColdLeads', 'larpFakeInvoices', 'larpFakeCalendar',
   ] as (keyof AppSettings)[]).forEach(copyBool);
+  if (updates.smsDataFlowsNewConversations === true && !dataFlowsCutoverReady()) {
+    return NextResponse.json({ error: 'DataFlows cutover has not been validated.' }, { status: 409 });
+  }
 
   // Contract numbers: whole months/days, a sane percentage.
   if (updates.contractTermMonths !== undefined) updates.contractTermMonths = Math.min(60, Math.max(1, Math.round(updates.contractTermMonths)));

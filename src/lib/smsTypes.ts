@@ -23,12 +23,25 @@ export function hasReadSms(marker: Pick<SmsMessage, 'id' | 'createdAt'> | undefi
     (marker.createdAt === message.createdAt && marker.id >= message.id)));
 }
 
-export type SmsKind = 'quote' | 'invoice' | 'booking' | 'reminder' | 'manual' | 'reply' | 'staff-alert' | 'welcome';
+export const BOOKING_SMS_REMINDERS = [
+  { key: 'smsBookingReminderWeek', hours: 168, label: '1 week before' },
+  { key: 'smsBookingReminderDay', hours: 24, label: '24 hours before' },
+  { key: 'smsBookingReminderHour', hours: 1, label: '1 hour before' },
+] as const;
+export type BookingSmsReminderHours = typeof BOOKING_SMS_REMINDERS[number]['hours'];
+
+export type SmsKind = 'quote' | 'invoice' | 'booking' | 'booking-reminder' | 'reminder' | 'manual' | 'reply' | 'staff-alert' | 'welcome';
+export type SmsProvider = 'twilio' | 'dataflows';
+export type SmsRoute = {
+  phone: string; provider: SmsProvider; senderNumber: string; customerId: string | null;
+  firstInteraction: string; lastInteraction: string; locked: true; migrationStatus: 'legacy' | 'assigned' | 'review';
+};
 export type SmsMessage = {
   id: string; kind: SmsKind; recordId: string | null; phone: string; body: string;
   direction: 'inbound' | 'outbound'; status: string; sid?: string; error?: string;
   automatic?: boolean; actor: string; createdAt: string; updatedAt: string;
-  submittedAt?: string; retryAt?: string; attempts?: number;
+  provider?: SmsProvider; senderNumber?: string; segments?: number; estimatedCostAud?: number;
+  submittedAt?: string; retryAt?: string; attempts?: number; bookingReminderHours?: BookingSmsReminderHours;
 };
 export function smsMessageTime(message: SmsMessage): string {
   return message.direction === 'outbound' && message.sid ? message.submittedAt ?? message.updatedAt : message.createdAt;

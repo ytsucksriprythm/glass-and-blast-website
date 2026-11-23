@@ -11,6 +11,7 @@ export type InvoicePreviewData = Omit<
   | 'squarePaymentLinkUrl' | 'squareOrderId' | 'squarePaymentId' | 'squareLinkAmount' | 'squarePaidAt'
 > & {
   paid?: boolean;
+  cancelled?: boolean;
   paymentMethod?: PaymentMethod | null;
   cardPayable?: boolean;  // a live Square payment link exists for this invoice
   surchargePercent?: number;
@@ -53,7 +54,8 @@ export default function InvoicePreview({ invoice }: { invoice: InvoicePreviewDat
               {title}
             </div>
             <div className="text-sky-700 font-semibold mt-1">{invoice.number}</div>
-            {invoice.paid && (
+            {invoice.cancelled && <div className="mt-2 font-bold text-red-700">Cancelled · No payment required</div>}
+            {!invoice.cancelled && invoice.paid && (
               <div className="inline-flex items-center gap-1 mt-2 px-2.5 py-1 rounded-md border-2 border-emerald-600 text-emerald-700 font-display font-extrabold uppercase tracking-widest text-sm -rotate-3">
                 Paid
               </div>
@@ -75,7 +77,7 @@ export default function InvoicePreview({ invoice }: { invoice: InvoicePreviewDat
           <div className="sm:pl-6">
             {invoice.invoiceDate && <Field label="Invoice date" value={longDate(invoice.invoiceDate)} />}
             {invoice.serviceDate && <Field label="Service date" value={longDate(invoice.serviceDate)} />}
-            {invoice.dueDate && <Field label="Due date" value={longDate(invoice.dueDate)} />}
+            {!invoice.cancelled && invoice.dueDate && <Field label="Due date" value={longDate(invoice.dueDate)} />}
           </div>
         </div>
 
@@ -141,14 +143,14 @@ export default function InvoicePreview({ invoice }: { invoice: InvoicePreviewDat
               <span>GST</span><span>$0.00</span>
             </div>
             <div className="flex justify-between mt-2 pt-2 border-t-2 border-slate-900 text-base font-bold text-slate-900">
-              <span>Total due</span><span>{money(total)} AUD</span>
+              <span>{invoice.cancelled ? 'Original total' : 'Total due'}</span><span>{money(total)} AUD</span>
             </div>
           </div>
         </div>
         <p className="mt-2 text-right text-xs text-slate-400 italic">{GST_NOTE}</p>
 
         {/* Payment details */}
-        {invoice.paid ? (
+        {invoice.cancelled ? null : invoice.paid ? (
           <div className="mt-8 rounded-lg border border-emerald-200 bg-emerald-50 p-5">
             <div className="text-[11px] font-semibold uppercase tracking-wider text-emerald-700 mb-2">Payment received</div>
             <p className="text-sm text-emerald-900">

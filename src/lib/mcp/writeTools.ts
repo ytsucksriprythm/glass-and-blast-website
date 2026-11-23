@@ -553,31 +553,114 @@ export function registerWriteTools(server: McpServer, cfg: McpConfig, caller: Ca
       }, fetchInvoice);
     });
 
+  const invoiceStatusFields = {
+    idOrNumber: docRef,
+    status: z.enum(['draft', 'sent', 'paid', 'cancelled']),
+    paymentMethod: z.enum(['bank_transfer', 'cash', 'card', 'other']).optional(),
+    paidDate: date.optional(),
+    cancellationMessage: z.string().trim().max(2000).optional().describe('Customer-facing cancellation message. Pass an empty string to clear.'),
+    replacementInvoiceIdOrNumber: docRef.nullable().optional().describe('Replacement invoice ID or number. Pass null to unlink.'),
+  };
+  const clearableDate = z.union([date, z.literal('')]);
+  const invoiceEditSchema = z.object({
+    ...invoiceStatusFields,
+    status: invoiceStatusFields.status.optional(),
+    isTaxInvoice: z.boolean().optional(),
+    showFromAddress: z.boolean().optional(),
+    fromName: z.string().max(200).optional(),
+    fromTradingAs: z.string().max(200).optional(),
+    fromAbn: z.string().max(40).optional(),
+    fromAddress: z.string().max(500).optional(),
+    fromEmail: z.string().max(254).optional(),
+    fromPhone: z.string().max(80).optional(),
+    billToName: z.string().max(200).optional(),
+    billToLines: z.string().max(1000).optional(),
+    client: z.object({
+      show: z.boolean().optional(),
+      clientName: z.string().max(200).optional(),
+      trn: z.string().max(100).optional(),
+      fileNo: z.string().max(100).optional(),
+      claimRef: z.string().max(100).optional(),
+    }).optional(),
+    invoiceDate: clearableDate.optional(),
+    serviceDate: clearableDate.optional(),
+    dueDate: clearableDate.optional(),
+    notes: z.string().max(4000).optional(),
+    items: z.array(z.object({
+      description: z.string().max(200),
+      detail: z.string().max(1000).default(''),
+      serviceAddress: z.string().max(500).default(''),
+      date: clearableDate.default(''),
+      amount: money,
+    })).min(1).max(100).describe('Replaces all line items. Fetch the existing invoice first when keeping other lines.').optional(),
+    payAccountName: z.string().max(200).optional(),
+    payBsb: z.string().max(40).optional(),
+    payAccountNumber: z.string().max(80).optional(),
+    bookingIds: z.array(id).max(100).optional().describe('Replaces all linked bookings. Pass an empty array to unlink all.'),
+    reminderHold: z.boolean().optional(),
+    sentAt: z.iso.datetime({ offset: true }).nullable().optional(),
+    paidAt: z.iso.datetime({ offset: true }).nullable().optional(),
+  });
+
+  async function editInvoice({ idOrNumber, status, paymentMethod, paidDate, cancellationMessage,
+    replacementInvoiceIdOrNumber, client, bookingIds, ...fields }: z.output<typeof invoiceEditSchema>) {
+    const inv = await findInvoice(idOrNumber);
+    if (!inv) return { error: `No invoice ${idOrNumber}.` };
+    if (status === 'paid' && !paymentMethod) return { error: 'Say how it was paid (paymentMethod).' };
+    const nextStatus = status ?? inv.status;
+    if (nextStatus !== 'paid' && (paymentMethod !== undefined || paidDate !== undefined || fields.paidAt)) {
+      return { error: 'Payment method and payment dates require a paid invoice.' };
+    }
+    if (paidDate && fields.paidAt !== undefined) return { error: 'Use either paidDate or paidAt.' };
+    const updates: Partial<Invoice> = { ...fields };
+    if (status !== undefined) updates.status = status;
+    if (client !== undefined) updates.client = { ...inv.client, ...client };
+    if (bookingIds !== undefined) {
+      updates.bookingIds = [...new Set(bookingIds)];
+      for (const bookingId of updates.bookingIds) {
+        if (inv.bookingIds.includes(bookingId)) continue;
+        const booking = await getBookingById(bookingId);
+        if (!booking || booking.deletedAt) return { error: `No booking with id ${bookingId}.` };
+      }
+    }
+    if (cancellationMessage !== undefined || replacementInvoiceIdOrNumber !== undefined) {
+      if (nextStatus !== 'cancelled') return { error: 'Cancellation details require a cancelled invoice.' };
+      if (cancellationMessage !== undefined) updates.cancellationMessage = cancellationMessage;
+      if (replacementInvoiceIdOrNumber === null) {
+        updates.replacementInvoiceId = null;
+      } else if (replacementInvoiceIdOrNumber !== undefined) {
+        const replacement = await findInvoice(replacementInvoiceIdOrNumber);
+        if (!replacement || replacement.id === inv.id || replacement.status === 'cancelled') {
+          return { error: 'Choose a different, available replacement invoice.' };
+        }
+        updates.replacementInvoiceId = replacement.id;
+      }
+    }
+    if (paymentMethod !== undefined) updates.paymentMethod = paymentMethod;
+    if (paidDate) updates.paidAt = sydneyLocalToIso(`${paidDate}T12:00`);
+    if (status === 'paid' && updates.paidAt === undefined && (inv.status !== 'paid' || !inv.paidAt)) {
+      updates.paidAt = new Date().toISOString();
+    }
+    if (Object.keys(updates).length === 0) return { error: 'Give at least one invoice field to update.' };
+    const saved = await updateInvoice(inv.id, updates);
+    if (!saved) return { error: 'Invoice not found.' };
+    if (saved.status !== inv.status) {
+      await logActivity('invoice.status_changed', `${saved.number} ${inv.status} -> ${saved.status}${status === 'paid' ? ` (${paymentMethod})` : ''} via ${via}`, { from: inv.status, to: saved.status, paymentMethod: saved.paymentMethod }, actor, saved.id);
+    }
+    const changedFields = Object.keys(updates).filter(key => key !== 'status');
+    if (changedFields.length) {
+      await logActivity('invoice.updated', `Invoice ${saved.number} edited via ${via}`, { fields: changedFields }, actor, saved.id);
+    }
+    return { updated: true, invoice: saved, customerLink: link(`/invoice/${saved.token}`) };
+  }
+
   tool('update_invoice_status', 'Mark an invoice sent / paid / cancelled',
-    'Changes an invoice\'s status by id (INV-…) or number (GB1050). For "paid" give paymentMethod (and paidDate if not today); marking an invoice paid does NOT change the booking — use update_booking paid=true for that if the owner wants.',
-    {
-      idOrNumber: docRef,
-      status: z.enum(['draft', 'sent', 'paid', 'cancelled']),
-      paymentMethod: z.enum(['bank_transfer', 'cash', 'card', 'other']).optional(),
-      paidDate: date.optional(),
-    },
-    async ({ idOrNumber, status, paymentMethod, paidDate }) => {
-      const inv = await findInvoice(idOrNumber);
-      if (!inv) return { error: `No invoice ${idOrNumber}.` };
-      if (status === 'paid' && !paymentMethod) return { error: 'Say how it was paid (paymentMethod).' };
-      const updates: Partial<Invoice> = { status };
-      if (status === 'paid') {
-        updates.paymentMethod = paymentMethod!;
-        updates.paidAt = paidDate ? new Date(`${paidDate}T12:00:00+10:00`).toISOString() : new Date().toISOString();
-      }
-      if (status === 'sent' && !inv.sentAt) updates.sentAt = new Date().toISOString();
-      const saved = await updateInvoice(inv.id, updates);
-      if (!saved) return { error: 'Invoice not found.' };
-      if (saved.status !== inv.status) {
-        await logActivity('invoice.status_changed', `${saved.number} ${inv.status} -> ${saved.status}${status === 'paid' ? ` (${paymentMethod})` : ''} via ${via}`, { from: inv.status, to: saved.status, paymentMethod: saved.paymentMethod }, actor, saved.id);
-      }
-      return { updated: true, invoice: saved, customerLink: link(`/invoice/${saved.token}`) };
-    });
+    'Changes invoice status by ID or number. Give paymentMethod when marking paid. With status "cancelled", optionally set, edit or clear the customer cancellation message and replacement invoice.',
+    invoiceStatusFields, editInvoice);
+
+  tool('update_invoice', 'Edit an existing invoice',
+    'Edits an invoice by ID or number. Omitted fields are preserved. Change line items, notes, the bill-to and business details, client/DVA fields, dates, bank details, linked bookings, payment reminders, status, or cancellation details. The invoice number and customer link stay the same.',
+    invoiceEditSchema.shape, editInvoice);
 
   // ── Recurring customers ──────────────────────────────────────────────────
 

@@ -1,4 +1,5 @@
 import { DEFAULT_CALL_POLICY, type CallPolicy } from './callingTypes';
+import type { BookingSmsReminderHours } from './smsTypes';
 // App-wide, runtime-editable business settings — one singleton object, stored
 // as a JSON blob (Neon `app_settings` table / data/settings.json locally, see
 // db.ts). Unlike .env vars, these can be changed from /admin/settings without
@@ -28,6 +29,12 @@ export interface AppSettings {
   // Scheduling
   defaultJobStartTime: string; // "HH:MM", used when recurring plans auto-book a visit
   recurringAutoBookEnabled: boolean; // pause the daily recurring-plan cron without deleting plans
+  smsBookingReminderWeek: boolean;
+  smartActionsAiEnabled: boolean;
+  smsDataFlowsNewConversations: boolean;
+  smsBookingReminderDay: boolean;
+  smsBookingReminderHour: boolean;
+  smsBookingReminderEnabledAt: Partial<Record<BookingSmsReminderHours, number>>;
 
   // Recurring customer contract (customer portal, src/lib/contract.ts). Each
   // signed contract snapshots these, so changing them only affects contracts
@@ -92,6 +99,12 @@ export const DEFAULT_SETTINGS: AppSettings = {
 
   defaultJobStartTime: '09:00',
   recurringAutoBookEnabled: true,
+  smsBookingReminderWeek: false,
+  smartActionsAiEnabled: true,
+  smsDataFlowsNewConversations: false,
+  smsBookingReminderDay: false,
+  smsBookingReminderHour: false,
+  smsBookingReminderEnabledAt: {},
 
   contractTermMonths: 12,
   contractCancelFeePercent: 10,

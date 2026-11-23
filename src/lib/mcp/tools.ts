@@ -245,7 +245,7 @@ export function buildMcpServer(cfg: McpConfig, caller: CallerInfo): McpServer {
     ({ cursor, pageSize, ...f }) => data.listInvoices(ctx, f, cursor, pageSize));
 
   tool('get_invoice', 'Get complete invoice',
-    'One invoice by id (INV-…) or number (e.g. GB1050): every field incl. line items, bill-to, client/DVA block, bank details, Square card-payment fields, plus derived payment history, customer view log (when/where it was opened), activity history and linked bookings.',
+    'One invoice by id (INV-…) or number (e.g. GB1050): every field incl. line items, bill-to, client/DVA block, bank details, Square card-payment fields, cancellation message and replacement invoice ID, plus derived payment history, customer view log, activity history and linked bookings.',
     { idOrNumber: docRef },
     ({ idOrNumber }) => data.getInvoiceFull(ctx, idOrNumber));
 

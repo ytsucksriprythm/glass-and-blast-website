@@ -46,6 +46,31 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     .forEach(copy);
   if (ctx.role === 'admin' && typeof b.reminderHold === 'boolean') updates.reminderHold = b.reminderHold;
 
+  if ('cancellationMessage' in b || 'replacementInvoiceId' in b) {
+    if ((updates.status ?? existing.status) !== 'cancelled') {
+      return NextResponse.json({ error: 'Cancellation details require a cancelled invoice' }, { status: 400 });
+    }
+    if ('cancellationMessage' in b) {
+      if (typeof b.cancellationMessage !== 'string' || b.cancellationMessage.length > 2000) {
+        return NextResponse.json({ error: 'Keep the customer message to 2,000 characters' }, { status: 400 });
+      }
+      updates.cancellationMessage = b.cancellationMessage.trim();
+    }
+    if ('replacementInvoiceId' in b) {
+      if (b.replacementInvoiceId === null) {
+        updates.replacementInvoiceId = null;
+      } else {
+        const replacement = typeof b.replacementInvoiceId === 'string' && b.replacementInvoiceId !== id
+          ? await getInvoiceById(b.replacementInvoiceId)
+          : null;
+        if (!replacement || !canAccess(ctx, replacement) || replacement.status === 'cancelled') {
+          return NextResponse.json({ error: 'Choose an available replacement invoice' }, { status: 400 });
+        }
+        updates.replacementInvoiceId = replacement.id;
+      }
+    }
+  }
+
   if ('client' in b && b.client) {
     updates.client = {
       show: !!b.client.show,

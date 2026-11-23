@@ -4,6 +4,8 @@ import { getActiveContext } from '@/lib/auth';
 import { staffLabel } from '@/lib/staff';
 import { getInvoiceById, getQuoteById, getSmsPreference, listChatgptSmsReads, listLatestCustomerSms, listSms, listSmsReadStates, logActivity, markSmsRead, setSmsPreference, updateInvoice, updateQuote } from '@/lib/db';
 import { smsPhone } from '@/lib/smsTypes';
+import { isLarpPhone } from '@/lib/larpPhones';
+import { getSettings } from '@/lib/db';
 import { resolveSmsTarget, sendSms, SmsError, smsEnabled } from '@/lib/sms';
 import type { Quote } from '@/lib/quote';
 import type { Invoice } from '@/lib/invoice';
@@ -36,8 +38,9 @@ export async function GET(request: Request) {
       manual ? thread.then(rows => listChatgptSmsReads(rows.filter(row => row.direction === 'inbound').map(row => row.id))) : {},
     ]);
     const latestIncoming = incoming[0];
+    const demo = isLarpPhone(phone) && (await getSettings()).larpModeActive;
     return NextResponse.json({
-      phone, messages, preference, readState: states?.[phone] ?? {}, chatgptReads, enabled: smsEnabled(),
+      phone, messages, preference, readState: states?.[phone] ?? {}, chatgptReads, enabled: smsEnabled() || demo, demo,
       latestIncoming: latestIncoming && { id: latestIncoming.id, createdAt: latestIncoming.createdAt },
     }, { headers: { 'Cache-Control': 'no-store' } });
   } catch (error) { return failure(error); }
@@ -70,8 +73,8 @@ export async function POST(request: Request) {
       let approvedInvoice: Invoice | null = null;
       if (action.kind === 'manual' && !action.requestId) throw new SmsError('A request ID is required.', 400);
       if (action.kind === 'quote' && action.approveQuote) {
-        if (!smsEnabled()) throw new SmsError('Customer SMS sending is disabled.', 503);
         const { phone } = await resolveSmsTarget(action);
+        if (!smsEnabled() && !(isLarpPhone(phone) && (await getSettings()).larpModeActive)) throw new SmsError('Customer SMS sending is disabled.', 503);
         if (await getSmsPreference(phone) === 'opted-out') throw new SmsError('This number opted out. The customer must text START to opt back in.');
         const quote = await getQuoteById(action.recordId);
         if (quote?.status === 'draft') {
@@ -81,8 +84,8 @@ export async function POST(request: Request) {
         }
       }
       if (action.kind === 'invoice' && action.approveInvoice) {
-        if (!smsEnabled()) throw new SmsError('Customer SMS sending is disabled.', 503);
         const { phone } = await resolveSmsTarget(action);
+        if (!smsEnabled() && !(isLarpPhone(phone) && (await getSettings()).larpModeActive)) throw new SmsError('Customer SMS sending is disabled.', 503);
         if (await getSmsPreference(phone) === 'opted-out') throw new SmsError('This number opted out. The customer must text START to opt back in.');
         const invoice = await getInvoiceById(action.recordId);
         if (invoice?.status === 'draft') {
@@ -94,6 +97,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ message: await sendSms(action, actor), approvedQuote, approvedInvoice });
     }
     const { phone } = await resolveSmsTarget(action);
+    if (isLarpPhone(phone)) throw new SmsError('Demo numbers do not have live SMS preferences.');
     const preference = action.action === 'consent' ? 'opted-in' : 'opted-out';
     if (!await setSmsPreference(phone, preference, actor)) {
       throw new SmsError('This number opted out. The customer must text START to opt back in.');

@@ -8,10 +8,11 @@ import type { StaffProfile } from '@/lib/staff';
 import type { Quote } from '@/lib/quote';
 import type { Invoice } from '@/lib/invoice';
 import { useStaffProfile } from './StaffSession';
+import ConversationSmartActions from './ConversationSmartActions';
 
 type Kind = 'quote' | 'invoice' | 'booking' | 'manual';
 type History = {
-  phone: string; messages: SmsMessage[]; preference: SmsPreference | null; enabled: boolean;
+  phone: string; messages: SmsMessage[]; preference: SmsPreference | null; enabled: boolean; demo?: boolean;
   readState: SmsReadState; chatgptReads: Record<string, StaffProfile[]>; latestIncoming?: Pick<SmsMessage, 'id' | 'createdAt'>;
 };
 const unresolved = ['pending', 'retry', 'sending', 'queued', 'accepted', 'unknown'];
@@ -119,7 +120,7 @@ export default function SmsPanel({ kind, recordId, needsApproval = false, onQuot
         } else if (failures.includes(result.message.status)) {
           setError(result.message.error || 'SMS ' + result.message.status + '.');
         } else {
-          setNotice('SMS ' + result.message.status + '.');
+          setNotice(history.demo ? 'Demo message saved. No SMS was sent.' : 'SMS ' + result.message.status + '.');
         }
       }
       if (result.preference) setHistory({ ...history, preference: result.preference });
@@ -132,7 +133,7 @@ export default function SmsPanel({ kind, recordId, needsApproval = false, onQuot
     {history && <>
       <div className="flex flex-wrap items-center justify-between gap-x-2">
         {!conversation && <p className="text-sm text-slate-300">{chat ? history.phone : 'To ' + history.phone}</p>}
-        {history.preference !== 'opted-out' && chat && canReply && <button type="button" className="ml-auto min-h-11 text-xs text-slate-300 disabled:opacity-40" disabled={busy} onClick={() => void action('opt-out')}>Opt out</button>}
+        {!history.demo && history.preference !== 'opted-out' && chat && canReply && <button type="button" className="ml-auto min-h-11 text-xs text-slate-300 disabled:opacity-40" disabled={busy} onClick={() => void action('opt-out')}>Opt out</button>}
       </div>
       {!history.enabled && <p className="text-sm text-amber-200">SMS sending is disabled in this environment.</p>}
       {history.preference === 'opted-out' && <p className="text-sm text-amber-200">This number opted out of SMS.</p>}
@@ -159,6 +160,8 @@ export default function SmsPanel({ kind, recordId, needsApproval = false, onQuot
                 <Link className="inline-flex min-h-11 items-center text-xs font-semibold text-sky-300"
                   href={'/admin/invoices/' + encodeURIComponent(message.recordId) + '?from=' + encodeURIComponent(conversation.href)}>View invoice</Link>}
               {message.error && <p className="text-xs text-red-300">{message.error}</p>}
+              {conversation && message.id === newest && !history.demo && canReply &&
+                <ConversationSmartActions phone={history.phone} />}
             </li>;
           })}
         </ul> : <p className={'py-3 text-center text-sm text-slate-300 ' + (conversation ? 'flex-1' : '')}>No messages yet.</p>}

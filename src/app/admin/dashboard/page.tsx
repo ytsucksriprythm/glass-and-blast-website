@@ -1594,7 +1594,7 @@ const openBooking = (id: string) => {
             {/* ── OVERVIEW ─────────────────────────────────────────────── */}
             {activeTab === 'overview' && (
               <motion.div key="overview" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-6">
-                <SmartActions />
+                <SmartActions demoRequested={routeQuery.get('demo') === '1'} />
                 <TodayWork bookings={bookings} invoices={invoices} newLeads={stats?.uncontacted ?? 0} acceptedIds={acceptedIds} loading={loading} onOpen={openBooking} />
                 <section aria-label="Booking and financial metrics" className="space-y-5">
                 {loading ? (

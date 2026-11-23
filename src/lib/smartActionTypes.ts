@@ -1,4 +1,4 @@
-﻿export type SmartActionKind = 'reschedule' | 'clarify' | 'invoice' | 'reply' | 'quote' | 'booking' | 'repeat';
+﻿export type SmartActionKind = 'reschedule' | 'schedule' | 'send-invoice' | 'send-quote' | 'clarify' | 'invoice' | 'reply' | 'quote' | 'booking' | 'repeat';
 
 export type SmartRecipient = { name: string; phone: string; message: string };
 
@@ -10,6 +10,8 @@ export type SmartAction = {
   recipients: SmartRecipient[];
   bulk?: boolean;
   customerSms?: string;
+  calendarOnly?: boolean;
+  messageId?: string;
 };
 
 export type SmartActionResult = {
