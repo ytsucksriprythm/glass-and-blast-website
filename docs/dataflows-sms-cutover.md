@@ -7,7 +7,7 @@ The CRM uses the DataFlows HTTP API with the Developers bearer token. `DATAFLOWS
 1. Buy a dedicated Australian mobile number in DataFlows under **Sending → Numbers**. Confirm that it appears in **Developers** and in the authenticated HTTP `sender-ids` response. Keep the existing Twilio number and settings active.
 2. Set `DATAFLOWS_API_TOKEN` in the server environment. Set `DATAFLOWS_SENDER_NUMBER` to the dedicated number in international format. Set `DATAFLOWS_WEBHOOK_SECRET` to a random secret of at least 32 characters shared with the authenticated event relay. Leave `DATAFLOWS_CUTOVER_READY` unset.
 3. Optionally set `DATAFLOWS_SMS_SEGMENT_COST_AUD` and `TWILIO_SMS_SEGMENT_COST_AUD` to your current AUD rates per segment. The report shows unpriced sends separately.
-4. Deploy with **Use DataFlows for new conversations** off. The app schema creates `sms_routes` without changing historical message rows, bookings or invoices.
+4. Deploy with **Twilio** selected under **Provider for new SMS conversations**. The app schema creates `sms_routes` without changing historical message rows, bookings or invoices.
 5. In **Settings → SMS provider routing**, run the dry run and review the Twilio history and no-history counts. Confirm **Backfill Twilio routing** while cutover stays off. Review routes flagged because the old records did not capture a sender or contained multiple senders.
 
 ## Inbound and status events
@@ -30,6 +30,6 @@ Map Pending to `accepted` and Failed to `failed`. Use the actual provider messag
 
 1. In a test deployment, verify the send response UID and sender format using a staff-controlled number, plus inbound reply, STOP, retry, and all delivery states. Verify that delivery of the first-contact notice releases queued messages. Check that ambiguous submission outcomes stay unresolved for reconciliation rather than automatically sending another copy.
 2. Check a staff-controlled number with Twilio history still uses Twilio. Check a fresh staff-controlled number uses DataFlows in the test deployment when the cutover gate and setting are on. Confirm both appear in the same inbox.
-3. After backfill and account validation, set `DATAFLOWS_CUTOVER_READY=true` in production, redeploy, and enable **Use DataFlows for new conversations**. Turning it off resumes assigning Twilio to new outbound conversations and keeps existing assignments.
+3. After backfill and account validation, set `DATAFLOWS_CUTOVER_READY=true` in production, redeploy, then select **DataFlows** under **Provider for new SMS conversations** and save. Selecting **Twilio** later assigns it to new outbound conversations while preserving existing assignments.
 
 Individual overrides and retirement of the Twilio number are deferred to a controlled migration stage.

@@ -37,7 +37,7 @@ export async function PATCH(req: NextRequest) {
     'autofillBusinessInfo', 'autofillPaymentDetails', 'defaultShowAddressOnInvoice',
     'larpFakeNumbers', 'larpFakeBookings', 'larpFakeColdLeads', 'larpFakeInvoices', 'larpFakeCalendar',
   ] as (keyof AppSettings)[]).forEach(copyBool);
-  if (updates.smsDataFlowsNewConversations === true && !dataFlowsCutoverReady()) {
+  if (updates.smsDataFlowsNewConversations === true && !dataFlowsCutoverReady() && !(await getSettings()).smsDataFlowsNewConversations) {
     return NextResponse.json({ error: 'DataFlows cutover has not been validated.' }, { status: 409 });
   }
 

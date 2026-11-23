@@ -1248,9 +1248,23 @@ export default function SettingsPage() {
               </Section>
 
               <Section title="SMS provider routing" icon={Bell}>
-                <Toggle label="Use DataFlows for new conversations"
-                  sub="Existing conversations keep their assigned sender when you change this setting."
-                  checked={s.smsDataFlowsNewConversations ?? false} onChange={value => set('smsDataFlowsNewConversations', value)} />
+                <fieldset className="space-y-2">
+                  <legend className="text-sm font-semibold text-white">Provider for new SMS conversations</legend>
+                  <p id="sms-provider-description" className="text-xs text-slate-400">
+                    Existing conversations keep their assigned sender. Select Save changes to apply your choice.
+                  </p>
+                  <div className="grid grid-cols-2 gap-2" aria-describedby="sms-provider-description">
+                    {['Twilio', 'DataFlows'].map(provider => {
+                      const useDataFlows = provider === 'DataFlows';
+                      return <label key={provider} className="flex min-h-11 cursor-pointer items-center gap-2 rounded-lg border border-white/15 px-3 text-sm text-slate-200 has-[:checked]:border-sky-400 has-[:checked]:bg-sky-400/10">
+                        <input type="radio" name="new-sms-provider" value={provider} className="accent-sky-400"
+                          checked={Boolean(s.smsDataFlowsNewConversations) === useDataFlows}
+                          onChange={() => set('smsDataFlowsNewConversations', useDataFlows)} />
+                        {provider}
+                      </label>;
+                    })}
+                  </div>
+                </fieldset>
                 <SmsRoutingSettings />
               </Section>
 
